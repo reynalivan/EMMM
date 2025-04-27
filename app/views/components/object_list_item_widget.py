@@ -222,23 +222,18 @@ class ObjectListItemWidget(QWidget):
 
     def show_loading_overlay(self, show: bool):
         """Show or hide the loading indicator overlay."""
-        if not hasattr(self, "loading_indicator"):
+        if not hasattr(self, "loading_icon"):
             return  # Safety check
 
         if show:
             # Optional: Make widget slightly more transparent when loading
             # self.setOpacity(0.8) # Already handled by set_interactive?
-
-            self.loading_indicator.start()
-            self.loading_indicator.show()
-            self.loading_indicator.raise_()  # Ensure it's visually on top
+            self.loading_icon.setIcon(FluentIcon.SYNC)
 
         else:
             # Restore opacity if changed
             # self.setOpacity(1.0)
-
-            self.loading_indicator.stop()
-            self.loading_indicator.hide()
+            self.loading_icon.setIcon(FluentIcon.CLOSE)
 
     def update_display(self, data: dict):
         """Updates the displayed info based on data from ViewModel signal."""

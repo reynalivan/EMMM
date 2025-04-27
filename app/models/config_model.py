@@ -10,5 +10,5 @@ class GameDetail:
 
 @dataclass
 class AppSettings:
-    last_selected_game_name: str | None = None
+    last_selected_game_name: Optional[str] = None
     safe_mode_enabled: bool = False

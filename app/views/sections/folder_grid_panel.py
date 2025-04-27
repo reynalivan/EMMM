@@ -271,10 +271,14 @@ class FolderGridPanel(QWidget):
         if widget:
             widget.update_display(payload)
 
+            # --- PENTING: Update path mapping registry ---
+            new_path = payload.get("path")
+            if new_path:
+                self.gridWidget.updateItemPath(item_path, new_path)
+
     def _update_item_thumbnail(self, item_path: str, thumb_result: dict):
         """Updates the thumbnail of a specific item widget."""
         # Find widget using the original item path from the signal
-        # _find_widget_by_path handles cleaning the path for map lookup
         widget = self.gridWidget.findItemWidgetByPath(item_path)
         if widget:
             thumbnail_path = thumb_result.get("path")
@@ -295,3 +299,8 @@ class FolderGridPanel(QWidget):
             # Ensure widget has the method before calling
             if hasattr(widget, "set_thumbnail"):
                 widget.set_thumbnail(pixmap)
+
+    def closeEvent(self, event):
+        if hasattr(self, "vm") and self.vm:
+            self.vm.unbind_filewatcher_service()
+        super().closeEvent(event)

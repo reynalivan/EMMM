@@ -2,14 +2,15 @@
 
 import os
 from typing import List, Literal, Optional
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtGui import QPixmap
 from app.models.folder_item_model import FolderItemModel
 from app.models.object_item_model import ObjectItemModel
+from app.services.file_watcher_service import FileChangeEvent, FileWatcherService
 from app.services.mod_management_service import ModManagementService
 from app.services.data_loader_service import DataLoaderService
 from app.services.thumbnail_service import ThumbnailService  # Import ThumbnailService
 from app.viewmodels.object_list_vm import ObjectListVM
-from app.viewmodels.main_window_vm import MainWindowVM  # Import MainWindowVM
 from app.utils.logger_utils import logger  # Import logger
 from app.core.constants import DISABLED_PREFIX
 from .base_item_vm import BaseItemViewModel, ItemModelType  # Import base class
@@ -49,11 +50,14 @@ class FolderGridVM(BaseItemViewModel):
         """Returns the item type handled by this VM."""
         return "folder"
 
-    def _load_items_for_path(self, path: str | None):
-        """Implementation for loading folder items."""
-        self.load_folders_for(path)
+    def _load_items_for_path(self, path: Optional[str]):
+        """Loads folder items for the given parent folder path."""
+        if path:
+            self.load_folders_for(path)
+        else:
+            logger.debug(f"{self.__class__.__name__}: No valid path to load.")
 
-    def _get_current_path_context(self) -> str | None:
+    def _get_current_path_context(self) -> Optional[str]:
         """Returns the current parent folder path being viewed."""
         return self._current_parent_path
 
@@ -92,14 +96,16 @@ class FolderGridVM(BaseItemViewModel):
         )
         self.displayListChanged.emit(self.displayed_items)
 
-    def connect_global_signals(
-        self, main_vm: MainWindowVM, object_list_vm: ObjectListVM
-    ):
+    def connect_global_signals(self, main_vm, object_list_vm: ObjectListVM):
         """Connect to signals from other ViewModels."""
         # logger.debug("Connecting FolderGridVM to global VM signals...") # Keep lean
         try:
             object_list_vm.objectItemSelected.connect(self._on_object_item_selected)
             main_vm.safe_mode_status_changed.connect(self._on_safe_mode_changed)
+            object_list_vm.objectItemPathChanged.connect(
+                self._handle_object_path_changed
+            )
+
             # TODO: Connect global refresh if needed
             # main_vm.global_refresh_requested.connect(self._handle_global_refresh)
         except AttributeError as e:
@@ -151,13 +157,15 @@ class FolderGridVM(BaseItemViewModel):
                 None
             )  # Deselect previous folder item when object changes
 
-    def load_folders_for(self, parent_path: str | None):
+    def load_folders_for(self, parent_path: Optional[str]):
         """Loads folder items for the given parent path."""
         if parent_path:
             logger.info(f"FolderGridVM: Loading folders for path: {parent_path}")
             self._current_parent_path = os.path.normpath(parent_path)
-
             self._data_loader.get_folder_items_async(self._current_parent_path)
+            # add file watcher
+            if self._file_watcher_service and self._file_watcher_service.is_enabled():
+                self.bind_filewatcher(self._file_watcher_service)
         else:
             logger.info(
                 "FolderGridVM: load_folders_for called with None path, clearing."
@@ -169,14 +177,25 @@ class FolderGridVM(BaseItemViewModel):
     def _on_folder_items_loaded(self, parent_path: str, items: list[FolderItemModel]):
         """Handles the folder items loaded by DataLoaderService."""
         # Check if the result is for the currently viewed path
-        if parent_path == self._current_parent_path:
-            logger.debug(f"FolderGridVM: Received {len(items)} items for {parent_path}")
-            self._all_folder_items = items
-            self._filter_and_sort()  # Apply filtering/sorting (includes safe mode)
+        if parent_path != self._current_parent_path:
+            return
+        logger.debug(f"FolderGridVM: Received {len(items)} items for {parent_path}")
+        self._all_folder_items = items
+        self._filter_and_sort()  # Apply filtering/sorting (includes safe mode)
+        # Request thumbnails
+        for item in self._all_folder_items:
+            self.request_thumbnail_for(item)
+
+    def on_thumbnail_ready(self, path: str, result: dict):
+        if path != self.item_model.path:
+            return  # Bukan untuk item ini
+
+        thumb_path = result.get("path")
+        if thumb_path and os.path.exists(thumb_path):
+            pixmap = QPixmap(thumb_path)
+            self.set_thumbnail(pixmap)
         else:
-            logger.debug(
-                f"FolderGridVM: Received stale folder items for {parent_path}, ignoring."
-            )
+            self.set_placeholder_thumbnail()
 
     def _on_safe_mode_changed(self, is_on: bool):
         """Handles safe mode status changes from MainWindowVM."""
@@ -340,3 +359,21 @@ class FolderGridVM(BaseItemViewModel):
 
         self.breadcrumbChanged.emit(self._breadcrumb_path)
         self.load_folders_for(new_path)
+
+    def _handle_object_path_changed(self, old_path: str, new_path: str):
+        """Handles when the object root path is changed due to disable/enable."""
+        if not self._object_root_path:
+            return
+
+        if os.path.normpath(self._object_root_path) == os.path.normpath(old_path):
+            logger.info(
+                f"FolderGridVM: Detected object root path change -> refreshing to new path: {new_path}"
+            )
+            self.update_root_path(new_path)
+
+    def set_filewatcher_service(self, watcher: FileWatcherService):
+        """Set file watcher service after construction."""
+        self._file_watcher_service = watcher
+
+    def _set_current_path_context(self, path: str):
+        self._current_game_path = path

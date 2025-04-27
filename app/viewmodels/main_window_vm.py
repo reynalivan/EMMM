@@ -1,23 +1,41 @@
 # app/viewmodels/main_window_vm.py
 
+from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 from app.services.config_service import ConfigService
 from app.models.config_model import GameDetail, AppSettings
 from app.utils.logger_utils import logger
+from app.services.file_watcher_service import FileWatcherService
+from app.viewmodels.object_list_vm import ObjectListVM
+from app.viewmodels.folder_grid_vm import FolderGridVM
 
 
 class MainWindowVM(QObject):
+    # --- Signals ---
     game_list_updated = pyqtSignal(list)
     current_game_changed = pyqtSignal(GameDetail)
     safe_mode_status_changed = pyqtSignal(bool)
     global_refresh_requested = pyqtSignal()
 
-    def __init__(self, config_service: ConfigService, parent: QObject | None = None):
+    file_watcher_stats_updated = pyqtSignal(
+        int, float
+    )  # folders_watched, changes_per_sec
+
+    def __init__(
+        self,
+        config_service: ConfigService,
+        object_vm: ObjectListVM,
+        folder_vm: FolderGridVM,
+        parent: Optional[QObject] = None,
+    ):
         super().__init__(parent)
         self._config_service = config_service
         self._available_games = []
-        self._current_game: GameDetail | None = None
+        self._current_game: Optional[GameDetail] = None
         self._is_safe_mode_on: bool = False
+        self.file_watcher_service: Optional[FileWatcherService] = None
+        self.object_vm = object_vm
+        self.folder_vm = folder_vm
 
     def load_initial_data(self) -> None:
         logger.debug("Loading initial data for MainWindowVM")
@@ -29,6 +47,9 @@ class MainWindowVM(QObject):
             if g.name == settings.last_selected_game_name:
                 self._current_game = g
                 self.current_game_changed.emit(g)
+
+                if self.object_vm and self.folder_vm and g.path:
+                    self.object_vm._load_items_for_path(g.path)
                 return
 
     def select_game_by_name(self, name: str) -> None:
@@ -60,31 +81,25 @@ class MainWindowVM(QObject):
         self._config_service.save_app_settings(settings)
 
     def set_safe_mode(self, is_on: bool):
-        """Sets the safe mode status and emits signal if changed."""
         logger.debug(f"MainWindowVM: Setting safe mode to: {is_on}")
         if self._is_safe_mode_on != is_on:
             self._is_safe_mode_on = is_on
-            self._save_safe_mode_setting()  # Simpan ke config
-            # Pastikan sinyal ini dipancarkan
+            self._save_safe_mode_setting()
             logger.debug(f"MainWindowVM: Emitting safeModeStatusChanged({is_on})")
-            self.safe_mode_status_changed.emit(is_on)  # <-- PANCARKAN SINYAL
+            self.safe_mode_status_changed.emit(is_on)
         else:
             logger.debug("MainWindowVM: Safe mode status unchanged.")
 
-    def get_current_game(self) -> GameDetail | None:
-        logger.debug(f"fGetting current game {self._current_game}")
+    def get_current_game(self) -> Optional[GameDetail]:
         return self._current_game
 
     def get_available_games(self) -> list[GameDetail]:
-        logger.debug(f"Getting available games: {self._available_games}")
         return self._available_games
 
     def is_safe_mode_active(self) -> bool:
-        logger.debug(f"Checking if safe mode is active: {self._is_safe_mode_on}")
         return self._is_safe_mode_on
 
     def _save_safe_mode_setting(self):
-        """Saves the current safe mode setting to config."""
         logger.debug("MainWindowVM: Saving safe mode setting...")
         try:
             settings = self._config_service.load_app_settings()
@@ -94,7 +109,19 @@ class MainWindowVM(QObject):
                 f"MainWindowVM: Safe mode setting saved ({self._is_safe_mode_on})."
             )
         except Exception as e:
-            # Log error, maybe emit an error signal?
             logger.error(
                 f"MainWindowVM: Failed to save safe mode setting: {e}", exc_info=True
             )
+
+    def bind_filewatcher_service(self, watcher: FileWatcherService):
+        """Connect FileWatcherService to MainWindowVM."""
+        logger.info("MainWindowVM: Binding FileWatcherService.")
+        self.file_watcher_service = watcher
+        watcher.statsUpdated.connect(self._on_filewatcher_stats_updated)
+
+    def _on_filewatcher_stats_updated(self, folder_count: int, change_rate: float):
+        """Internal slot: update UI with file watcher stats."""
+        logger.debug(
+            f"MainWindowVM: FileWatcher stats updated -> {folder_count} folders, {change_rate:.1f} changes/sec"
+        )
+        self.file_watcher_stats_updated.emit(folder_count, change_rate)

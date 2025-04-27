@@ -3,7 +3,7 @@
 import os
 import json
 import shutil
-from typing import Literal, Dict, Any, List
+from typing import Literal, Dict, Any, List, Optional
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 
 # Asumsi path utilitas dan konstanta
@@ -85,11 +85,10 @@ class ModManagementService(QObject):
 
         def _on_result(result_dict):
             logger.info(
-                f"set_mod_enabled_async result: {result_dict} for path: {item_path}"
+                f"set_mod_enabled_async result for '{item_path}': {result_dict}"
             )
-            self.modStatusChangeComplete.emit(
-                item_path, {**result_dict, "item_type": item_type}
-            )
+            result_dict["item_type"] = item_type
+            self.modStatusChangeComplete.emit(item_path, result_dict)
 
         def _on_error(err_info):
             logger.error(
@@ -326,7 +325,7 @@ class ModManagementService(QObject):
 
     def _rename_folder_for_status(
         self, item_path: str, disable: bool
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, Optional[str]]:
         """Internal helper to rename folder based on target status (disable=True/False)."""
         prefix = constants.DISABLED_PREFIX
         is_currently_disabled = (

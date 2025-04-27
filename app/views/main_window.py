@@ -22,7 +22,6 @@ from qfluentwidgets import (
 
 
 # ---App Imports ---
-
 from app.views.dialogs.settings_dialog import SettingsDialog
 from app.viewmodels.settings_vm import SettingsVM
 from app.viewmodels.main_window_vm import MainWindowVM
@@ -48,7 +47,6 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self.vm = view_model
 
         # Store references to the panels passed from main.py
-
         self.obj_list_panel = obj_list_panel
         self.fld_grid_panel = fld_grid_panel
         self.prv_panel = prv_panel
@@ -60,7 +58,6 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self._connect_signals()
 
         # Set window title (FluentWindow might handle this differently)
-
         self.setWindowTitle("EMMM - Enabled Model Mods Manager")
 
     def _setup_ui(self):
@@ -73,13 +70,10 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self.header_widget.setObjectName("MainWindowHeader")  # For styling if needed
 
         # Left side of header
-
         self.title_label = TitleLabel("EMMM v0.1")  # Or get version from VM/constants
-
         self.gamelist_combo = ComboBox()
         self.gamelist_combo.setPlaceholderText("Select Game")
         self.gamelist_combo.setMinimumWidth(150)
-
         self.safe_mode_switch = SwitchButton("Safe Mode")
 
         # TODO: Implement Preset ComboBox later
@@ -108,10 +102,8 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         # TODO: Add Play Button functionality later
 
         self.play_button = PushButton("Play")  # Or PrimaryPushButton?
-
         self.play_button.setIcon(FluentIcon.PLAY)
         self.play_button.setEnabled(False)  # Disable for now
-
         header_layout.addWidget(self.play_button)
 
         # ---Main Content Area (Resizable Panels) ---
@@ -122,22 +114,16 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self.splitter.addWidget(self.prv_panel)
 
         # Set initial sizes or stretch factors for the panels
-        # These values might need tuning
-
         self.splitter.setStretchFactor(0, 2)  # Object List smaller
-
         self.splitter.setStretchFactor(1, 5)  # Folder Grid largest
-
         self.splitter.setStretchFactor(2, 2)  # Preview medium
 
         # Apply some styling to the splitter handle (optional)
-
         self.splitter.setStyleSheet(
             "QSplitter::handle { background-color: #222; width: 3px; }"
         )
 
         # ---Combine Header and Splitter ---
-
         central_widget = QWidget()
         central_widget.setObjectName("CentralContentWidget")
         main_layout = QVBoxLayout(central_widget)
@@ -146,7 +132,6 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         )  # No margins for the main layout itself
 
         main_layout.setSpacing(0)  # No spacing between header and splitter
-
         main_layout.addWidget(self.header_widget)
         # Add a small separator line (optional)
 
@@ -181,7 +166,6 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
             # TODO: Connect preset_combo, refresh_button, play_button later
 
             # Connect ViewModel Signals
-
             self.vm.game_list_updated.connect(self._update_gamelist_dropdown)
             self.vm.current_game_changed.connect(self._select_game_in_dropdown)
             # Use setChecked for SwitchButton state updates

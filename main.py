@@ -27,6 +27,7 @@ from app.viewmodels.folder_grid_vm import FolderGridVM
 from app.views.sections.object_list_panel import ObjectListPanel
 from app.views.sections.folder_grid_panel import FolderGridPanel
 from app.views.sections.preview_panel import PreviewPanel
+from app.services.file_watcher_service import FileWatcherService
 
 
 def main():
@@ -34,13 +35,10 @@ def main():
     app = QApplication(sys.argv)
 
     # Apply Fluent Theme
-
     setTheme(Theme.DARK)
-
     logger.info("Application starting...")
 
     # Initialize Services & Utilities
-
     try:
         config_service = ConfigService(config_filepath=constants.CONFIG_FILENAME)
         mod_service = ModManagementService()
@@ -52,25 +50,33 @@ def main():
         )
         image_utils = ImageUtils()
         thumbnail_service = ThumbnailService(image_cache, image_utils)
-
+        file_watcher_service = FileWatcherService()
         logger.info("Core services and utilities initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize core services: {e}", exc_info=True)
         # TODO: Show critical error message to user
-
         return 1
 
     # Initialize ViewModels
-
     try:
-        main_vm = MainWindowVM(config_service)
-        # batch_service removed from injections
-
         object_vm = ObjectListVM(data_loader, mod_service, thumbnail_service)
         folder_vm = FolderGridVM(data_loader, mod_service, thumbnail_service)
         preview_vm = PreviewPanelVM(
             data_loader, mod_service, thumbnail_service, image_utils
         )
+        main_vm = MainWindowVM(config_service, object_vm, folder_vm)
+
+        # === Set file watcher explicitly ===
+        main_vm.bind_filewatcher_service(file_watcher_service)
+        object_vm.set_filewatcher_service(file_watcher_service)
+        folder_vm.set_filewatcher_service(file_watcher_service)
+
+        file_watcher_service.enable()
+        file_watcher_service.start()
+
+        # Rebind file watcher
+        object_vm.rebind_filewatcher()
+
         logger.info("View models initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize view models: {e}", exc_info=True)
@@ -117,12 +123,12 @@ def main():
         return 1
 
     # Load Initial Application Data
-
     try:
         main_vm.load_initial_data()
         logger.debug("Initial data loaded.")
     except Exception as e:
         logger.error(f"Error during initial data load: {e}", exc_info=True)
+        return 1
 
     # Start Application Event Loop
 

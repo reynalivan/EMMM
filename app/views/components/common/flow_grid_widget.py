@@ -34,18 +34,13 @@ class FlowGridWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-
         self.setObjectName("FlowGridContentWidget")
-        # Apply FlowLayout directly to this widget
+        self._path_to_widget: dict[str, FolderGridItemWidget] = {}
 
         self.flowLayout = FlowLayout(self, needAni=False)  # Set parent=self
-
         self.flowLayout.setContentsMargins(8, 8, 8, 8)  # Adjust as needed
-
         self.flowLayout.setVerticalSpacing(10)  # Adjust as needed
-
         self.flowLayout.setHorizontalSpacing(10)  # Adjust as needed
-
         self._item_widgets: list[FolderGridItemWidget] = []
         # Removed self.vm, self.breadcrumb_widget
         # Removed self._connect_signals() call
@@ -84,8 +79,8 @@ class FlowGridWidget(QWidget):
 
                 widget_to_delete.deleteLater()
         # ---END MODIFICATION ---
-
         self._item_widgets.clear()
+        self._path_to_widget.clear()
 
     # Renamed from _update_display_list
 
@@ -102,7 +97,9 @@ class FlowGridWidget(QWidget):
                 continue
 
             widget = FolderGridItemWidget(model)
-            self._item_widgets.append(widget)  # Simpan referensi widget
+            self._item_widgets.append(widget)
+            self._path_to_widget[os.path.normpath(model.path)] = widget
+
             # ---END MODIFICATION ---
             # Connect signals FROM the item widget TO THIS widget's signals
             # Using lambdas to capture the specific 'model' for each widget
@@ -148,17 +145,18 @@ class FlowGridWidget(QWidget):
     def findItemWidgetByPath(self, item_path: str) -> FolderGridItemWidget | None:
         """Finds and returns the item widget corresponding to the given path."""
         normalized_path = os.path.normpath(item_path)
-        for widget in self._item_widgets:
-            # Make sure widget still exists and compare paths
-
-            if (
-                widget
-                and os.path.normpath(widget.get_item_model().path) == normalized_path
-            ):
-                return widget
-        return None
+        return self._path_to_widget.get(normalized_path)
 
     def _on_item_status_toggled(self, model, checked: bool):
-
         if model:
             self.itemStatusToggled.emit(model.path, checked)
+
+    def updateItemPath(self, old_path: str, new_path: str):
+        item = self._path_to_widget.pop(os.path.normpath(old_path), None)
+        if item:
+            self._path_to_widget[os.path.normpath(new_path)] = item
+            logger.debug(f"FlowGridWidget: Path updated {old_path} ➔ {new_path}")
+        else:
+            logger.warning(
+                f"FlowGridWidget: No item found for path {old_path} to update."
+            )

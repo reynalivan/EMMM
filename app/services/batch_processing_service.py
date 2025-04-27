@@ -4,6 +4,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 from app.services.mod_management_service import ModManagementService
 from app.utils.async_utils import Worker
 from app.utils.logger_utils import logger
+from app.utils.async_utils import AsyncStatusManager
 import os
 
 
@@ -11,17 +12,14 @@ class BatchProcessingService(QObject):
     """Service to perform batch enable/disable operations asynchronously."""
 
     batchOperationFinished = pyqtSignal(dict)
-    # Emits {'processed': int, 'success': int, 'failed': int}
+    show_notification = pyqtSignal(str, str)  # title, content
 
     def __init__(
         self, mod_manager: ModManagementService, parent: QObject | None = None
     ):
         super().__init__(parent)
         self._mod_manager = mod_manager
-        self._batch_service = BatchProcessingService(self._mod_manager)
-        self._batch_service.batchOperationFinished.connect(
-            self._on_batch_operation_finished
-        )
+        self._status_manager = AsyncStatusManager(self)
 
     def batch_set_mod_enabled_async(
         self, item_paths: list[str], enable: bool, item_type: str
@@ -76,10 +74,8 @@ class BatchProcessingService(QObject):
     def batch_enable_disable_items(self, item_paths: list[str], enable: bool):
         if not item_paths:
             return
-        self._status_manager.begin_batch(item_paths)  # <- Tandai semua items "loading"
-        self._batch_service.batch_set_mod_enabled_async(
-            item_paths, enable, self._get_item_type()
-        )
+        self._status_manager.begin_batch(item_paths)
+        self.batch_set_mod_enabled_async(item_paths, enable, self._get_item_type())
 
     def _on_batch_operation_finished(self, summary: dict):
         processed = summary.get("processed", 0)

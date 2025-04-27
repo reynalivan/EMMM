@@ -1,14 +1,16 @@
 # app/services/thumbnail_service.py
 
 from typing import Literal
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from app.utils.image_cache import ImageCache
 from app.utils.image_utils import ImageUtils
 from app.utils.logger_utils import logger
 from app.utils.async_utils import Worker, run_in_background
 from app.core import constants
+from typing import Optional
 import os
 import glob
+import hashlib
 
 
 class ThumbnailService(QObject):
@@ -25,6 +27,7 @@ class ThumbnailService(QObject):
         self._cache = image_cache
         self._utils = image_utils
         logger.debug("ThumbnailService initialized.")
+        self._setup_cache_clean_timer()
 
     def get_thumbnail_async(
         self, item_path: str, item_type: Literal["object", "folder"]
@@ -40,6 +43,30 @@ class ThumbnailService(QObject):
             lambda error_info, p=item_path: self._handle_thumbnail_error(p, error_info)
         )
 
+    def _generate_cache_key(self, item_path: str, item_type: str) -> str:
+        """Generate consistent cache key"""
+        dir_name = os.path.dirname(item_path)
+        base_name = os.path.basename(item_path)
+        prefix = constants.DISABLED_PREFIX
+
+        # Clean the prefix first
+        if base_name.lower().startswith(prefix.lower()):
+            clean_base_name = base_name[len(prefix) :]
+        else:
+            clean_base_name = base_name
+
+        # Build clean path
+        clean_path = os.path.normpath(os.path.join(dir_name, clean_base_name))
+
+        try:
+            mtime = os.path.getmtime(item_path)
+        except OSError:
+            mtime = 0
+
+        raw_key = f"{item_type}:{clean_path}:{mtime}"
+        sha1 = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
+        return sha1
+
     def find_preview_thumbnails_async(self, folder_path: str):
         logger.debug(f"Requesting preview thumbnails async for '{folder_path}'")
         worker = run_in_background(self._scan_preview_thumbnails_task, folder_path)
@@ -53,9 +80,7 @@ class ThumbnailService(QObject):
     def _get_thumbnail_task(
         self, item_path: str, item_type: Literal["object", "folder"]
     ) -> dict:
-        cache_key = f"{item_type}_{os.path.basename(item_path)}_{os.path.getmtime(item_path)}".replace(
-            os.sep, "_"
-        )
+        cache_key = self._generate_cache_key(item_path, item_type)
         logger.debug(f"Cache key for {item_path}: {cache_key}")
 
         cached_path = self._cache.get(cache_key)
@@ -156,7 +181,7 @@ class ThumbnailService(QObject):
             )
             raise e
 
-    def _find_object_thumbnail_source(self, folder_path: str) -> str | None:
+    def _find_object_thumbnail_source(self, folder_path: str) -> Optional[str]:
         try:
             suffix = constants.THUMBNAIL_OBJECT_SUFFIX
             extensions = constants.SUPPORTED_THUMB_EXTENSIONS
@@ -205,58 +230,42 @@ class ThumbnailService(QObject):
         try:
             prefix = constants.THUMBNAIL_FOLDER_PREFIX
             extensions = constants.SUPPORTED_THUMB_EXTENSIONS
-            all_previews = []
-            all_fallbacks = []
 
+            # 1. Cari preview*.jpg/png di root
             for ext in extensions:
-                pattern_glob = os.path.join(folder_path, f"{prefix}*.{ext}")
-                matches = glob.glob(pattern_glob)
-                all_previews.extend(matches)
+                pattern = os.path.join(folder_path, f"{prefix}*.{ext}")
+                matches = glob.glob(pattern)
+                result.extend(matches)
 
-            if all_previews:
+            if result:
                 logger.debug(
-                    f"Found {len(all_previews)} specific preview(s) in {folder_path}"
+                    f"Found {len(result)} specific preview(s) in {folder_path}"
                 )
-                return sorted(all_previews)
+                return sorted(result)[:12]  # Sort + limit 12
 
+            logger.debug(f"No preview* files found, fallback to recursive image scan.")
+
+            # 2. Recursive fallback, max 4 levels
+            fallback_files = []
+            for root, dirs, files in os.walk(folder_path):
+                level = root.replace(folder_path, "").count(os.sep)
+                if level > 4:
+                    continue
+
+                for file in files:
+                    if file.lower().endswith(extensions):
+                        fallback_files.append(os.path.join(root, file))
+
+            # Sort by filename, limit to 12
+            fallback_files = sorted(fallback_files)[:12]
             logger.debug(
-                f"No specific previews found in {folder_path}, falling back to any image."
+                f"Found {len(fallback_files)} fallback image(s) in {folder_path}"
             )
-            fallback_patterns = [f"*.{ext}" for ext in extensions]
-            object_thumb_suffix = constants.THUMBNAIL_OBJECT_SUFFIX
+            return fallback_files
 
-            for ext_pattern in fallback_patterns:
-                pattern_glob = os.path.join(folder_path, ext_pattern)
-                matches = glob.glob(pattern_glob)
-                all_fallbacks.extend(
-                    m
-                    for m in matches
-                    if not os.path.basename(m).startswith(prefix)
-                    and not (
-                        os.path.splitext(os.path.basename(m))[0].endswith(
-                            f"_{object_thumb_suffix}"
-                        )
-                        or os.path.splitext(os.path.basename(m))[0].endswith(
-                            f"-{object_thumb_suffix}"
-                        )
-                    )
-                )
-
-            unique_fallbacks = sorted(list(set(all_fallbacks)))
-            logger.debug(
-                f"Found {len(unique_fallbacks)} fallback image(s) in {folder_path}"
-            )
-            return unique_fallbacks
-
-        except AttributeError as e:
-            logger.error(
-                f"AttributeError accessing constants in _find_preview_thumbnail_sources: {e}."
-            )
-            return []
         except Exception as e:
             logger.error(
-                f"Error finding preview thumbnail sources in {folder_path}: {e}",
-                exc_info=True,
+                f"Error finding preview thumbnails in {folder_path}: {e}", exc_info=True
             )
             return []
 
@@ -271,3 +280,16 @@ class ThumbnailService(QObject):
         exctype, value, tb_str = error_info
         logger.error(f"Worker error scanning previews for '{item_path}': {value}")
         self.previewThumbnailsFound.emit(item_path, [])
+
+    def _setup_cache_clean_timer(self):
+        """Setup a timer to clean expired cache periodically."""
+        self._cache_clean_timer = QTimer(self)
+        self._cache_clean_timer.timeout.connect(self._cache.clean_expired)
+
+        # Set interval 24 hours
+        interval_ms = 24 * 60 * 60 * 1000  # 24 hours
+        self._cache_clean_timer.start(interval_ms)
+
+        logger.info(
+            "ThumbnailService: Scheduled periodic cache cleaning every 24 hours."
+        )

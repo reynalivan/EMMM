@@ -13,7 +13,6 @@ from qfluentwidgets import InfoBar, InfoBarIcon, InfoBarPosition
 # App imports
 from app.models.object_item_model import ObjectItemModel
 from app.viewmodels.object_list_vm import ObjectListVM
-from app.views.components.folder_grid_item_widget import FolderGridItemWidget
 from app.views.components.object_list_item_widget import ObjectListItemWidget
 from app.utils.logger_utils import logger
 from app.core import constants
@@ -97,15 +96,13 @@ class ObjectListPanel(QWidget):
             widget = ObjectListItemWidget(item_model)
             list_item.setSizeHint(widget.sizeHint())
 
-            # --- START MODIFICATION: Use clean path as map key ---
             clean_path_key = self._get_clean_path(item_model.path)
-            if clean_path_key:  # Only map if path is valid
+            if clean_path_key:
                 self._widget_map[clean_path_key] = widget
             else:
                 logger.warning(
                     f"Could not generate clean path key for {item_model.path}"
                 )
-            # --- END MODIFICATION ---
 
             # Connect the item widget's toggle signal to the VM's request slot
             try:
@@ -122,19 +119,7 @@ class ObjectListPanel(QWidget):
 
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, widget)
-
-            # NOTE: Thumbnail requests deferred
-
-    def _find_widget_by_path(self, item_path: str) -> ObjectListItemWidget | None:
-        """Safely retrieves a widget from the internal map using its (usually original) path."""
-        clean_path_key = self._get_clean_path(item_path)
-        if not clean_path_key:
-            logger.error(f"Cannot find widget for invalid path: {item_path}")
-            return None
-
-        widget = self._widget_map.get(clean_path_key)
-        # if not widget: logger.warning(f"Widget not found in map for path: {normalized_path}") # Keep lean
-        return widget
+            self.vm.request_thumbnail_for(item_model)
 
     def _on_item_clicked(self, item: QListWidgetItem):
         """Handles clicking on an item in the list."""
@@ -172,31 +157,6 @@ class ObjectListPanel(QWidget):
             widget.set_interactive(not is_loading)
             widget.show_loading_overlay(is_loading)
         # else: logger.warning(...) # Keep lean
-
-    def _update_item_thumbnail(self, item_path: str, thumb_result: dict):
-        """Updates the thumbnail of a specific item widget."""
-        # Find widget using the original item path from the signal
-        # _find_widget_by_path handles cleaning the path for map lookup
-        widget = self.gridWidget.findItemWidgetByPath(item_path)
-        if widget:
-            thumbnail_path = thumb_result.get("path")
-            status = thumb_result.get("status")
-            pixmap = None
-            if (
-                status in ["hit", "generated"]
-                and thumbnail_path
-                and os.path.exists(thumbnail_path)
-            ):
-                try:
-                    pixmap = QPixmap(thumbnail_path)
-                    if pixmap.isNull():
-                        pixmap = None
-                except Exception as e:
-                    logger.error(f"Panel: Error creating QPixmap: {e}")
-                    pixmap = None  # Ensure pixmap is None on error
-            # Ensure widget has the method before calling
-            if hasattr(widget, "set_thumbnail"):
-                widget.set_thumbnail(pixmap)
 
     def _on_operation_started(self, item_path: str, title: str):
         """Mark item as loading and lock interaction."""
@@ -289,9 +249,11 @@ class ObjectListPanel(QWidget):
         prefix = constants.DISABLED_PREFIX
         if base_name.lower().startswith(prefix.lower()):
             clean_base_name = base_name[len(prefix) :]
-            return os.path.normpath(os.path.join(dir_name, clean_base_name))
+            return os.path.normpath(
+                os.path.join(dir_name, clean_base_name)
+            )  # << PATCH NORM
         else:
-            return os.path.normpath(item_path)
+            return os.path.normpath(item_path)  # << PATCH NORM
 
     def _set_item_loading_state(self, item_path: str, is_loading: bool):
         clean_path_key = self._get_clean_path(item_path)
@@ -302,15 +264,60 @@ class ObjectListPanel(QWidget):
             widget.set_interactive(not is_loading)
             widget.show_loading_overlay(is_loading)
 
-    def _update_item_display(self, item_path: str, payload: dict):
-        widget = self._find_widget_by_path(item_path)
+    def _update_item_display(self, old_path: str, payload: dict):
+        """Update display dan internal path mapping setelah item di-rename."""
+        new_path = payload.get("path")
+        if not new_path:
+            return
+
+        clean_old_path = self._get_clean_path(old_path)
+        clean_new_path = self._get_clean_path(new_path)
+
+        widget = self._find_widget_by_path(clean_old_path)
         if widget:
             widget.update_display(payload)
+
+            # Update internal mapping
+            if clean_old_path in self._widget_map:
+                self._widget_map.pop(clean_old_path)
+            self._widget_map[clean_new_path] = widget
+            logger.debug(
+                f"ObjectListPanel: Updated widget map {clean_old_path} ➔ {clean_new_path}"
+            )
+        else:
+            logger.warning(
+                f"ObjectListPanel: Widget not found for old path {clean_old_path}"
+            )
+
+    def _update_item_thumbnail(self, item_path: str, result: dict):
+        """Updates the thumbnail for a specific item widget."""
+        logger.debug(
+            f"ObjectListPanel trying update for item: {item_path} with result: {result}"
+        )
+        clean_path = self._get_clean_path(item_path)
+        logger.debug(f"Clean path: {clean_path}")
+        widget = self._find_widget_by_path(clean_path)
+        if widget:
+            logger.debug(f"Updating thumbnail for item: {clean_path}")
+            if result and result.get("path"):
+                logger.debug(f"Thumbnail path: {result['path']}")
+                pixmap = QPixmap(result["path"])
+                if pixmap.isNull():
+                    logger.error(f"QPixmap is NULL for path: {result['path']}")
+                    widget.set_placeholder_thumbnail()
+                else:
+                    widget.set_thumbnail(pixmap)
+            else:
+                widget.set_placeholder_thumbnail()
 
     def _find_widget_by_path(self, item_path: str) -> ObjectListItemWidget | None:
         """Safely retrieves a widget from the internal map using its clean path."""
         clean_path_key = self._get_clean_path(item_path)
-        if not clean_path_key:
-            logger.error(f"Cannot find widget for invalid path: {item_path}")
-            return None
-        return self._widget_map.get(clean_path_key)
+        widget = self._widget_map.get(clean_path_key)
+        if widget:
+            return widget
+
+    def closeEvent(self, event):
+        if hasattr(self, "vm") and self.vm:
+            self.vm.unbind_filewatcher_service()
+        super().closeEvent(event)
