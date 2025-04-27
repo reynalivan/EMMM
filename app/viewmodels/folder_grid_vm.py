@@ -1,6 +1,7 @@
 # app/viewmodels/folder_grid_vm.py
 
 import os
+from typing import List, Literal, Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 from app.models.folder_item_model import FolderItemModel
 from app.models.object_item_model import ObjectItemModel
@@ -10,134 +11,51 @@ from app.services.thumbnail_service import ThumbnailService  # Import ThumbnailS
 from app.viewmodels.object_list_vm import ObjectListVM
 from app.viewmodels.main_window_vm import MainWindowVM  # Import MainWindowVM
 from app.utils.logger_utils import logger  # Import logger
+from app.core.constants import DISABLED_PREFIX
+from .base_item_vm import BaseItemViewModel, ItemModelType  # Import base class
 
 
-class FolderGridVM(QObject):
-    displayListChanged = pyqtSignal(list)
-    loadingStateChanged = pyqtSignal(bool)
+class FolderGridVM(BaseItemViewModel):
     folderItemSelected = pyqtSignal(object)
     breadcrumbChanged = pyqtSignal(list)
-
-    # TODO: Add itemNeedsUpdate signal if needed for thumbnail updates
 
     def __init__(
         self,
         data_loader: DataLoaderService,
-        mod_manager: ModManagementService,
-        # Add ThumbnailService injection
+        mod_service: ModManagementService,
         thumbnail_service: ThumbnailService,
-        # BatchProcessingService removed earlier, keep it out for now
-        parent: QObject | None = None,
+        parent: Optional[QObject] = None,
     ):  # Ensure parent is last
-        super().__init__(parent)
-        self._data_loader = data_loader
-        self._mod_manager = mod_manager
-        # Store injected ThumbnailService
-        self._thumbnail_service = thumbnail_service
+        # Call base class constructor with shared services
+        super().__init__(data_loader, mod_service, thumbnail_service, parent)
+        # FolderGridVM specific state
+        self._is_safe_mode_on: bool = False
+        self._current_object_item: Optional[ObjectItemModel] = None
+        self._current_parent_path: Optional[str] = None
+        self._object_root_path: Optional[str] = None
+        self._selected_item: Optional[FolderItemModel] = None
+        self._all_folder_items: List[FolderItemModel] = []  # The main data list
+        self.displayed_items: List[FolderItemModel] = []  # Filtered/sorted list
+        self._breadcrumb_path: List[str] = []
 
-        # Internal state... (keep as is)
-        self._is_safe_mode_on = False
-        self._current_object_item: ObjectItemModel | None = None
-        self._current_parent_path: str | None = None
-        self._object_root_path: str | None = None
-        self._selected_item: FolderItemModel | None = None
-        self._all_folder_items: list[FolderItemModel] = []
-        self.displayed_items: list[FolderItemModel] = []
-        self._breadcrumb_path: list[str] = []
-        # TODO: Add filter/sort state variables
-
-        self._connect_internal_signals()
+        self._connect_data_loader_signals()
         logger.debug("FolderGridVM initialized.")
 
-    def _connect_internal_signals(self):
-        """Connect to signals from injected services."""
-        logger.debug("Connecting FolderGridVM internal signals...")
-        try:
-            self._data_loader.folderItemsReady.connect(self._on_folder_items_loaded)
-            self._mod_manager.safeModeApplyComplete.connect(self._onSafeModeApplied)
-            # TODO: Connect to thumbnail_service signals if needed directly by VM
-            # self._thumbnail_service.thumbnailReady.connect(self._on_thumbnail_ready)
-            # TODO: Connect to other ModManagementService signals (CRUD, etc.)
-        except AttributeError as e:
-            logger.error(f"Error connecting internal signals in FolderGridVM: {e}")
+    def _get_item_list(self) -> List[FolderItemModel]:
+        """Returns the internal list of folder items."""
+        return self._all_folder_items
 
-    # --- Start Modification: Update connect_global_signals signature ---
-    def connect_global_signals(
-        self, main_vm: MainWindowVM, object_list_vm: ObjectListVM
-    ):
-        """Connect to signals from other ViewModels."""
-        logger.debug("Connecting FolderGridVM to global VM signals...")
-        try:
-            # Connect to ObjectListVM for selection changes
-            object_list_vm.objectItemSelected.connect(self._on_object_item_selected)
+    def _get_item_type(self) -> Literal["object", "folder"]:
+        """Returns the item type handled by this VM."""
+        return "folder"
 
-            # Connect to MainWindowVM for global state changes
-            main_vm.safeModeStatusChanged.connect(self._on_safe_mode_changed)
-            main_vm.globalRefreshRequested.connect(self._handle_global_refresh)
-            # TODO: Connect to main_vm.currentPresetChanged if presets are implemented
-        except AttributeError as e:
-            logger.error(f"Error connecting global signals in FolderGridVM: {e}")
+    def _load_items_for_path(self, path: str | None):
+        """Implementation for loading folder items."""
+        self.load_folders_for(path)
 
-    # --- End Modification ---
-
-    def _on_object_item_selected(self, selected_item: ObjectItemModel | None):
-        """Handles selection change from ObjectListVM."""
-        logger.debug(
-            f"FolderGridVM: Object item selected -> {selected_item.path if selected_item else 'None'}"
-        )
-        if selected_item is None:
-            # Clear grid if object is deselected
-            self._current_object_item = None
-            self._object_root_path = None
-            self._current_parent_path = None
-            self._breadcrumb_path = []
-            self.breadcrumbChanged.emit([])
-            self._all_folder_items = []
-            self._filter_and_sort()  # Will emit empty list
-            self.folderItemSelected.emit(None)  # Deselect item in preview
-            return
-
-        # Only reload if the selected object actually changed
-        if self._current_object_item != selected_item:
-            self._current_object_item = selected_item
-            self._object_root_path = os.path.normpath(selected_item.path)
-            self._breadcrumb_path = [
-                os.path.basename(self._object_root_path)
-            ]  # Start breadcrumb with object folder name
-            self.breadcrumbChanged.emit(self._breadcrumb_path)
-            self.load_folders_for(self._object_root_path)  # Load top-level items
-            self.folderItemSelected.emit(
-                None
-            )  # Deselect previous folder item when object changes
-
-    def load_folders_for(self, parent_path: str | None):
-        """Loads folder items for the given parent path."""
-        if parent_path:
-            logger.info(f"FolderGridVM: Loading folders for path: {parent_path}")
-            self._current_parent_path = os.path.normpath(parent_path)
-            self.loadingStateChanged.emit(True)
-            self._data_loader.get_folder_items_async(self._current_parent_path)
-        else:
-            logger.info(
-                "FolderGridVM: load_folders_for called with None path, clearing."
-            )
-            self._current_parent_path = None
-            self._all_folder_items = []
-            self._filter_and_sort()  # Emit empty list
-            self.loadingStateChanged.emit(False)
-
-    def _on_folder_items_loaded(self, parent_path: str, items: list[FolderItemModel]):
-        """Handles the folder items loaded by DataLoaderService."""
-        # Check if the result is for the currently viewed path
-        if parent_path == self._current_parent_path:
-            logger.debug(f"FolderGridVM: Received {len(items)} items for {parent_path}")
-            self._all_folder_items = items
-            self._filter_and_sort()  # Apply filtering/sorting (includes safe mode)
-            self.loadingStateChanged.emit(False)
-        else:
-            logger.debug(
-                f"FolderGridVM: Received stale folder items for {parent_path}, ignoring."
-            )
+    def _get_current_path_context(self) -> str | None:
+        """Returns the current parent folder path being viewed."""
+        return self._current_parent_path
 
     def _filter_and_sort(self):
         """Filters and sorts the internal list (_all_folder_items)"""
@@ -174,6 +92,92 @@ class FolderGridVM(QObject):
         )
         self.displayListChanged.emit(self.displayed_items)
 
+    def connect_global_signals(
+        self, main_vm: MainWindowVM, object_list_vm: ObjectListVM
+    ):
+        """Connect to signals from other ViewModels."""
+        # logger.debug("Connecting FolderGridVM to global VM signals...") # Keep lean
+        try:
+            object_list_vm.objectItemSelected.connect(self._on_object_item_selected)
+            main_vm.safe_mode_status_changed.connect(self._on_safe_mode_changed)
+            # TODO: Connect global refresh if needed
+            # main_vm.global_refresh_requested.connect(self._handle_global_refresh)
+        except AttributeError as e:
+            logger.error(f"Error connecting global signals in FolderGridVM: {e}")
+
+    def _connect_data_loader_signals(self):
+        """Connects specific data loading signals for this VM."""
+        # logger.debug("Connecting FolderGridVM data loader signals...") # Keep lean
+        try:
+            self._data_loader.folderItemsReady.connect(self._on_folder_items_loaded)
+            # Error signal connected in base class init now if showError exists there
+        except AttributeError as e:
+            logger.error(f"Error connecting data loader signals in FolderGridVM: {e}")
+
+    # bind_mod_service_signals is called from main.py
+    def bind_mod_service_signals(self):
+        """Connects to signals from ModManagementService."""
+        logger.debug("Binding FolderGridVM to ModManagementService signals.")
+        # safeModeApplyComplete is connected here
+        # TODO: Connect other signals from mod_service (CRUD results etc.) when implemented
+
+    def _on_object_item_selected(self, selected_item: ObjectItemModel | None):
+        """Handles selection change from ObjectListVM."""
+        logger.debug(
+            f"FolderGridVM: Object item selected -> {selected_item.path if selected_item else 'None'}"
+        )
+        if selected_item is None:
+            # Clear grid if object is deselected
+            self._current_object_item = None
+            self._object_root_path = None
+            self._current_parent_path = None
+            self._breadcrumb_path = []
+            self.breadcrumbChanged.emit([])
+            self._all_folder_items = []
+            self._filter_and_sort()  # Will emit empty list
+            self.folderItemSelected.emit(None)  # Deselect item in preview
+            return
+
+        # Only reload if the selected object actually changed
+        if self._current_object_item != selected_item:
+            self._current_object_item = selected_item
+            self._object_root_path = os.path.normpath(selected_item.path)
+            self._breadcrumb_path = [
+                os.path.basename(self._object_root_path)
+            ]  # Start breadcrumb with object folder name
+            self.breadcrumbChanged.emit(self._breadcrumb_path)
+            self.load_folders_for(self._object_root_path)  # Load top-level items
+            self.folderItemSelected.emit(
+                None
+            )  # Deselect previous folder item when object changes
+
+    def load_folders_for(self, parent_path: str | None):
+        """Loads folder items for the given parent path."""
+        if parent_path:
+            logger.info(f"FolderGridVM: Loading folders for path: {parent_path}")
+            self._current_parent_path = os.path.normpath(parent_path)
+
+            self._data_loader.get_folder_items_async(self._current_parent_path)
+        else:
+            logger.info(
+                "FolderGridVM: load_folders_for called with None path, clearing."
+            )
+            self._current_parent_path = None
+            self._all_folder_items = []
+            self._filter_and_sort()  # Emit empty list
+
+    def _on_folder_items_loaded(self, parent_path: str, items: list[FolderItemModel]):
+        """Handles the folder items loaded by DataLoaderService."""
+        # Check if the result is for the currently viewed path
+        if parent_path == self._current_parent_path:
+            logger.debug(f"FolderGridVM: Received {len(items)} items for {parent_path}")
+            self._all_folder_items = items
+            self._filter_and_sort()  # Apply filtering/sorting (includes safe mode)
+        else:
+            logger.debug(
+                f"FolderGridVM: Received stale folder items for {parent_path}, ignoring."
+            )
+
     def _on_safe_mode_changed(self, is_on: bool):
         """Handles safe mode status changes from MainWindowVM."""
         logger.info(f"FolderGridVM: Safe mode changed to {is_on}")
@@ -185,16 +189,9 @@ class FolderGridVM(QObject):
             if self._all_folder_items:  # Only run if we have items loaded
                 logger.debug("Requesting ModManager to apply safe mode changes...")
                 # Pass a copy in case the list changes while task runs? Or ensure task handles it.
-                self._mod_manager.applySafeModeChanges_async(
+                self._mod_service.applySafeModeChanges_async(
                     list(self._all_folder_items), is_on  # Pass a copy
                 )
-
-    # bind_mod_service_signals is called from main.py
-    def bind_mod_service_signals(self):
-        """Connects to signals from ModManagementService."""
-        logger.debug("Binding FolderGridVM to ModManagementService signals.")
-        # safeModeApplyComplete is connected here
-        # TODO: Connect other signals from mod_service (CRUD results etc.) when implemented
 
     def _onSafeModeApplied(self, summary: dict):
         """Handles completion of the safe mode renaming task."""
@@ -286,7 +283,6 @@ class FolderGridVM(QObject):
         path_parts = [self._object_root_path] + self._breadcrumb_path[1:]
         return os.path.normpath(os.path.join(*path_parts))
 
-    # --- Start Modification: Add Refresh Slot ---
     def _handle_global_refresh(self):
         """Handles the global refresh request signal."""
         logger.info("FolderGridVM: Handling global refresh request.")
@@ -300,23 +296,47 @@ class FolderGridVM(QObject):
         else:
             logger.debug("Nothing to refresh in FolderGridVM (no current path/object).")
 
-    # --- End Modification ---
+    def find_model_by_path(self, path: str) -> FolderItemModel | None:
+        for item in self._all_folder_items:
+            if item.path == path:
+                return item
 
-    # --- TODO: Add methods for thumbnail requests ---
-    def request_thumbnail_for(self, item_model: FolderItemModel):
-        """Requests thumbnail for a specific FolderItemModel."""
-        logger.debug(f"FolderGridVM: Requesting thumbnail for {item_model.path}")
-        self._thumbnail_service.get_thumbnail_async(item_model.path, "folder")
+    def handle_item_status_toggle_request(
+        self, item_model: FolderItemModel, enable: bool
+    ):
+        """Handle toggle request from Grid Panel."""
+        if not item_model or not hasattr(item_model, "path"):
+            logger.error(
+                f"FolderGridVM: Invalid item_model in handle_item_status_toggle_request: {item_model}"
+            )
+            return
 
-    def _on_thumbnail_ready(self, item_path: str, result: dict):
-        """Handles the thumbnailReady signal from ThumbnailService."""
-        # This VM might not need to do anything directly with the thumbnail data itself,
-        # as the View (Panel/Delegate) will likely request it and update the specific ItemWidget.
-        # However, we might emit an itemNeedsUpdate signal if the View relies on it.
-        logger.debug(
-            f"FolderGridVM: Thumbnail ready for {item_path}, result: {result.get('status')}"
-        )
-        # TODO: Emit itemNeedsUpdate(item_path) if needed by the View's update mechanism
-        # self.itemNeedsUpdate.emit(item_path)
+        path = item_model.path
 
-    # --- TODO: Add methods for CRUD, batch processing etc. ---
+        if self._status_manager.is_item_pending(path):
+            logger.debug(f"Toggle request ignored, item already pending: {path}")
+            return
+
+        # Save original state
+        self._original_state_on_toggle[path] = {
+            "display_name": item_model.display_name,
+            "status": item_model.status,
+        }
+
+        self._status_manager.mark_pending(path)
+
+        self.operation_started.emit(path, f"{'Enabling' if enable else 'Disabling'}...")
+
+        # Start async task
+        self._mod_manager.set_mod_enabled_async(path, enable, self._get_item_type())
+
+        self.setItemLoadingState.emit(path, True)
+
+    def update_root_path(self, new_path: str):
+        """Update object root and reload folder list if still active."""
+        self._object_root_path = os.path.normpath(new_path)
+        self._current_parent_path = os.path.normpath(new_path)
+        self._breadcrumb_path = [os.path.basename(new_path)]
+
+        self.breadcrumbChanged.emit(self._breadcrumb_path)
+        self.load_folders_for(new_path)

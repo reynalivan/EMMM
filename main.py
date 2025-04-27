@@ -1,6 +1,15 @@
-# main.py
+# Main.py
+
 import sys
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import (
+    QApplication,
+    QWidget,
+    QVBoxLayout,
+    QListWidget,
+    QListWidgetItem,
+)  # Make sure Qwidget is there
+
+from typing import Dict, Optional
 from qfluentwidgets import setTheme, Theme
 from app.utils.logger_utils import logger
 from app.views.main_window import MainWindow
@@ -25,11 +34,13 @@ def main():
     app = QApplication(sys.argv)
 
     # Apply Fluent Theme
+
     setTheme(Theme.DARK)
 
     logger.info("Application starting...")
 
     # Initialize Services & Utilities
+
     try:
         config_service = ConfigService(config_filepath=constants.CONFIG_FILENAME)
         mod_service = ModManagementService()
@@ -41,18 +52,20 @@ def main():
         )
         image_utils = ImageUtils()
         thumbnail_service = ThumbnailService(image_cache, image_utils)
-        # batch_service initialization removed
-        # file_watcher initialization removed
+
         logger.info("Core services and utilities initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize core services: {e}", exc_info=True)
         # TODO: Show critical error message to user
+
         return 1
 
     # Initialize ViewModels
+
     try:
         main_vm = MainWindowVM(config_service)
         # batch_service removed from injections
+
         object_vm = ObjectListVM(data_loader, mod_service, thumbnail_service)
         folder_vm = FolderGridVM(data_loader, mod_service, thumbnail_service)
         preview_vm = PreviewPanelVM(
@@ -62,11 +75,14 @@ def main():
     except Exception as e:
         logger.critical(f"Failed to initialize view models: {e}", exc_info=True)
         # TODO: Show critical error message to user
+
         return 1
 
     # Connect Signals Between VMs
+
     try:
         # Signature assumes main_vm needed for safe mode check in FolderGridVM
+
         folder_vm.connect_global_signals(main_vm, object_vm)
         object_vm.connect_global_signals(main_vm)
         preview_vm.connect_folder_grid_vm(folder_vm)
@@ -80,6 +96,7 @@ def main():
     # File Watcher related TODOs removed
 
     # Initialize UI Panels
+
     try:
         obj_panel = ObjectListPanel(object_vm)
         fld_panel = FolderGridPanel(folder_vm)
@@ -90,6 +107,7 @@ def main():
         return 1
 
     # Initialize Main Window (UI)
+
     try:
         win = MainWindow(main_vm, obj_panel, fld_panel, prv_panel)
         win.show()
@@ -99,6 +117,7 @@ def main():
         return 1
 
     # Load Initial Application Data
+
     try:
         main_vm.load_initial_data()
         logger.debug("Initial data loaded.")
@@ -106,6 +125,7 @@ def main():
         logger.error(f"Error during initial data load: {e}", exc_info=True)
 
     # Start Application Event Loop
+
     logger.info("Entering event loop...")
     exit_code = app.exec()
     logger.info(f"Application exiting with code {exit_code}")
@@ -117,10 +137,12 @@ def main():
 
 if __name__ == "__main__":
     # Basic top-level exception handler
+
     try:
         result = main()
         sys.exit(result)
     except Exception as e:
         logger.critical(f"Unhandled exception occurred in __main__: {e}", exc_info=True)
         # TODO: Show critical error message box to user if possible
+
         sys.exit(1)

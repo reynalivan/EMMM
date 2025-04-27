@@ -1,37 +1,35 @@
-# App/viewmodels/preview panel vm.py
-
-
-# ---Imports ---
+# app/viewmodels/preview_panel_vm.py
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from app.services.data_loader_service import DataLoaderService
 from app.services.mod_management_service import ModManagementService
 from app.services.thumbnail_service import ThumbnailService
-from app.utils.image_utils import ImageUtils  # Make sure to import
+from app.utils.image_utils import ImageUtils
 from app.viewmodels.folder_grid_vm import FolderGridVM
 from app.models.folder_item_model import FolderItemModel
-from app.core import constants  # Import Constants if needed (eg Key_Description)
+from app.core import constants
 from app.utils.logger_utils import logger
-
-# ---End Imports ---
 
 
 class PreviewPanelVM(QObject):
-    # ---Signals (according to the contract) ---
+    # --- Signals ---
 
     display_data_updated = pyqtSignal(dict)
-    thumbnail_paths_updated = pyqtSignal(list)  # List[str]
+    thumbnail_paths_updated = pyqtSignal(list)
 
-    ini_list_updated = pyqtSignal(list)  # list[str] (kontrak: list[str])
+    ini_list_updated = pyqtSignal(list)
+    status_updated = pyqtSignal(bool)
 
     show_error = pyqtSignal(str, str)
     status_update_finished = pyqtSignal(bool)
     description_save_finished = pyqtSignal(bool)
     thumbnail_operation_finished = pyqtSignal(bool)
+    operation_started = pyqtSignal(str, str)  # item_path, title
+    operation_finished = pyqtSignal(
+        str, str, str, str, bool
+    )  # original_path, final_path, title, content, success
 
-    # ---End Signals ---
-
-    # ---Init Method (improvement here) ---
+    # --- End Signals ---
 
     def __init__(
         self,
@@ -40,48 +38,32 @@ class PreviewPanelVM(QObject):
         thumbnail_service: ThumbnailService,
         image_utils: ImageUtils,
         parent: QObject | None = None,
-    ):  # Add parent = none at the end
-
-        super().__init__(parent)  # Call Super () only with Parent
-
-        # Save dependencies
+    ):
+        super().__init__(parent)
 
         self._data_loader = data_loader
         self._mod_manager = mod_manager
         self._thumbnail_service = thumbnail_service
-        self._image_utils = image_utils  # Simple Instance Image_utils
-
-        # Internal State Initialization
+        self._image_utils = image_utils
 
         self._current_item: FolderItemModel | None = None
         self._title: str = ""
         self._description: str = ""
         self._is_enabled: bool = False
         self._thumbnail_image_paths: list[str] = []
-        self._ini_file_list: list[str] = []  # According to contract: List of strings
-
-        # Connect to the internal signal of the service if needed
+        self._ini_file_list: list[str] = []
 
         self._connect_internal_signals()
         logger.debug("PreviewPanelVM initialized.")
 
     def _connect_internal_signals(self):
-        """Connect to signals from injected services."""
+        """Connect internal service signals."""
         logger.debug("Connecting PreviewPanelVM internal signals...")
         try:
-            # Make sure this signal is in the related service
-
             self._data_loader.iniFilesReady.connect(self._on_ini_files_loaded)
             self._thumbnail_service.previewThumbnailsFound.connect(
                 self._on_preview_thumbnails_found
             )
-            self._mod_manager.modStatusChangeComplete.connect(
-                self._on_mod_status_changed
-            )
-            # Todo: Make sure ModmanagementService has a ModinfoUpDateCompelet signal
-            # Self
-            # TODO: Make sure the thumbnail service has a signal to save (eg Savethumbnailcomplete)
-            # Self._Thumbnail_Service
 
         except AttributeError as e:
             logger.error(f"Error connecting internal signals in PreviewPanelVM: {e}")
@@ -94,12 +76,40 @@ class PreviewPanelVM(QObject):
         except AttributeError as e:
             logger.error(f"Error connecting to FolderGridVM signals: {e}")
 
-    # ---Public methods /slots (implementation according to contract) ---
+    # --- Public Methods ---
 
-    # (Add implementation to set_status, save_description, paste_thumbnail, upload_thumbnail, clear_details)
-    # ... (implementation of other public methods such as in the previous Thought Process) ...
+    def clear_details(self):
+        """Clears preview panel details."""
+        logger.debug("Clearing preview panel details.")
+        self._current_item = None
+        self._title = "No Selection"
+        self._description = ""
+        self._is_enabled = False
+        self._thumbnail_image_paths = []
+        self._ini_file_list = []
 
-    # ---Private Slots ---
+        self.display_data_updated.emit({})
+        self.thumbnail_paths_updated.emit([])
+        self.ini_list_updated.emit([])
+
+    def set_status(self, is_enabled: bool):
+        """Manually updates current item's status and notifies view."""
+        if self._current_item is None:
+            logger.warning("PreviewPanelVM: No current item to set status for.")
+            return
+
+        logger.debug(
+            f"PreviewPanelVM: Setting status to {'ENABLED' if is_enabled else 'DISABLED'}"
+        )
+
+        self._is_enabled = is_enabled
+        self._current_item.status = is_enabled
+
+        # Emit signals to update UI
+        self.status_updated.emit(is_enabled)
+        self.status_update_finished.emit(True)
+
+    # --- Private Slots ---
 
     def _on_folder_item_selected(self, item_model: FolderItemModel | None):
         """Handles selection changes from FolderGridVM."""
@@ -114,43 +124,33 @@ class PreviewPanelVM(QObject):
         logger.debug(f"PreviewPanelVM: Folder item selected: {item_model.path}")
         self._current_item = item_model
 
-        # Update internal state from the model
-
         self._title = item_model.display_name
-        self._description = item_model.description  # Use property from model
-
+        self._description = item_model.description
         self._is_enabled = item_model.status
-
-        # Emit updated data to the view
 
         self.display_data_updated.emit(
             {
                 "title": self._title,
                 "description": self._description,
-                "is_enabled": self._is_enabled,  # Use the key name according to the signal contract
+                "is_enabled": self._is_enabled,
             }
         )
 
-        # Reset and request additional details
-
         self._thumbnail_image_paths = []
         self._ini_file_list = []
-        self.thumbnail_paths_updated.emit(self._thumbnail_image_paths)
-        self.ini_list_updated.emit(self._ini_file_list)  # Emit list kosong
-
-        # Trigger async loading
+        self.thumbnail_paths_updated.emit([])
+        self.ini_list_updated.emit([])
 
         self._data_loader.get_ini_files_async(item_model.path)
         self._thumbnail_service.find_preview_thumbnails_async(item_model.path)
 
     def _on_ini_files_loaded(self, folder_path: str, ini_list: list[str]):
-        """Handles the list of INI files loaded by DataLoaderService."""
+        """Handles INI files loaded by DataLoaderService."""
         if self._current_item and folder_path == self._current_item.path:
             logger.debug(
                 f"PreviewPanelVM: Received {len(ini_list)} INI files for {folder_path}"
             )
-            self._ini_file_list = sorted(ini_list)  # Contract: List [STR]
-
+            self._ini_file_list = sorted(ini_list)
             self.ini_list_updated.emit(self._ini_file_list)
         else:
             logger.debug(
@@ -158,7 +158,7 @@ class PreviewPanelVM(QObject):
             )
 
     def _on_preview_thumbnails_found(self, folder_path: str, image_paths: list[str]):
-        """Handles the list of preview thumbnail paths found by ThumbnailService."""
+        """Handles preview thumbnail paths found by ThumbnailService."""
         if self._current_item and folder_path == self._current_item.path:
             logger.debug(
                 f"PreviewPanelVM: Received {len(image_paths)} preview paths for {folder_path}"
@@ -170,45 +170,22 @@ class PreviewPanelVM(QObject):
                 f"PreviewPanelVM: Received stale preview paths for {folder_path}, ignoring."
             )
 
-    def _on_mod_status_changed(self, item_path: str, result: dict):
-        """Handles completion of enable/disable operation."""
-        if self._current_item and item_path == self._current_item.path:
-            success = result.get("success", False)
-            logger.debug(
-                f"PreviewPanelVM: Mod status change result for {item_path}. Success: {success}"
-            )
-            self.status_update_finished.emit(success)
-            if success:
-                new_status = result.get("new_status")
-                if new_status is not None:
-                    self._is_enabled = new_status
-                    # Re-emit data to ensure view reflects latest status
+    def _on_item_operation_started(self, item_path: str, title: str):
+        """Handles item operation started: Disable UI temporarily if needed."""
+        self.setEnabled(False)
+        # Optional: bisa tampilkan processing info di preview jika mau
+        logger.debug(f"PreviewPanel: Operation started for {item_path}")
 
-                    self.display_data_updated.emit(
-                        {
-                            "title": self._title,
-                            "description": self._description,
-                            "is_enabled": self._is_enabled,
-                        }
-                    )
-            else:
-                self.show_error.emit(
-                    "Status Change Failed", result.get("error", "Unknown error")
-                )
-
-    # TODO: Implement other slots like _on_mod_info_updated, _on_thumbnail_saved etc.
-    # TODO: Implement public methods like clear_details, set_status, save_description etc.
-
-    def clear_details(self):  # Added basic implementation
-        """Clears the preview panel details."""
-        logger.debug("Clearing preview panel details.")
-        self._current_item = None
-        self._title = "No Selection"
-        self._description = ""
-        self._is_enabled = False
-        self._thumbnail_image_paths = []
-        self._ini_file_list = []
-        self.display_data_updated.emit({})  # Emit empty dict
-
-        self.thumbnail_paths_updated.emit([])
-        self.ini_list_updated.emit([])
+    def _on_item_operation_finished(
+        self,
+        original_item_path: str,
+        final_item_path: str,
+        title: str,
+        content: str,
+        success: bool,
+    ):
+        """Handles item operation finished: Re-enable UI."""
+        self.setEnabled(True)
+        logger.debug(
+            f"PreviewPanel: Operation finished for {original_item_path} -> {final_item_path}. Success: {success}"
+        )

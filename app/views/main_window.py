@@ -1,10 +1,13 @@
-# app/views/main_window.py
+# App/views/main window.py
 
-# --- Standard Qt Imports ---
+
+# ---Standard Qt Imports ---
+
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSplitter, QFrame
 from PyQt6.QtCore import Qt, QSize
 
-# --- Fluent Widget Imports ---
+# ---Fluent Widget Imports ---
+
 from qfluentwidgets import (
     FluentWindow,
     TitleLabel,
@@ -17,7 +20,9 @@ from qfluentwidgets import (
     setCustomStyleSheet,
 )  # Import necessary components
 
-# --- App Imports ---
+
+# ---App Imports ---
+
 from app.views.dialogs.settings_dialog import SettingsDialog
 from app.viewmodels.settings_vm import SettingsVM
 from app.viewmodels.main_window_vm import MainWindowVM
@@ -26,7 +31,7 @@ from app.views.sections.folder_grid_panel import FolderGridPanel
 from app.views.sections.preview_panel import PreviewPanel
 from app.utils.logger_utils import logger
 
-# --- End Imports ---
+# ---End Imports ---
 
 
 class MainWindow(FluentWindow):  # Inherit from FluentWindow
@@ -43,6 +48,7 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self.vm = view_model
 
         # Store references to the panels passed from main.py
+
         self.obj_list_panel = obj_list_panel
         self.fld_grid_panel = fld_grid_panel
         self.prv_panel = prv_panel
@@ -54,10 +60,12 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self._connect_signals()
 
         # Set window title (FluentWindow might handle this differently)
+
         self.setWindowTitle("EMMM - Enabled Model Mods Manager")
 
     def _setup_ui(self):
-        # --- Header / Toolbar ---
+        # ---Header /Toolbar ---
+
         self.header_widget = QWidget(self)
         header_layout = QHBoxLayout(self.header_widget)
         header_layout.setContentsMargins(10, 5, 10, 5)
@@ -65,7 +73,9 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self.header_widget.setObjectName("MainWindowHeader")  # For styling if needed
 
         # Left side of header
+
         self.title_label = TitleLabel("EMMM v0.1")  # Or get version from VM/constants
+
         self.gamelist_combo = ComboBox()
         self.gamelist_combo.setPlaceholderText("Select Game")
         self.gamelist_combo.setMinimumWidth(150)
@@ -73,6 +83,7 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self.safe_mode_switch = SwitchButton("Safe Mode")
 
         # TODO: Implement Preset ComboBox later
+
         self.preset_combo = ComboBox()
         self.preset_combo.setPlaceholderText("No Presets")
         self.preset_combo.setMinimumWidth(150)
@@ -95,12 +106,16 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         header_layout.addWidget(self.settings_button)
 
         # TODO: Add Play Button functionality later
+
         self.play_button = PushButton("Play")  # Or PrimaryPushButton?
+
         self.play_button.setIcon(FluentIcon.PLAY)
         self.play_button.setEnabled(False)  # Disable for now
+
         header_layout.addWidget(self.play_button)
 
-        # --- Main Content Area (Resizable Panels) ---
+        # ---Main Content Area (Resizable Panels) ---
+
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(self.obj_list_panel)
         self.splitter.addWidget(self.fld_grid_panel)
@@ -108,37 +123,46 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
 
         # Set initial sizes or stretch factors for the panels
         # These values might need tuning
+
         self.splitter.setStretchFactor(0, 2)  # Object List smaller
+
         self.splitter.setStretchFactor(1, 5)  # Folder Grid largest
+
         self.splitter.setStretchFactor(2, 2)  # Preview medium
 
         # Apply some styling to the splitter handle (optional)
+
         self.splitter.setStyleSheet(
             "QSplitter::handle { background-color: #222; width: 3px; }"
         )
 
-        # --- Combine Header and Splitter ---
+        # ---Combine Header and Splitter ---
+
         central_widget = QWidget()
         central_widget.setObjectName("CentralContentWidget")
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(
             0, 0, 0, 0
         )  # No margins for the main layout itself
+
         main_layout.setSpacing(0)  # No spacing between header and splitter
 
         main_layout.addWidget(self.header_widget)
         # Add a small separator line (optional)
+
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
         line.setStyleSheet("border-top: 1px solid #333;")  # Style the line
+
         main_layout.addWidget(line)
         main_layout.addWidget(self.splitter, 1)  # Splitter takes remaining space
 
         # Set the combined widget as the central content
+
         self.addSubInterface(central_widget, FluentIcon.APPLICATION, self.windowTitle())
 
-        # --- Window Title Bar Customization (Optional) ---
+        # ---Window Title Bar Customization (Optional) ---
         # FluentWindow allows adding widgets to the title bar
         # self.addTitleBarWidget(self.gamelist_combo, align=Qt.AlignmentFlag.AlignRight) # Example
 
@@ -146,34 +170,42 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         logger.debug("Connecting MainWindow signals...")
         try:
             # Connect Header Controls
+
             self.settings_button.clicked.connect(self._on_settings_clicked)
             self.gamelist_combo.currentIndexChanged.connect(
                 self._on_gamelist_selection_changed
             )
             # Use checkedChanged for SwitchButton
+
             self.safe_mode_switch.checkedChanged.connect(self._on_safe_mode_toggled)
             # TODO: Connect preset_combo, refresh_button, play_button later
 
             # Connect ViewModel Signals
+
             self.vm.game_list_updated.connect(self._update_gamelist_dropdown)
             self.vm.current_game_changed.connect(self._select_game_in_dropdown)
             # Use setChecked for SwitchButton state updates
+
             self.vm.safe_mode_status_changed.connect(self.safe_mode_switch.setChecked)
             # TODO: Connect preset signals later
             # self.vm.presets_list_updated.connect(self._update_preset_dropdown)
+
         except AttributeError as e:
             logger.error(f"Error connecting signals in MainWindow: {e}")
 
     def _on_settings_clicked(self):
         logger.info("Settings button clicked.")
         # TODO: Consider using FluentDialog or MessageDialog later
+
         try:
             # Use direct access for now, consider getter later
+
             config_service = self.vm._config_service
             settings_vm = SettingsVM(config_service)
             dialog = SettingsDialog(
                 settings_vm, parent=self
             )  # Standard QDialog for now
+
             if dialog.exec():
                 logger.info("Settings dialog accepted. Updating game list.")
                 self.vm.update_game_list()
@@ -181,24 +213,27 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
                 logger.info("Settings dialog cancelled.")
         except AttributeError:
             logger.error("Could not get config_service from MainWindowVM.")
-            # TODO: Show error via ui_utils.show_error
+            # All: Show Error via ui_utils.show_error
 
     def _update_gamelist_dropdown(self, games: list):
         """Updates the game list ComboBox."""
         logger.debug(f"Updating gamelist dropdown with {len(games)} games.")
         self.gamelist_combo.blockSignals(True)
         current_selection = self.gamelist_combo.currentText()  # Store current text
+
         self.gamelist_combo.clear()
         items = [game.name for game in games]
 
         if not items:
             self.gamelist_combo.setPlaceholderText("No games configured")
             self.gamelist_combo.setCurrentIndex(-1)  # Ensure no index is selected
+
             self.gamelist_combo.setEnabled(False)
         else:
             self.gamelist_combo.addItems(items)
             self.gamelist_combo.setEnabled(True)
             # Try to restore previous selection or select current game from VM
+
             current_game = self.vm.get_current_game()
             if current_game and current_game.name in items:
                 self.gamelist_combo.setCurrentText(current_game.name)
@@ -206,14 +241,17 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
                 self.gamelist_combo.setCurrentText(
                     current_selection
                 )  # Restore if still valid
+
             else:
                 self.gamelist_combo.setCurrentIndex(-1)  # Default to placeholder
+
                 self.gamelist_combo.setPlaceholderText(
                     "Select Game"
                 )  # Reset placeholder
 
         self.gamelist_combo.blockSignals(False)
         # Ensure the VM state is updated if the selection had to be cleared
+
         if (
             self.gamelist_combo.currentIndex() == -1
             and self.vm.get_current_game() is not None
@@ -238,11 +276,14 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
             self.gamelist_combo.setCurrentText(
                 game.name
             )  # setCurrentText works well with Fluent ComboBox
+
             if (
                 self.gamelist_combo.currentText() != game.name
             ):  # Check if setting worked
+
                 logger.warning(f"Failed to select '{game.name}' in ComboBox.")
                 self.gamelist_combo.setCurrentIndex(-1)  # Fallback if text not found
+
         else:
             logger.debug("Clearing game selection in dropdown.")
             self.gamelist_combo.setCurrentIndex(-1)

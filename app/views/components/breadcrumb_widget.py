@@ -1,4 +1,5 @@
-# app/views/components/breadcrumb_widget.py
+# App/views/components/breadcrumb widget.py
+
 
 from PyQt6.QtWidgets import QWidget, QHBoxLayout
 from PyQt6.QtCore import (
@@ -7,14 +8,18 @@ from PyQt6.QtCore import (
     QTimer,
 )  # Import QTimer just in case needed later, Qt might not be needed now
 
-# --- Fluent Widget Imports ---
+
+# ---Fluent Widget Imports ---
+
 from qfluentwidgets import (
     BreadcrumbBar,
     setFont,
 )  # Import BreadcrumbBar, setFont is optional
 
-# --- End Fluent Widget Imports ---
+
+# ---End Fluent Widget Imports ---
 # Import logger if you intend to add logging later, otherwise can be removed
+
 from app.utils.logger_utils import logger
 
 
@@ -25,6 +30,7 @@ class BreadcrumbWidget(QWidget):
     """
 
     # Keep existing signal name for compatibility with FolderGridPanel
+
     segment_clicked = pyqtSignal(int)  # index of the clicked segment
 
     def __init__(self, parent: QWidget | None = None):
@@ -32,13 +38,16 @@ class BreadcrumbWidget(QWidget):
         super().__init__(parent)
 
         # Main layout for this wrapper widget (simple box)
+
         self.widget_layout = QHBoxLayout(self)
         self.widget_layout.setContentsMargins(16, 8, 8, 0)
 
         # Create the core BreadcrumbBar component from qfluentwidgets
+
         self.breadcrumb_bar = BreadcrumbBar(self)
         try:
             # Assuming the signal indicating a click provides the index
+
             self.breadcrumb_bar.currentIndexChanged.connect(
                 self._on_internal_breadcrumb_clicked
             )
@@ -61,8 +70,9 @@ class BreadcrumbWidget(QWidget):
 
             logger.debug(
                 f"  Adding {len(segments)} items to BreadcrumbBar..."
-            )  # Hapus jika tidak perlu
+            )  # Delete if not necessary
             # Add each segment
+
             for i, name in enumerate(segments):
                 self.breadcrumb_bar.addItem(routeKey=str(i), text=name)
 

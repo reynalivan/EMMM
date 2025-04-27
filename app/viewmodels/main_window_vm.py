@@ -1,3 +1,5 @@
+# app/viewmodels/main_window_vm.py
+
 from PyQt6.QtCore import QObject, pyqtSignal
 from app.services.config_service import ConfigService
 from app.models.config_model import GameDetail, AppSettings
@@ -5,14 +7,12 @@ from app.utils.logger_utils import logger
 
 
 class MainWindowVM(QObject):
-    gameListUpdated = pyqtSignal(list)
-    currentGameChanged = pyqtSignal(GameDetail)
-    safeModeStatusChanged = pyqtSignal(bool)
-    globalRefreshRequested = pyqtSignal()
+    game_list_updated = pyqtSignal(list)
+    current_game_changed = pyqtSignal(GameDetail)
+    safe_mode_status_changed = pyqtSignal(bool)
+    global_refresh_requested = pyqtSignal()
 
-    def __init__(self,
-                 config_service: ConfigService,
-                 parent: QObject | None = None):
+    def __init__(self, config_service: ConfigService, parent: QObject | None = None):
         super().__init__(parent)
         self._config_service = config_service
         self._available_games = []
@@ -22,13 +22,13 @@ class MainWindowVM(QObject):
     def load_initial_data(self) -> None:
         logger.debug("Loading initial data for MainWindowVM")
         self._available_games = self._config_service.load_games()
-        self.gameListUpdated.emit(self._available_games)
+        self.game_list_updated.emit(self._available_games)
 
         settings = self._config_service.load_app_settings()
         for g in self._available_games:
             if g.name == settings.last_selected_game_name:
                 self._current_game = g
-                self.currentGameChanged.emit(g)
+                self.current_game_changed.emit(g)
                 return
 
     def select_game_by_name(self, name: str) -> None:
@@ -37,23 +37,26 @@ class MainWindowVM(QObject):
             if g.name == name:
                 self._current_game = g
                 self._save_last_selected_game()
-                self.currentGameChanged.emit(g)
+                self.current_game_changed.emit(g)
                 return
 
     def update_game_list(self) -> None:
         logger.debug("Updating game list from config service")
         self._available_games = self._config_service.load_games()
-        self.gameListUpdated.emit(self._available_games)
+        self.game_list_updated.emit(self._available_games)
 
-        if self._current_game and not any(g.name == self._current_game.name
-                                          for g in self._available_games):
+        if self._current_game and not any(
+            g.name == self._current_game.name for g in self._available_games
+        ):
             self._current_game = None
-            self.currentGameChanged.emit(None)
+            self.current_game_changed.emit(None)
 
     def _save_last_selected_game(self):
         logger.debug("Saving last selected game")
         settings = self._config_service.load_app_settings()
-        settings.last_selected_game_name = self._current_game.name if self._current_game else ""
+        settings.last_selected_game_name = (
+            self._current_game.name if self._current_game else ""
+        )
         self._config_service.save_app_settings(settings)
 
     def set_safe_mode(self, is_on: bool):
@@ -63,9 +66,8 @@ class MainWindowVM(QObject):
             self._is_safe_mode_on = is_on
             self._save_safe_mode_setting()  # Simpan ke config
             # Pastikan sinyal ini dipancarkan
-            logger.debug(
-                f"MainWindowVM: Emitting safeModeStatusChanged({is_on})")
-            self.safeModeStatusChanged.emit(is_on)  # <-- PANCARKAN SINYAL
+            logger.debug(f"MainWindowVM: Emitting safeModeStatusChanged({is_on})")
+            self.safe_mode_status_changed.emit(is_on)  # <-- PANCARKAN SINYAL
         else:
             logger.debug("MainWindowVM: Safe mode status unchanged.")
 
@@ -78,8 +80,7 @@ class MainWindowVM(QObject):
         return self._available_games
 
     def is_safe_mode_active(self) -> bool:
-        logger.debug(
-            f"Checking if safe mode is active: {self._is_safe_mode_on}")
+        logger.debug(f"Checking if safe mode is active: {self._is_safe_mode_on}")
         return self._is_safe_mode_on
 
     def _save_safe_mode_setting(self):
@@ -94,5 +95,6 @@ class MainWindowVM(QObject):
             )
         except Exception as e:
             # Log error, maybe emit an error signal?
-            logger.error(f"MainWindowVM: Failed to save safe mode setting: {e}",
-                         exc_info=True)
+            logger.error(
+                f"MainWindowVM: Failed to save safe mode setting: {e}", exc_info=True
+            )

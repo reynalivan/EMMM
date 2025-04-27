@@ -153,3 +153,10 @@ class PreviewPanel(QWidget):
 
         else:
             logger.debug("Received empty thumbnail paths list.")
+
+    def update_status_only(self, is_enabled: bool):
+        """Update only the status label."""
+        if is_enabled:
+            self.status_label.setText("ENABLED")
+        else:
+            self.status_label.setText("DISABLED")

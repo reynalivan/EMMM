@@ -11,6 +11,7 @@ from app.utils.logger_utils import logger
 
 class WorkerSignals(QObject):
     """Defines signals available from a running worker thread."""
+
     finished = pyqtSignal()
     error = pyqtSignal(tuple)  # (type, value, traceback)
     result = pyqtSignal(object)
@@ -49,7 +50,6 @@ class Worker(QRunnable):
         # Be careful with accessing GUI elements or non-thread-safe objects.
         try:
             result = self.fn(*self.args, **self.kwargs)
-            self.signals.result.emit(result)
         except Exception as e:
             logger.exception(f"Error during background task execution: {e}")
             exctype, value = type(e), e
@@ -68,8 +68,7 @@ class Debouncer(QObject):
         super().__init__(parent)
         self._timers: Dict[Any, QTimer] = {}
 
-    def debounce(self, key: Any, func: Callable[[], None],
-                 delay_ms: int) -> None:
+    def debounce(self, key: Any, func: Callable[[], None], delay_ms: int) -> None:
         """
         Schedules a function to run after a delay, resetting the timer if called again for the same key.
 
