@@ -47,20 +47,11 @@ class FlowGridWidget(QWidget):
 
     def clearItems(self):
         """Removes all items from the layout and deletes the widgets safely."""
-        # logger.debug(f"FlowGridWidget: Clearing {self.flowLayout.count()} items.") # Keep lean
-
-        # ---START MODIFICATION: Handle takeAt() returning QWidget ---
-        # Loop while the layout still has items to take
-
         while (item_or_widget := self.flowLayout.takeAt(0)) is not None:
             widget_to_delete = None
             if isinstance(item_or_widget, QWidget):
-                # If takeAt directly returns the widget (based on error)
-
                 widget_to_delete = item_or_widget
             elif isinstance(item_or_widget, QLayoutItem):
-                # Standard QLayout behavior fallback
-
                 widget_to_delete = item_or_widget.widget()
             else:
                 logger.warning(
@@ -68,17 +59,15 @@ class FlowGridWidget(QWidget):
                 )
 
             if widget_to_delete is not None:
-                # logger.debug(f"  Deleting widget: {widget_to_delete.objectName()}") # Keep lean
-                # Disconnect signals first (safer)
-
                 try:
                     widget_to_delete.disconnect()
-                except TypeError:
-                    pass
-                # Schedule for deletion
+                except Exception:
+                    pass  # Ignore disconnect error
+                if widget_to_delete.isVisible():
+                    widget_to_delete.hide()  # Hide first (safe way)
+                widget_to_delete.setParent(None)  # Detach from layout
+                widget_to_delete.deleteLater()  # Delete safely
 
-                widget_to_delete.deleteLater()
-        # ---END MODIFICATION ---
         self._item_widgets.clear()
         self._path_to_widget.clear()
 
@@ -86,27 +75,26 @@ class FlowGridWidget(QWidget):
 
     def setItems(self, item_models: list[FolderItemModel]):
         """Clears existing items and adds new ones based on the provided models."""
-        self.clearItems()  # Clear previous widgets first
-        # logger.debug(f"FlowGridWidget: Setting {len(item_models)} items.") # Keep lean
+        self.clearItems()
 
         for model in item_models:
             if not isinstance(model, FolderItemModel):
-                logger.warning(
-                    f"FlowGridWidget: Skipping non-FolderItemModel item: {model}"
-                )
+                logger.warning(f"FlowGridWidget: Skipping non-FolderItemModel: {model}")
                 continue
+
+            normalized_path = os.path.normpath(model.path)
+
+            if normalized_path in self._path_to_widget:
+                logger.warning(
+                    f"FlowGridWidget: Duplicate path detected: {normalized_path}, overwriting."
+                )
 
             widget = FolderGridItemWidget(model)
             self._item_widgets.append(widget)
-            self._path_to_widget[os.path.normpath(model.path)] = widget
+            self._path_to_widget[normalized_path] = widget
 
-            # ---END MODIFICATION ---
-            # Connect signals FROM the item widget TO THIS widget's signals
-            # Using lambdas to capture the specific 'model' for each widget
-
+            # Connect widget signals to GridWidget
             try:
-                # ---Keep only this block for connecting signals ---
-
                 widget.clicked.connect(lambda mod=model: self.itemClicked.emit(mod))
                 widget.doubleClicked.connect(
                     lambda mod=model: self.itemDoubleClicked.emit(mod)
@@ -126,18 +114,13 @@ class FlowGridWidget(QWidget):
                 )
             except AttributeError as e:
                 logger.error(
-                    f"FlowGridWidget: Error connecting signals for item {model.display_name}: {e}"
+                    f"FlowGridWidget: Error connecting signals for {model.display_name}: {e}"
                 )
 
-            self.flowLayout.addWidget(widget)  # Add item widget to layout
-
-        # Remove self.resize(...) call
-        # Trigger layout update
+            self.flowLayout.addWidget(widget)
 
         self.flowLayout.invalidate()
-        self.updateGeometry()  # Update this widget's geometry
-
-    # sizeHint override can be useful
+        self.updateGeometry()
 
     def sizeHint(self):
         return self.flowLayout.sizeHint()
@@ -152,11 +135,29 @@ class FlowGridWidget(QWidget):
             self.itemStatusToggled.emit(model.path, checked)
 
     def updateItemPath(self, old_path: str, new_path: str):
-        item = self._path_to_widget.pop(os.path.normpath(old_path), None)
-        if item:
-            self._path_to_widget[os.path.normpath(new_path)] = item
-            logger.debug(f"FlowGridWidget: Path updated {old_path} ➔ {new_path}")
-        else:
+        """Updates internal widget mapping and model after a path rename."""
+        normalized_old = os.path.normpath(old_path)
+        normalized_new = os.path.normpath(new_path)
+
+        item = self._path_to_widget.pop(normalized_old, None)
+        if not item:
             logger.warning(
-                f"FlowGridWidget: No item found for path {old_path} to update."
+                f"FlowGridWidget: No widget found for old path: {normalized_old}"
             )
+            return
+
+        if normalized_new in self._path_to_widget:
+            logger.warning(
+                f"FlowGridWidget: Overwriting existing widget for new path: {normalized_new}"
+            )
+
+        self._path_to_widget[normalized_new] = item
+
+        # Update the model inside the widget
+        model = item.get_item_model()
+        model.path = normalized_new
+        model.folder_name = os.path.basename(normalized_new)
+
+        logger.debug(
+            f"FlowGridWidget: Path updated {normalized_old} ➔ {normalized_new}"
+        )

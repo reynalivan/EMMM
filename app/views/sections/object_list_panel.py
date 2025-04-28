@@ -291,14 +291,15 @@ class ObjectListPanel(QWidget):
 
     def _update_item_thumbnail(self, item_path: str, result: dict):
         """Updates the thumbnail for a specific item widget."""
+        """
         logger.debug(
             f"ObjectListPanel trying update for item: {item_path} with result: {result}"
         )
+        """
         clean_path = self._get_clean_path(item_path)
-        logger.debug(f"Clean path: {clean_path}")
         widget = self._find_widget_by_path(clean_path)
         if widget:
-            logger.debug(f"Updating thumbnail for item: {clean_path}")
+            #  logger.debug(f"Updating thumbnail for item: {clean_path}")
             if result and result.get("path"):
                 logger.debug(f"Thumbnail path: {result['path']}")
                 pixmap = QPixmap(result["path"])

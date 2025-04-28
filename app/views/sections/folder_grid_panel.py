@@ -44,6 +44,7 @@ class FolderGridPanel(QWidget):
         # 1. Breadcrumb
         self.breadcrumb_widget = BreadcrumbWidget(self)
         self.main_layout.addWidget(self.breadcrumb_widget)
+        self.vm.set_breadcrumb_widget(self.breadcrumb_widget)
 
         # TODO: Implement Filter Bar using Fluent widgets here
 

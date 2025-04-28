@@ -1,25 +1,22 @@
 # App/viewmodels/base item vm.py
-
-
 import os
 from abc import ABCMeta, abstractmethod
 from typing import Literal, Set, Union, Dict, Any, List
 from PyQt6.QtCore import QObject, pyqtSignal
 
 # Adjust import paths as needed
-
 from app.models.object_item_model import ObjectItemModel
 from app.models.folder_item_model import FolderItemModel
 from app.services.data_loader_service import DataLoaderService
 from app.services.mod_management_service import ModManagementService
 from app.services.thumbnail_service import ThumbnailService
-from app.core import constants
 from app.utils.async_utils import AsyncStatusManager
 from app.utils.logger_utils import logger
 from abc import ABCMeta, abstractmethod
 from typing import Optional
 from app.services.file_watcher_service import FileChangeEvent, FileWatcherService
 from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QWidget
 
 ItemModelType = Union[ObjectItemModel, FolderItemModel]
 
@@ -35,25 +32,18 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
     """
 
     # ---Signals ---
-
     displayListChanged = pyqtSignal(list)  # List[item model type]
-
     loadingStateChanged = pyqtSignal(bool)  # Overall list loading
-
     showError = pyqtSignal(str, str)  # title, message
-
     objectItemPathChanged = pyqtSignal(str, str)  # (old_path, new_path)
 
     # For InfoBar notifications handled by the Panel
-
     operation_started = pyqtSignal(str, str)  # item_path (original), operation_title
-
     operation_finished = pyqtSignal(
         str, str, str, str, bool
     )  # original_path, final_path, title, content, success(bool)
 
     # For specific item UI state control handled by the Panel
-
     setItemLoadingState = pyqtSignal(
         str, bool
     )  # item_path (original or final), is_loading (bool)
@@ -63,7 +53,6 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
     )  # item_path (final), update_payload (dict: status, display_name, path)
 
     # Specific signal for thumbnail updates
-
     itemThumbnailNeedsUpdate = pyqtSignal(
         str, dict
     )  # item_path (original), thumbnail_result (dict from service)
@@ -82,11 +71,10 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
         self._mod_manager = mod_manager
         self._thumbnail_service = thumbnail_service
         self._is_loading = False  # Overall list loading state
-
+        self._file_watcher_service: Optional[FileWatcherService] = None
         self._is_handling_status_changes: bool = False
 
         # Temp storage for item state before toggle, used for revert on failure
-
         self._original_state_on_toggle: Dict[str, Dict[str, Any]] = {}
         self._status_manager = AsyncStatusManager(self)
         self._connect_internal_signals()
@@ -94,11 +82,16 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
         self._file_watcher_service: Optional[FileWatcherService] = None
         self._watched_paths: set[str] = set()
         self._pending_changed_paths: set[str] = set()
-        self._debounce_timer: Optional[QTimer] = None
-
         self._pending_refresh_paths: Set[str] = set()
+
+        self._debounce_timer = QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.setInterval(500)
+        self._debounce_timer.timeout.connect(self._process_pending_file_changes)
+
         self._refresh_debounce_timer = QTimer(self)
         self._refresh_debounce_timer.setSingleShot(True)
+        self._refresh_debounce_timer.setInterval(400)
         self._refresh_debounce_timer.timeout.connect(self._process_pending_refresh)
 
     # ---Abstract Methods ---
@@ -144,9 +137,10 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
             if self._file_watcher_service:
                 self._file_watcher_service.fileChanged.connect(self._on_file_changed)
 
-            self._file_watcher_service.fileBatchChanged.connect(
-                self._on_file_batch_changed
-            )
+            if self._file_watcher_service:
+                self._file_watcher_service.fileBatchChanged.connect(
+                    self._on_file_batch_changed
+                )
 
         except Exception as e:
             logger.error(
@@ -201,11 +195,25 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
             )
 
     def request_thumbnail_for(self, item_model: ItemModelType):
-        """Requests thumbnail for a specific item."""
+        """Requests thumbnail for a specific item, with cache optimization."""
         if not item_model or not self._thumbnail_service:
             return
+
         item_type = self._get_item_type()
-        self._thumbnail_service.get_thumbnail_async(item_model.path, item_type)
+
+        # --- New: Check Cache First ---
+        thumb_result = self._thumbnail_service.get_cached_thumbnail(
+            item_model.path, item_type
+        )
+        if thumb_result:
+            # Langsung emit, tidak perlu async
+            logger.debug(
+                f"{self.__class__.__name__}: Thumbnail cache hit for {item_model.path}"
+            )
+            self.itemThumbnailNeedsUpdate.emit(item_model.path, thumb_result)
+        else:
+            # Cache miss, fallback ke async loading
+            self._thumbnail_service.get_thumbnail_async(item_model.path, item_type)
 
     # ---Internal Slots ---
 
@@ -311,9 +319,9 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
                     )
                     self.bind_filewatcher(self._file_watcher_service)
 
-                # ---Emit notification for others (optional) ---
-
-                self.objectItemPathChanged.emit(original_item_path, new_path)
+                # Emit objectItemPathChanged ONLY if object type
+                if self._get_item_type() == "object":
+                    self.objectItemPathChanged.emit(original_item_path, new_path)
 
         else:
             logger.warning(
@@ -342,14 +350,15 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
         )
 
     def _refresh_folder_grid_items(self):
-        """Refreshes the list of folder grid items."""
+        """Refreshes the current list/grid items (without reload from disk)."""
         logger.debug(f"{self.__class__.__name__}: Refreshing folder grid items.")
-        # TODO Implement refresh logic for folder grid items
+        self._filter_and_sort()
 
     def _refresh_folder_grid_breadcrumbs(self):
-        """Refreshes the list of folder grid breadcrumbs."""
+        """Refreshes the breadcrumb UI based on current breadcrumb path."""
         logger.debug(f"{self.__class__.__name__}: Refreshing folder grid breadcrumbs.")
-        # TODO Implement refresh logic for folder grid breadcrumbs
+        if hasattr(self, "breadcrumbChanged"):
+            self.breadcrumbChanged.emit(getattr(self, "_breadcrumb_path", []))
 
     def _update_item_thumbnail(self, item_model: ItemModelType):
         """Helper method to request reloading thumbnail for a specific item."""
@@ -386,6 +395,13 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
 
         # ---Important: Connect batch changed handler! ---
 
+        try:
+            file_watcher_service.fileBatchChanged.disconnect(
+                self._on_file_batch_changed
+            )
+        except (TypeError, RuntimeError):
+            pass  # safe ignore kalau belum pernah connect
+
         file_watcher_service.fileBatchChanged.connect(self._on_file_batch_changed)
 
         # Clear old watched paths
@@ -395,14 +411,11 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
         self._watched_paths.clear()
 
         # Add new watch
-
         file_watcher_service.add_path(active_path)
         self._watched_paths.add(active_path)
-
         logger.info(f"{self.__class__.__name__}: Watching {active_path}")
 
     def unbind_filewatcher(self):
-        """Unbinds the file watcher and clears watched paths."""
         logger.info(f"{self.__class__.__name__}: Unbinding file watcher...")
         if self._file_watcher_service:
             for path in self._watched_paths:
@@ -410,10 +423,15 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
             self._watched_paths.clear()
             try:
                 self._file_watcher_service.fileChanged.disconnect(self._on_file_changed)
+                self._file_watcher_service.fileBatchChanged.disconnect(
+                    self._on_file_batch_changed
+                )
             except Exception:
-                pass  # Safe ignore
+                pass
 
-            logger.info(f"{self.__class__.__name__}: Unbound file watcher.")
+        self._debounce_timer.stop()
+        self._refresh_debounce_timer.stop()
+        logger.info(f"{self.__class__.__name__}: Unbound file watcher.")
 
     def _on_file_changed(self, path: str):
         """Handles when a file is created, deleted, or modified."""
@@ -422,18 +440,7 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
             return
 
         # Save the Path String Ordinary
-
         self._pending_changed_paths.add(path)
-
-        # Setup debounce timer
-
-        if self._debounce_timer is None:
-            self._debounce_timer = QTimer(self)
-            self._debounce_timer.setSingleShot(True)
-            self._debounce_timer.setInterval(500)
-            self._debounce_timer.timeout.connect(self._process_pending_file_changes)
-
-        # Start timer
 
         if not self._debounce_timer.isActive():
             self._debounce_timer.start()
@@ -512,9 +519,8 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
                 return  # Just have to refresh once
 
     def _refresh_breadcrumbs_if_needed(self, src_path: str, dest_path: str):
-        """Update breadcrumb if current folder path was renamed."""
+        """Optimized: Update breadcrumb text if only last segment changes."""
         active_path = self._get_current_path_context()
-
         if not active_path:
             return
 
@@ -523,17 +529,18 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
         active_path = os.path.normpath(active_path)
 
         if active_path.startswith(src_path):
-            # If breadcrumb is active impacted
-
             new_active_path = active_path.replace(src_path, dest_path, 1)
             self._set_current_path_context(new_active_path)
 
             logger.info(
-                f"{self.__class__.__name__}: Breadcrumb updated to {new_active_path}"
+                f"{self.__class__.__name__}: Breadcrumb path updated to {new_active_path}"
             )
-
             self._refresh_folder_grid_items()
             self._refresh_folder_grid_breadcrumbs()
+
+    def _get_breadcrumb_widget(self) -> Optional[QWidget]:
+        """Protected hook. Subclass can override to provide breadcrumb widget."""
+        return None
 
     def _refresh_items_async(self, paths: list[str]):
         """Refresh object/folder items selectively based on changed paths."""
@@ -624,7 +631,7 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
             if old_parent != new_parent:
                 if src_path_norm in self._watched_paths:
                     self._file_watcher_service.remove_path(src_path_norm)
-                    self._watched_paths.remove(src_path_norm)
+                    self._watched_paths.discard(src_path_norm)
                     logger.info(
                         f"{self.__class__.__name__}: Removed old watch {src_path_norm}"
                     )
@@ -641,9 +648,7 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
                 )
 
         # 6. Update Breadcrumb if necessary
-
         self._refresh_breadcrumbs_if_needed(src_path_norm, dest_path_norm)
-
         logger.info(
             f"{self.__class__.__name__}: Rename and breadcrumb update complete."
         )
@@ -655,7 +660,6 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
             self._watched_paths.clear()
 
     def _handle_file_changes(self, changes: list[FileChangeEvent]):
-        """Handle batch file changes, debounce actual reload."""
         logger.debug(f"Received {len(changes)} file changes.")
 
         for evt in changes:
@@ -667,7 +671,7 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
                 self._pending_refresh_paths.add(parent)
 
         if not self._refresh_debounce_timer.isActive():
-            self._refresh_debounce_timer.start(400)  # Debounce reload 400ms
+            self._refresh_debounce_timer.start()
 
     def _process_pending_refresh(self):
         """Called after debounce timeout to actually refresh."""
@@ -694,17 +698,7 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
                 )
                 self._handle_file_rename(evt.src_path, evt.dest_path)
             else:
-                # Other types (created, deleted, modified)
-
                 self._pending_changed_paths.add(evt.src_path)
-
-        # Start the debounce timer (re-use same logic dari _on_file_changed)
-
-        if not self._debounce_timer:
-            self._debounce_timer = QTimer(self)
-            self._debounce_timer.setSingleShot(True)
-            self._debounce_timer.setInterval(500)
-            self._debounce_timer.timeout.connect(self._process_pending_file_changes)
 
         if not self._debounce_timer.isActive():
             self._debounce_timer.start()

@@ -47,8 +47,6 @@ def run_in_background(fn: Callable, *args: Any, **kwargs: Any) -> Worker:
 
 
 # --- Debouncer System ---
-
-
 class Debouncer(QObject):
     """Manages QTimers to debounce function calls based on a key."""
 

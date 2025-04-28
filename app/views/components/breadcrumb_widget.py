@@ -79,5 +79,28 @@ class BreadcrumbWidget(QWidget):
         finally:
             self.breadcrumb_bar.blockSignals(blocked)
 
+    def update_last_segment(self, new_name: str):
+        """Update the text of the last breadcrumb segment."""
+        try:
+            count = self.breadcrumb_bar.itemCount()
+            if count == 0:
+                logger.warning("BreadcrumbWidget: No segments to update.")
+                return
+
+            last_index = count - 1
+            item = self.breadcrumb_bar.itemAt(last_index)
+            if item is None:
+                logger.warning("BreadcrumbWidget: Failed to get last breadcrumb item.")
+                return
+
+            logger.info(f"BreadcrumbWidget: Updating last segment to '{new_name}'")
+            item.setText(new_name)
+            self.breadcrumb_bar.update()
+
+        except Exception as e:
+            logger.error(
+                f"BreadcrumbWidget: Error updating last segment: {e}", exc_info=True
+            )
+
     def _on_internal_breadcrumb_clicked(self, index: int):
         self.segment_clicked.emit(index)

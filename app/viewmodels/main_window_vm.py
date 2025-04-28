@@ -1,5 +1,6 @@
 # app/viewmodels/main_window_vm.py
 
+import os
 from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 from app.services.config_service import ConfigService

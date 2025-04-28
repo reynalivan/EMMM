@@ -14,6 +14,11 @@ from app.services.thumbnail_service import ThumbnailService
 from app.utils.logger_utils import logger
 from .base_item_vm import BaseItemViewModel, ItemModelType  # Import base class
 from app.utils.async_utils import AsyncStatusManager, Debouncer
+from app.viewmodels.folder_grid_vm import FolderGridVM
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.viewmodels.main_window_vm import MainWindowVM
 
 
 class ObjectListVM(BaseItemViewModel):
@@ -26,6 +31,7 @@ class ObjectListVM(BaseItemViewModel):
         data_loader: DataLoaderService,
         mod_service: ModManagementService,
         thumbnail_service: ThumbnailService,
+        folder_grid_vm: FolderGridVM,
         parent: Optional[QObject] = None,
     ):
         # Call base class constructor with shared services
@@ -34,7 +40,7 @@ class ObjectListVM(BaseItemViewModel):
         self.set_handling_status_changes(True)
         self._debouncer = Debouncer(self)
         self._status_manager = AsyncStatusManager(self)
-
+        self._folder_grid_vm = folder_grid_vm
         # ObjectListVM specific state
         self._selected_item: Optional[ObjectItemModel] = None
         self._current_game_path: Optional[str] = None
@@ -118,7 +124,7 @@ class ObjectListVM(BaseItemViewModel):
 
         self.displayListChanged.emit(self.displayed_items)
 
-    def connect_global_signals(self, main_vm):
+    def connect_global_signals(self, main_vm: "MainWindowVM"):
         """Connect to signals from MainWindowVM."""
         # logger.debug("Connecting ObjectListVM to MainWindowVM signals...") # Keep lean
 

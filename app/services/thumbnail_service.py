@@ -26,46 +26,81 @@ class ThumbnailService(QObject):
         super().__init__(parent)
         self._cache = image_cache
         self._utils = image_utils
+        self._thumbnail_cache: dict[str, dict] = {}
         logger.debug("ThumbnailService initialized.")
         self._setup_cache_clean_timer()
 
     def get_thumbnail_async(
         self, item_path: str, item_type: Literal["object", "folder"]
     ):
+        """
         logger.debug(
             f"Requesting thumbnail async for '{item_path}' (type: {item_type})"
         )
-        worker = run_in_background(self._get_thumbnail_task, item_path, item_type)
-        worker.signals.result.connect(
-            lambda result_dict, p=item_path: self.thumbnailReady.emit(p, result_dict)
-        )
-        worker.signals.error.connect(
-            lambda error_info, p=item_path: self._handle_thumbnail_error(p, error_info)
-        )
+        """
+
+        normalized_path = os.path.normpath(item_path)
+        cache_key = self._generate_cache_key(normalized_path, item_type)
+
+        # Optimasi: Check cache dulu, kalau ada emit langsung tanpa worker
+        cached_path = self._cache.get(cache_key)
+        if cached_path and os.path.exists(cached_path):
+            logger.debug(
+                f"ThumbnailService: Immediate cache hit for '{normalized_path}'"
+            )
+            self.thumbnailReady.emit(
+                normalized_path,
+                {"path": cached_path, "status": "hit", "error_msg": None},
+            )
+            return  # Skip spawn worker
+
+        # Kalau tidak ada, baru async worker
+        def _handle_result(result_dict):
+            if not os.path.exists(normalized_path):
+                logger.warning(
+                    f"ThumbnailService: Path disappeared before result: {normalized_path}"
+                )
+                return
+            self.thumbnailReady.emit(normalized_path, result_dict)
+
+        def _handle_error(error_info):
+            if not os.path.exists(normalized_path):
+                logger.warning(
+                    f"ThumbnailService: Path disappeared before error result: {normalized_path}"
+                )
+                return
+            self._handle_thumbnail_error(normalized_path, error_info)
+
+        worker = run_in_background(self._get_thumbnail_task, normalized_path, item_type)
+        worker.signals.result.connect(_handle_result)
+        worker.signals.error.connect(_handle_error)
 
     def _generate_cache_key(self, item_path: str, item_type: str) -> str:
-        """Generate consistent cache key"""
-        dir_name = os.path.dirname(item_path)
-        base_name = os.path.basename(item_path)
-        prefix = constants.DISABLED_PREFIX
-
-        # Clean the prefix first
-        if base_name.lower().startswith(prefix.lower()):
-            clean_base_name = base_name[len(prefix) :]
-        else:
-            clean_base_name = base_name
-
-        # Build clean path
-        clean_path = os.path.normpath(os.path.join(dir_name, clean_base_name))
+        """Generate cache key that survives folder renames, including file size."""
 
         try:
-            mtime = os.path.getmtime(item_path)
-        except OSError:
-            mtime = 0
+            # Cari source thumbnail file
+            source_image = self._find_object_thumbnail_source(item_path)
 
-        raw_key = f"{item_type}:{clean_path}:{mtime}"
-        sha1 = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
-        return sha1
+            if source_image and os.path.exists(source_image):
+                mtime = int(os.path.getmtime(source_image))
+                size = os.path.getsize(source_image)
+                basename = os.path.basename(source_image)
+                raw_key = f"{item_type}:{basename}:{mtime}:{size}"
+            else:
+                # Kalau thumbnail tidak ada, fallback pakai nama folder saja
+                clean_base = os.path.basename(item_path)
+                raw_key = f"{item_type}:{clean_base}"
+
+            sha1 = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
+            return sha1
+
+        except Exception as e:
+            logger.error(
+                f"ThumbnailService: Error generating cache key: {e}", exc_info=True
+            )
+            # Super fallback: hash dari path saja
+            return hashlib.sha1(item_path.encode("utf-8")).hexdigest()
 
     def find_preview_thumbnails_async(self, folder_path: str):
         logger.debug(f"Requesting preview thumbnails async for '{folder_path}'")
@@ -81,14 +116,14 @@ class ThumbnailService(QObject):
         self, item_path: str, item_type: Literal["object", "folder"]
     ) -> dict:
         cache_key = self._generate_cache_key(item_path, item_type)
-        logger.debug(f"Cache key for {item_path}: {cache_key}")
+        # logger.debug(f"Cache key for {item_path}: {cache_key}")
 
         cached_path = self._cache.get(cache_key)
         if cached_path and os.path.exists(cached_path):
             logger.debug(f"Cache hit for '{item_path}' -> {cached_path}")
             return {"path": cached_path, "status": "hit", "error_msg": None}
 
-        logger.debug(f"Cache miss for '{item_path}'. Finding source image...")
+        # logger.debug(f"Cache miss for '{item_path}'. Finding source image...")
         source_image_path = None
         try:
             if item_type == "object":
@@ -106,7 +141,7 @@ class ThumbnailService(QObject):
             }
 
         if not source_image_path:
-            logger.debug(f"No source image found for '{item_path}'.")
+            # logger.debug(f"No source image found for '{item_path}'.")
             return {
                 "path": None,
                 "status": "fallback",
@@ -193,9 +228,9 @@ class ThumbnailService(QObject):
                 all_found_files.extend(matches)
 
             if not all_found_files:
-                logger.debug(
+                """logger.debug(
                     f"No files found matching pattern *{suffix}.<ext> in {folder_path}"
-                )
+                )"""
                 return None
 
             preferred_order = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
@@ -293,3 +328,13 @@ class ThumbnailService(QObject):
         logger.info(
             "ThumbnailService: Scheduled periodic cache cleaning every 24 hours."
         )
+
+    def get_cached_thumbnail(self, item_path: str, item_type: str) -> dict | None:
+        """Returns cached thumbnail result if available."""
+        normalized_path = os.path.normpath(item_path)
+        cache_key = self._generate_cache_key(normalized_path, item_type)
+
+        cached_path = self._cache.get(cache_key)
+        if cached_path and os.path.exists(cached_path):
+            return {"path": cached_path, "status": "hit", "error_msg": None}
+        return None

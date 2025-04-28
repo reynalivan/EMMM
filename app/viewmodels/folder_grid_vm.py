@@ -10,10 +10,15 @@ from app.services.file_watcher_service import FileChangeEvent, FileWatcherServic
 from app.services.mod_management_service import ModManagementService
 from app.services.data_loader_service import DataLoaderService
 from app.services.thumbnail_service import ThumbnailService  # Import ThumbnailService
-from app.viewmodels.object_list_vm import ObjectListVM
 from app.utils.logger_utils import logger  # Import logger
 from app.core.constants import DISABLED_PREFIX
+from app.views.components.breadcrumb_widget import BreadcrumbWidget
 from .base_item_vm import BaseItemViewModel, ItemModelType  # Import base class
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.viewmodels.object_list_vm import ObjectListVM
+    from app.viewmodels.main_window_vm import MainWindowVM
 
 
 class FolderGridVM(BaseItemViewModel):
@@ -96,7 +101,9 @@ class FolderGridVM(BaseItemViewModel):
         )
         self.displayListChanged.emit(self.displayed_items)
 
-    def connect_global_signals(self, main_vm, object_list_vm: ObjectListVM):
+    def connect_global_signals(
+        self, main_vm: "MainWindowVM", object_list_vm: "ObjectListVM"
+    ):
         """Connect to signals from other ViewModels."""
         # logger.debug("Connecting FolderGridVM to global VM signals...") # Keep lean
         try:
@@ -130,32 +137,36 @@ class FolderGridVM(BaseItemViewModel):
     def _on_object_item_selected(self, selected_item: ObjectItemModel | None):
         """Handles selection change from ObjectListVM."""
         logger.debug(
-            f"FolderGridVM: Object item selected -> {selected_item.path if selected_item else 'None'}"
+            f"{self.__class__.__name__}: Object item selected -> {selected_item.path if selected_item else 'None'}"
         )
+
         if selected_item is None:
-            # Clear grid if object is deselected
+            if self._current_object_item:
+                # Special case: object deselected temporarily due to rename/status change
+                logger.info(
+                    f"{self.__class__.__name__}: Object deselected temporarily, keeping current grid."
+                )
+                return
+
+            # No previous object -> normal clear
             self._current_object_item = None
             self._object_root_path = None
             self._current_parent_path = None
             self._breadcrumb_path = []
             self.breadcrumbChanged.emit([])
             self._all_folder_items = []
-            self._filter_and_sort()  # Will emit empty list
-            self.folderItemSelected.emit(None)  # Deselect item in preview
+            self._filter_and_sort()
+            self.folderItemSelected.emit(None)
             return
 
-        # Only reload if the selected object actually changed
         if self._current_object_item != selected_item:
+            # Only reload if object actually changed
             self._current_object_item = selected_item
             self._object_root_path = os.path.normpath(selected_item.path)
-            self._breadcrumb_path = [
-                os.path.basename(self._object_root_path)
-            ]  # Start breadcrumb with object folder name
+            self._breadcrumb_path = [os.path.basename(self._object_root_path)]
             self.breadcrumbChanged.emit(self._breadcrumb_path)
-            self.load_folders_for(self._object_root_path)  # Load top-level items
-            self.folderItemSelected.emit(
-                None
-            )  # Deselect previous folder item when object changes
+            self.load_folders_for(self._object_root_path)
+            self.folderItemSelected.emit(None)
 
     def load_folders_for(self, parent_path: Optional[str]):
         """Loads folder items for the given parent path."""
@@ -361,7 +372,7 @@ class FolderGridVM(BaseItemViewModel):
         self.load_folders_for(new_path)
 
     def _handle_object_path_changed(self, old_path: str, new_path: str):
-        """Handles when the object root path is changed due to disable/enable."""
+        """Handles when the object root path is changed due to disable/enable/rename."""
         if not self._object_root_path:
             return
 
@@ -371,9 +382,64 @@ class FolderGridVM(BaseItemViewModel):
             )
             self.update_root_path(new_path)
 
+        if self._current_parent_path and self._current_parent_path.startswith(old_path):
+            # Kalau lagi buka subfolder, ikut update path aktif
+            logger.info(
+                f"FolderGridVM: Current view inside renamed object, updating parent path too."
+            )
+            relative = os.path.relpath(self._current_parent_path, old_path)
+            self._current_parent_path = os.path.normpath(
+                os.path.join(new_path, relative)
+            )
+
+            self.load_folders_for(self._current_parent_path)
+
+            # --- Breadcrumb Update ---
+            # Update breadcrumb supaya segment-segment ikut nama baru
+            if self._breadcrumb_path:
+                self._breadcrumb_path[0] = os.path.basename(new_path)
+                self.breadcrumbChanged.emit(self._breadcrumb_path)
+
     def set_filewatcher_service(self, watcher: FileWatcherService):
         """Set file watcher service after construction."""
         self._file_watcher_service = watcher
 
     def _set_current_path_context(self, path: str):
         self._current_game_path = path
+
+    def set_breadcrumb_widget(self, breadcrumb_widget: BreadcrumbWidget):
+        """Inject breadcrumb widget reference safely."""
+        self._breadcrumb_widget = breadcrumb_widget
+
+    def _get_breadcrumb_widget(self) -> Optional[BreadcrumbWidget]:
+        return getattr(self, "_breadcrumb_widget", None)
+
+    def prepare_for_folder_rename(self, folder_path: str) -> bool:
+        """Clears active view if inside the given folder path."""
+        if not folder_path:
+            return False
+
+        normalized_active = (
+            os.path.normpath(self._current_parent_path)
+            if self._current_parent_path
+            else None
+        )
+        normalized_folder_path = os.path.normpath(folder_path)
+
+        if normalized_active and normalized_active.startswith(normalized_folder_path):
+            logger.info(f"FolderGridVM: Clearing active view inside {folder_path}")
+
+            self._current_object_item = None
+            self._object_root_path = None
+            self._current_parent_path = None
+            self._breadcrumb_path = []
+            self._all_folder_items = []
+            self.displayed_items = []
+
+            self.breadcrumbChanged.emit([])
+            self.displayListChanged.emit([])
+            self._filter_and_sort()
+            return True
+
+        return False
+

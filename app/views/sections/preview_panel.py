@@ -45,46 +45,38 @@ class PreviewPanel(QWidget):
 
     def _setup_ui(self):
         """Creates and arranges the UI widgets."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)  # Give a margin
 
         # Use Fluent Labels if desired
         self.title_label = TitleLabel("No Selection")
         self.title_label.pixelFontSize = 16
         self.title_label.setWordWrap(True)
+        layout.addWidget(self.title_label)
 
         # Status
         self.status_label = BodyLabel("")
         self.status_label.setObjectName("StatusPreviewLabel")
+        layout.addWidget(self.status_label)
 
+        layout.setSpacing(10)  # Give space between elements
         self.image_view = HorizontalFlipView(self)
         self.image_view.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
         self.image_view.setMinimumHeight(100)
         self.image_view.setFixedHeight(300)
         self.image_view.setObjectName("PreviewFlipView")
+        layout.addWidget(
+            self.image_view, 1
+        )  # Give a stretch factor so that it can enlarge
 
         # Description
         self.description_label = BodyLabel("Description:")
         self.description_view = TextEdit()
         self.description_view.setPlaceholderText("No description available.")
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 15)  # Give a margin
-
-        layout.setSpacing(10)  # Give space between elements
-
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.status_label)
-        layout.addSpacing(10)
         layout.addWidget(self.description_label)
         layout.addWidget(self.description_view)
-        layout.addSpacing(10)
-        layout.addWidget(QLabel("Thumbnail Preview:"))  # Label for the image area
 
-        layout.addWidget(
-            self.image_view, 1
-        )  # Give a stretch factor so that it can enlarge
         # layout.addlayout (Btn_layout) # Add the Paste/Upload button layout later
-
-        # Delete the creation of the Prev/Next and Nav_layout buttons
 
     def _connect_signals(self):
         """Connects signals from the ViewModel to slots."""

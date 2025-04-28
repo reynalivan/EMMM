@@ -46,14 +46,9 @@ class WatchdogThread(QThread):
     def schedule(self, handler, path, recursive=False):
         self._observer.schedule(handler, path, recursive=recursive)
 
-    def unschedule(self, path):
+    def unschedule(self, watch):
         """Unschedule a specific watched path safely."""
-        for watch in list(self._observer._watches.values()):
-            if watch.path == path:
-                self._observer.unschedule(watch)
-                logger.debug(f"WatchdogThread: Unschedule {path}")
-                return
-        logger.warning(f"WatchdogThread: Path not found to unschedule: {path}")
+        self._observer.unschedule(watch)
 
 
 # --- Main Service ---
@@ -131,19 +126,36 @@ class FileWatcherService(QObject):
         logger.info(f"Watching {len(self._watched_paths)} folders.")
 
     def remove_path(self, folder_path: str):
+        """Safely remove a path from watcher."""
         if not self._thread or not self._thread.isRunning():
             return
 
         normalized_path = os.path.normpath(folder_path)
-        if normalized_path in self._watched_paths:
-            try:
-                self._thread.unschedule(normalized_path)
-                self._watched_paths.remove(normalized_path)
+
+        try:
+            # Akses _watches lewat self._thread._observer._watches
+            watch_to_remove = None
+            for (
+                watch
+            ) in self._thread._observer._watches:  # Iterate directly over the set
+                if os.path.normpath(watch.path) == normalized_path:
+                    watch_to_remove = watch
+                    break
+
+            if watch_to_remove:
+                self._thread._observer.unschedule(watch_to_remove)
+                self._watched_paths.discard(normalized_path)
                 logger.info(f"FileWatcherService: Unwatched path {normalized_path}")
-            except Exception as e:
-                logger.error(
-                    f"FileWatcherService: Failed to unwatch {normalized_path}: {e}"
+            else:
+                logger.warning(
+                    f"FileWatcherService: Path not found to unwatch: {normalized_path}"
                 )
+
+        except Exception as e:
+            logger.error(
+                f"FileWatcherService: Failed to unwatch {normalized_path}: {e}",
+                exc_info=True,
+            )
 
     def clear_watches(self):
         self.stop()

@@ -59,8 +59,10 @@ def main():
 
     # Initialize ViewModels
     try:
-        object_vm = ObjectListVM(data_loader, mod_service, thumbnail_service)
         folder_vm = FolderGridVM(data_loader, mod_service, thumbnail_service)
+        object_vm = ObjectListVM(
+            data_loader, mod_service, thumbnail_service, FolderGridVM
+        )
         preview_vm = PreviewPanelVM(
             data_loader, mod_service, thumbnail_service, image_utils
         )

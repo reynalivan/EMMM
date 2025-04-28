@@ -6,7 +6,7 @@ import shutil
 from typing import Literal, Dict, Any, List, Optional
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 
-# Asumsi path utilitas dan konstanta
+import time
 from app.core import constants
 from app.utils.logger_utils import logger
 from app.utils.async_utils import Worker
@@ -87,7 +87,7 @@ class ModManagementService(QObject):
             logger.info(
                 f"set_mod_enabled_async result for '{item_path}': {result_dict}"
             )
-            result_dict["item_type"] = item_type
+            result_dict["item_type"] = item_type  # Tambahkan item_type langsung
             self.modStatusChangeComplete.emit(item_path, result_dict)
 
         def _on_error(err_info):
@@ -225,6 +225,21 @@ class ModManagementService(QObject):
             "error": error_msg,
         }
 
+    def retry_rename(
+        src: str, dest: str, max_retries: int = 5, delay: float = 0.5
+    ) -> bool:
+        """Tries to rename with retries to handle temporary file locks."""
+        for attempt in range(max_retries):
+            try:
+                os.rename(src, dest)
+                return True
+            except OSError as e:
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                else:
+                    raise e
+        return False
+
     # --- Safe Mode Logic (Sudah ada sebelumnya, pastikan signature cocok jika perlu) ---
     def applySafeModeChanges_async(
         self, items_to_check: list, new_safe_mode_state: bool
@@ -361,7 +376,7 @@ class ModManagementService(QObject):
             return False, None
 
         try:
-            os.rename(item_path, new_path)
+            self.retry_rename(item_path, new_path)
             logger.debug(f"Renamed via helper: '{item_path}' -> '{new_path}'")
             return True, os.path.normpath(new_path)
 
