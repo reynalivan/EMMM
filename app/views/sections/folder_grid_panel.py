@@ -1,13 +1,22 @@
 # app/views/sections/folder_grid_panel.py
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QHBoxLayout, QSizePolicy
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from typing import Dict
 import os
-
-from qfluentwidgets import ScrollArea, InfoBar, InfoBarIcon, InfoBarPosition
-
+from app.views.dialogs.filter_dialog import FilterDialog
+from qfluentwidgets import (
+    ScrollArea,
+    InfoBar,
+    InfoBarIcon,
+    InfoBarPosition,
+    SearchLineEdit,
+    SubtitleLabel,
+    TransparentToolButton,
+    DropDownPushButton,
+    FluentIcon as FIF,
+)
 from app.viewmodels.folder_grid_vm import FolderGridVM
 from app.views.components.breadcrumb_widget import BreadcrumbWidget
 from app.views.components.common.flow_grid_widget import FlowGridWidget
@@ -30,17 +39,61 @@ class FolderGridPanel(QWidget):
 
     def _setup_ui(self):
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(0, 5, 5, 5)
-        self.main_layout.setSpacing(5)
+        self.main_layout.setContentsMargins(10, 10, 10, 5)
+        self.main_layout.setSpacing(6)
 
+        # === Top bar (Search + Filter + Clear) ===
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(6)
+        top_bar.setContentsMargins(14, 1, 14, 1)
+
+        self.search_box = SearchLineEdit(self)
+        self.search_box.setPlaceholderText("Search...")
+        self.search_box.textChanged.connect(self._on_search_changed)
+
+        self.filter_btn = DropDownPushButton(FIF.FILTER, "Filter", self)
+        self.filter_btn.clicked.connect(self._on_filter_clicked)
+
+        top_bar.addWidget(self.search_box)
+        top_bar.addWidget(self.filter_btn)
+        top_bar.addStretch()
+        self.main_layout.addLayout(top_bar)
+
+        # === Result summary bar ===
+        self.result_summary_bar = QHBoxLayout()
+        self.result_summary_bar.setContentsMargins(14, 1, 14, 1)
+        self.result_summary_bar.setSpacing(8)
+
+        self.result_label = SubtitleLabel("", self)
+        self.result_label.setTextColor("gray")
+        self.result_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+        )
+
+        self.clear_all_btn = TransparentToolButton(FIF.CLOSE, self)
+        self.clear_all_btn.setToolTip("Clear filters and search")
+        self.clear_all_btn.clicked.connect(self._on_clear_all)
+
+        self.result_summary_bar.addWidget(self.result_label)
+        self.result_summary_bar.addStretch()
+        self.result_summary_bar.addWidget(self.clear_all_btn)
+
+        # Initially hidden
+        self.result_label.setVisible(False)
+        self.clear_all_btn.setVisible(False)
+
+        # === Breadcrumb ===
         self.breadcrumb_widget = BreadcrumbWidget(self)
-        self.main_layout.addWidget(self.breadcrumb_widget)
 
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setStyleSheet("border-top: 1px solid rgba(0,0,0,0.1);")
+
+        self.main_layout.addLayout(self.result_summary_bar)
+        self.main_layout.addWidget(self.breadcrumb_widget)
         self.main_layout.addWidget(line)
 
+        # === Scrollable grid ===
         self.scrollArea = ScrollArea(self)
         self.scrollArea.setWidgetResizable(True)
         self.scrollArea.enableTransparentBackground()
@@ -52,6 +105,10 @@ class FolderGridPanel(QWidget):
 
     def _connect_signals(self):
         self.vm.displayListChanged.connect(self.gridWidget.setItems)
+        self.vm.displayListChanged.connect(
+            lambda items: self._update_result_summary(len(items))
+        )
+        self.vm.resetFilterState.connect(self.reset_filters_and_search)
         self.vm.breadcrumbChanged.connect(self.breadcrumb_widget.set_path)
         self.vm.setItemLoadingState.connect(self._set_item_loading_state)
         self.vm.updateItemDisplay.connect(self._update_item_display)
@@ -160,6 +217,64 @@ class FolderGridPanel(QWidget):
         except Exception as e:
             logger.error(f"Failed to load thumbnail: {e}")
             return None
+
+    def _on_search_changed(self, text: str):
+        self.vm.apply_search(text)
+
+    def _on_clear_all(self):
+        self.search_box.clear()
+        self.vm.clear_all_metadata_filters()
+        self.vm._filter_and_sort()
+        self._update_filter_button_state()
+
+    def _update_result_summary(self, count: int):
+        has_filter = bool(self.vm._metadata_filters)
+        has_search = bool(self.vm._filter_text.strip())
+        visible = has_filter or has_search
+
+        self.result_label.setVisible(visible)
+        self.clear_all_btn.setVisible(visible)
+
+        if visible:
+            self.result_label.setText(f"{count} items found")
+        else:
+            self.result_label.setText("")
+
+    def _on_filter_clicked(self):
+        filters_metadata = self.vm.get_metadata_filter_options()
+        active = (
+            self.vm._metadata_filters if hasattr(self.vm, "_metadata_filters") else {}
+        )
+
+        dialog = FilterDialog(
+            filters=filters_metadata,
+            active_filters=active,
+            apply_callback=self._on_filter_dialog_applied,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _on_filter_dialog_applied(self, new_filters: dict[str, set[str]]):
+        self.vm.set_metadata_filters(new_filters)
+        self.vm._filter_and_sort()
+        self._update_filter_button_state()
+        self._update_result_summary(len(self.vm.displayed_items))
+
+    def _update_filter_button_state(self):
+        active_count = sum(len(v) for v in self.vm._metadata_filters.values())
+        self.filter_btn.setText(
+            f"Filter ({active_count})" if active_count else "Filter"
+        )
+        self.clear_all_btn.setVisible(active_count > 0 or self.search_box.text() != "")
+
+    def reset_filters_and_search(self):
+        self.search_box.clear()
+        self.result_label.setText("")
+        self.result_label.setVisible(False)
+        self.clear_all_btn.setVisible(False)
+        self.vm.clear_all_metadata_filters()
+        self.vm.apply_search("")
+        self._update_filter_button_state()
 
     def closeEvent(self, event):
         if self.vm:

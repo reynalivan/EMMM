@@ -16,7 +16,7 @@ from app.views.components.breadcrumb_widget import BreadcrumbWidget
 from .base_item_vm import BaseItemViewModel, ItemModelType  # Import base class
 from typing import TYPE_CHECKING
 from app.utils.signal_utils import safe_connect
-
+from app.utils.async_utils import Debouncer
 
 if TYPE_CHECKING:
     from app.viewmodels.object_list_vm import ObjectListVM
@@ -37,12 +37,14 @@ class FolderGridVM(BaseItemViewModel):
         # Call base class constructor with shared services
         super().__init__(data_loader, mod_service, thumbnail_service, parent)
         # FolderGridVM specific state
+        self._debouncer = Debouncer(self)
         self._is_safe_mode_on: bool = False
         self._current_object_item: Optional[ObjectItemModel] = None
         self._current_parent_path: Optional[str] = None
         self._object_root_path: Optional[str] = None
         self._selected_item: Optional[FolderItemModel] = None
         self._all_folder_items: List[FolderItemModel] = []  # The main data list
+        self._metadata_filters: dict[str, set[str]] = {}
         self.displayed_items: List[FolderItemModel] = []  # Filtered/sorted list
         self._breadcrumb_path: List[str] = []
 
@@ -75,7 +77,8 @@ class FolderGridVM(BaseItemViewModel):
     def _filter_and_sort(self, initial_load: bool = False):
         """Filters and sorts the internal list (_all_folder_items)"""
         logger.debug(
-            f"FolderGridVM: Filtering and sorting items. Safe mode: {self._is_safe_mode_on}"
+            f"FolderGridVM: Filtering and sorting items. Safe mode: {self._is_safe_mode_on}, "
+            f"Search: {self._filter_text}, Metadata filters: {self._metadata_filters}"
         )
 
         filtered_items = []
@@ -89,13 +92,33 @@ class FolderGridVM(BaseItemViewModel):
                 if self._filter_status == "Disabled" and item.status:
                     continue
 
-            if hasattr(self, "_filter_text") and self._filter_text:
-                if self._filter_text.lower() not in item.display_name.lower():
-                    continue
+            # --- Text filter ---
+            if (
+                self._filter_text
+                and self._filter_text.lower() not in item.display_name.lower()
+            ):
+                continue
+
+            # --- Metadata filter ---
+            passed_metadata = True
+            props = item.info or {}
+            for key, allowed_vals in self._metadata_filters.items():
+                val = props.get(key)
+                allowed_vals_lower = {str(v).lower() for v in allowed_vals}
+                if isinstance(val, list):
+                    if not any(str(v) in allowed_vals_lower for v in val):
+                        passed_metadata = False
+                        break
+                elif isinstance(val, (str, bool)):
+                    if str(val) not in allowed_vals_lower:
+                        passed_metadata = False
+                        break
+            if not passed_metadata:
+                continue
 
             filtered_items.append(item)
 
-        # Only sort during the initial load
+        # Sort once during initial load
         if initial_load:
             try:
                 filtered_items.sort(
@@ -229,6 +252,8 @@ class FolderGridVM(BaseItemViewModel):
 
     def load_folders_for(self, parent_path: Optional[str]):
         """Loads folder items for the given parent path."""
+        self.resetFilterState.emit()
+
         if parent_path:
             logger.info(f"FolderGridVM: Loading folders for path: {parent_path}")
             self._current_parent_path = os.path.normpath(parent_path)
@@ -440,6 +465,14 @@ class FolderGridVM(BaseItemViewModel):
             )
             self.clear_state()
 
+    def apply_search(self, text: str):
+        self._filter_text = text.strip()
+        self._debouncer.debounce("folder_search", self._filter_and_sort, delay_ms=300)
+
+    def clear_search(self):
+        self._filter_text = ""
+        self._filter_and_sort()
+
     def clear_state(self):
         self._object_root_path = None
         self._current_parent_path = None
@@ -449,3 +482,39 @@ class FolderGridVM(BaseItemViewModel):
         self.breadcrumbChanged.emit([])
         self.displayListChanged.emit([])
         self.folderItemSelected.emit(None)
+
+    def get_metadata_filter_options(self) -> dict[str, list[str]]:
+        allowed_keys = {"author"}
+        result = {}
+
+        for item in self._all_folder_items:
+            props = item.info or {}
+            for k in allowed_keys:
+                v = props.get(k)
+                if isinstance(v, str):
+                    result.setdefault(k, set()).add(v)
+                elif isinstance(v, bool):
+                    result.setdefault(k, set()).add(str(v))
+
+        return {k: sorted(list(v)) for k, v in result.items()}
+
+    def apply_metadata_filter(self, key: str, value: str):
+        if not hasattr(self, "_metadata_filters"):
+            self._metadata_filters = {}
+
+        self._metadata_filters.setdefault(key, set())
+        if value in self._metadata_filters[key]:
+            self._metadata_filters[key].remove(value)
+            if not self._metadata_filters[key]:
+                del self._metadata_filters[key]
+        else:
+            self._metadata_filters[key].add(value)
+
+        self._filter_and_sort()
+
+    def clear_all_metadata_filters(self):
+        self._metadata_filters.clear()
+
+    def set_metadata_filters(self, filters: dict[str, set[str]]):
+        self._metadata_filters = filters
+        self._filter_and_sort()

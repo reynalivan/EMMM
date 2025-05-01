@@ -40,7 +40,7 @@ class BreadcrumbWidget(QWidget):
         # Main layout for this wrapper widget (simple box)
 
         self.widget_layout = QHBoxLayout(self)
-        self.widget_layout.setContentsMargins(16, 8, 8, 0)
+        self.widget_layout.setContentsMargins(14, 8, 8, 0)
 
         # Create the core BreadcrumbBar component from qfluentwidgets
 

@@ -48,6 +48,9 @@ class ObjectListVM(BaseItemViewModel):
         self.displayed_items: List[ObjectItemModel] = []
 
         # Specific Filter/Sort State (could be moved to base if desired later)
+        self._metadata_filters: dict[str, set[str]] = (
+            {}
+        )  # key: category, value: selected filters
         self._filter_text = ""
         self._filter_status = "All"
         self._sort_key = "display_name"
@@ -85,18 +88,71 @@ class ObjectListVM(BaseItemViewModel):
             key="object_filter_sort", func=self._filter_and_sort_logic, delay_ms=300
         )
 
+    def set_metadata_filters(self, new_filters: dict[str, set[str]]):
+        """Set new metadata filters and refresh display."""
+        self._metadata_filters = new_filters
+        self._filter_and_sort()
+
+    def get_metadata_filter_options(self) -> dict[str, list[str]]:
+        """Returns unique values per metadata category."""
+        allowed_keys = {"element", "region", "rarity", "gender", "weapon", "roles"}
+        result: dict[str, set[str]] = {}
+
+        for item in self._all_object_items:
+            props = item.properties or {}
+            for k in allowed_keys:
+                val = props.get(k)
+                if isinstance(val, str):
+                    result.setdefault(k, set()).add(val)
+                elif isinstance(val, list):
+                    result.setdefault(k, set()).update(val)
+
+        return {k: sorted(v) for k, v in result.items()}
+
+    def clear_metadata_filter(self):
+        """Clear all active metadata filters."""
+        self._metadata_filters.clear()
+        self._filter_and_sort()
+
+    def clear_all_metadata_filters(self):
+        self._metadata_filters.clear()
+        self._filter_text = ""
+        self._filter_and_sort()
+
     def _filter_and_sort_logic(self):
         """Fast filtering and sorting."""
         filtered = []
         for item in self._all_object_items:
+
+            # Status filter
             if self._filter_status == "Enabled" and not item.status:
                 continue
             if self._filter_status == "Disabled" and item.status:
                 continue
+
+            # Text filter searchbar
             if (
                 self._filter_text
                 and self._filter_text.lower() not in item.display_name.lower()
             ):
+                continue
+
+            # Metadata filter
+            metadata_ok = True
+            for cat, allowed_values in self._metadata_filters.items():
+                if not isinstance(item.properties, dict):
+                    metadata_ok = False
+                    break
+                prop_value = item.properties.get(cat)
+                if isinstance(prop_value, list):
+                    if not any(v in allowed_values for v in prop_value):
+                        metadata_ok = False
+                        break
+                elif prop_value not in allowed_values:
+                    metadata_ok = False
+                    break
+
+            if not metadata_ok:
                 continue
             filtered.append(item)
 
@@ -216,12 +272,11 @@ class ObjectListVM(BaseItemViewModel):
         else:
             self.set_placeholder_thumbnail()
 
-    def apply_filter(self, text: str, status: str):
-        """Applies filter criteria."""
+    def apply_filter_text(self, text: str):
+        """Apply search text with debounce."""
+        self._filter_text = text
         self._debouncer.debounce(
-            key="object_filter",
-            func=lambda: self._apply_filter_logic(text, status),
-            delay_ms=300,
+            key="filter_text", func=self._filter_and_sort, delay_ms=200
         )
 
     def apply_sort(self, sort_key: str, sort_order: Qt.SortOrder):
@@ -281,6 +336,22 @@ class ObjectListVM(BaseItemViewModel):
 
     def _set_current_path_context(self, path: str):
         self._current_game_path = path
+
+    def apply_metadata_filter(self, category: str, value: str):
+        """Toggle filter for metadata category and re-apply filter/sort."""
+        # Init set if not exists
+        if category not in self._metadata_filters:
+            self._metadata_filters[category] = set()
+
+        filters = self._metadata_filters[category]
+        if value in filters:
+            filters.remove(value)
+            if not filters:
+                del self._metadata_filters[category]
+        else:
+            filters.add(value)
+
+        self._filter_and_sort()
 
     def clear_state(self):
         self._selected_item = None

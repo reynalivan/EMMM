@@ -1,10 +1,13 @@
 # App/views/components/object list item widget.py
 
+import os
+from turtle import position
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPoint
 from app.models.object_item_model import ObjectItemModel
 from app.core import constants
+from qfluentwidgets import TeachingTip, TeachingTipView, TeachingTipTailPosition
 
 # ---Fluent Widget Imports  ---
 
@@ -48,53 +51,67 @@ class ObjectListItemWidget(QWidget):
         )
 
     def _setup_ui(self):
-        """Creates and arranges the UI widgets."""
-        # Maintain the UI structure exactly like your previous code
-
         self.main_layout = QHBoxLayout(self)
         self.main_layout.setContentsMargins(8, 8, 8, 8)
         self.main_layout.setSpacing(6)
-        self.thumbnail_label = QLabel()
+
+        # --- Thumbnail + Checkbox Container ---
+        self.thumbnail_container = QWidget()
+        self.thumbnail_container.setFixedSize(self._thumb_size)
+        self.thumbnail_container.setObjectName("ThumbnailContainer")
+        self.thumbnail_container.setStyleSheet("background: transparent;")
+        self.thumbnail_label = QLabel(self.thumbnail_container)
         self.thumbnail_label.setFixedSize(self._thumb_size)
         self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumbnail_label.setObjectName("ThumbnailLabel")
 
+        # Overlay checkbox
+        self.bulk_checkbox = CheckBox(self.thumbnail_container)
+        self.bulk_checkbox.setToolTip("Select for batch operations")
+        self.bulk_checkbox.move(4, 4)
+        self.bulk_checkbox.setVisible(False)  # Only show on hover/checked
+        self.bulk_checkbox.raise_()
+
+        self.main_layout.addWidget(
+            self.thumbnail_container, 0, Qt.AlignmentFlag.AlignTop
+        )
+
+        # --- Center Info Block ---
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
-        center_layout.setSpacing(8)  # Maintain your space
+        center_layout.setSpacing(6)
+        center_layout.setContentsMargins(0, 0, 0, 0)
 
         self.name_label = BodyLabel()
         self.name_label.setObjectName("NameLabel")
-        # self.name_label.setwordwrap (true) # activate if necessary wrap on the list
+        self.name_label.setMinimumWidth(200)
+        self.name_label.setSizePolicy(
+            self.name_label.sizePolicy().horizontalPolicy(),
+            self.name_label.sizePolicy().verticalPolicy(),
+        )
+
+        # Status Row
         status_widget = QWidget()
         status_layout = QHBoxLayout(status_widget)
         status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(4)
-        self.status_switch = SwitchButton()
-        self.status_switch.setToolTip("Set modse active/inactive")
-        self.status_switch.setEnabled(True)
+        status_layout.setSpacing(6)
+
         self.status_label = CaptionLabel()
         self.status_label.setObjectName("StatusLabel")
+        self.status_switch = SwitchButton()
+        self.status_switch.setToolTip("Toggle Mod On/Off")
+
         status_layout.addWidget(self.status_switch)
         status_layout.addWidget(self.status_label)
-        status_layout.addStretch(1)
+        status_layout.addStretch()
+
         center_layout.addWidget(self.name_label)
         center_layout.addWidget(status_widget)
-        self.bulk_checkbox = CheckBox()
-        self.bulk_checkbox.setToolTip("Select for batch operations")
 
-        # Maintain your layout arrangement
-
-        self.main_layout.addWidget(self.thumbnail_label, 0, Qt.AlignmentFlag.AlignTop)
-        self.main_layout.addWidget(center_widget, 0, Qt.AlignmentFlag.AlignTop)
+        self.main_layout.addWidget(center_widget, 1)
         self.main_layout.addStretch(1)
-        self.main_layout.addWidget(self.bulk_checkbox, 0, Qt.AlignmentFlag.AlignCenter)
-
-        # Call Placeholder at the end of Setup
 
         self.set_placeholder_thumbnail()
-
-    # ---START MODIFICATION: Add Loading Indicator Setup ---
 
     def _setup_loading_overlay(self):
         """Creates the loading icon overlay widget, initially hidden."""
@@ -259,3 +276,67 @@ class ObjectListItemWidget(QWidget):
         self.status_switch.blockSignals(True)
         self.status_switch.setChecked(new_status)
         self.status_switch.blockSignals(False)
+        self.status_label.setText("Enabled" if new_status else "Disabled")
+
+    # app/views/components/object_list_item_widget.py
+
+    def set_selected_state(self, is_selected: bool):
+        """Toggle between switch and status label visibility."""
+        self.status_switch.setVisible(is_selected)
+        self.status_label.setVisible(not is_selected)
+
+    def show_metadata_flyout(self):
+        """Show metadata flyout with rich info."""
+        props = self.item_model.properties or {}
+        if not props:
+            return
+
+        actual_name = self.item_model.actual_name or "-"
+        element = props.get("element", "-").capitalize()
+        region = props.get("region", "-").capitalize()
+        rarity = props.get("rarity", "-").capitalize()
+        gender = props.get("gender", "-").capitalize()
+        roles = ", ".join(props.get("roles", [])) or "-"
+        weapon = props.get("weapon", "-").capitalize()
+
+        # Compose content
+        content_lines = [
+            f"Element: {element}",
+            f"Region: {region}",
+            f"Rarity: {rarity}",
+            f"Gender: {gender}",
+            f"Roles: {roles}",
+            f"Weapon: {weapon}",
+        ]
+        content = "\n".join(content_lines)
+        position = TeachingTipTailPosition.LEFT_TOP
+
+        view = TeachingTipView(
+            title=actual_name,
+            content=content,
+            tailPosition=position,
+            isClosable=False,
+        )
+
+        self._meta_tip = TeachingTip.make(
+            target=self.name_label,
+            view=view,
+            duration=-1,
+            tailPosition=position,
+            parent=self,
+        )
+
+    def enterEvent(self, event):
+        if not self.bulk_checkbox.isChecked():
+            self.bulk_checkbox.setVisible(True)
+        self.show_metadata_flyout()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if not self.bulk_checkbox.isChecked():
+            self.bulk_checkbox.setVisible(False)
+
+        if hasattr(self, "_meta_tip") and self._meta_tip:
+            self._meta_tip.close()
+            self._meta_tip = None
+        super().leaveEvent(event)

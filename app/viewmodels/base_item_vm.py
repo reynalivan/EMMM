@@ -34,6 +34,7 @@ class BaseItemViewModel(QObject, metaclass=QObjectABCMeta):
 
     # ---Signals ---
     displayListChanged = pyqtSignal(list)  # List[item model type]
+    resetFilterState = pyqtSignal()
     loadingStateChanged = pyqtSignal(bool)  # Overall list loading
     pre_mod_status_change = pyqtSignal(str)  # path
     status_changed = pyqtSignal()

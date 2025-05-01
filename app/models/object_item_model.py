@@ -1,5 +1,7 @@
 # app/models/object_item_model.py
+
 from dataclasses import dataclass
+from typing import Optional
 from app.core.constants import DISABLED_PREFIX
 
 
@@ -25,3 +27,31 @@ class ObjectItemModel:
     @property
     def is_disabled_prefix_present(self) -> bool:
         return self.folder_name.lower().startswith(DISABLED_PREFIX.lower())
+
+    @property
+    def rarity(self) -> str:
+        return (self.properties or {}).get("rarity", "").lower()
+
+    @property
+    def element(self) -> str:
+        return (self.properties or {}).get("element", "").lower()
+
+    @property
+    def region(self) -> str:
+        return (self.properties or {}).get("region", "").lower()
+
+    @property
+    def gender(self) -> str:
+        return (self.properties or {}).get("gender", "").lower()
+
+    @property
+    def weapon(self) -> str:
+        return (self.properties or {}).get("weapon", "").lower()
+
+    @property
+    def roles(self) -> list[str]:
+        return (self.properties or {}).get("roles", [])
+
+    @property
+    def preset_name(self) -> Optional[str]:
+        return (self.properties or {}).get("preset_name")
