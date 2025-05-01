@@ -9,6 +9,7 @@ from app.utils.logger_utils import logger
 from app.services.file_watcher_service import FileWatcherService
 from app.viewmodels.object_list_vm import ObjectListVM
 from app.viewmodels.folder_grid_vm import FolderGridVM
+from typing import List
 
 
 class MainWindowVM(QObject):
@@ -40,10 +41,21 @@ class MainWindowVM(QObject):
 
     def load_initial_data(self) -> None:
         logger.debug("Loading initial data for MainWindowVM")
-        self._available_games = self._config_service.load_games()
-        self.game_list_updated.emit(self._available_games)
 
-        settings = self._config_service.load_app_settings()
+        try:
+            self._available_games = self._config_service.load_games()
+            self.game_list_updated.emit(self._available_games)
+        except Exception as e:
+            logger.error(f"Failed to load games from config: {e}", exc_info=True)
+            self._available_games = []
+            self.game_list_updated.emit([])
+
+        try:
+            settings = self._config_service.load_app_settings()
+        except Exception as e:
+            logger.warning(f"Failed to load app settings, using defaults: {e}")
+            settings = AppSettings()  # fallback to default
+
         for g in self._available_games:
             if g.name == settings.last_selected_game_name:
                 self._current_game = g
@@ -51,7 +63,7 @@ class MainWindowVM(QObject):
 
                 if self.object_vm and self.folder_vm and g.path:
                     self.object_vm._load_items_for_path(g.path)
-                return
+                break  # exit after found
 
     def select_game_by_name(self, name: str) -> None:
         logger.debug(f"Selecting game by name: {name}")
@@ -60,6 +72,19 @@ class MainWindowVM(QObject):
                 self._current_game = g
                 self._save_last_selected_game()
                 self.current_game_changed.emit(g)
+
+                # 🔧 Clear old state before loading new game
+                if self.object_vm:
+                    self.object_vm.clear_state()
+
+                if self.folder_vm:
+                    self.folder_vm.clear_state()
+
+                # ✅ Load items after clear
+                if g.path:
+                    self.object_vm._load_items_for_path(g.path)
+                    self.folder_vm._on_safe_mode_changed(self._is_safe_mode_on)
+
                 return
 
     def update_game_list(self) -> None:
@@ -88,13 +113,21 @@ class MainWindowVM(QObject):
             self._save_safe_mode_setting()
             logger.debug(f"MainWindowVM: Emitting safeModeStatusChanged({is_on})")
             self.safe_mode_status_changed.emit(is_on)
+
+            if self.folder_vm:
+                logger.debug(
+                    "MainWindowVM: Propagating safe mode change to FolderGridVM."
+                )
+                self.folder_vm._on_safe_mode_changed(
+                    is_on
+                )  # <- FIX: propagate to folder grid
         else:
             logger.debug("MainWindowVM: Safe mode status unchanged.")
 
     def get_current_game(self) -> Optional[GameDetail]:
         return self._current_game
 
-    def get_available_games(self) -> list[GameDetail]:
+    def get_available_games(self) -> List[GameDetail]:
         return self._available_games
 
     def is_safe_mode_active(self) -> bool:

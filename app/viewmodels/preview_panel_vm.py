@@ -1,6 +1,8 @@
 # app/viewmodels/preview_panel_vm.py
 
+import os
 from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtGui import QPixmap
 from app.services.data_loader_service import DataLoaderService
 from app.services.mod_management_service import ModManagementService
 from app.services.thumbnail_service import ThumbnailService
@@ -52,6 +54,7 @@ class PreviewPanelVM(QObject):
         self._is_enabled: bool = False
         self._thumbnail_image_paths: list[str] = []
         self._ini_file_list: list[str] = []
+        self._preview_pixmap: QPixmap | None = None
 
         self._connect_internal_signals()
         logger.debug("PreviewPanelVM initialized.")
@@ -87,7 +90,8 @@ class PreviewPanelVM(QObject):
         self._is_enabled = False
         self._thumbnail_image_paths = []
         self._ini_file_list = []
-
+        if self._preview_pixmap:
+            self._preview_pixmap = None  # Auto-release
         self.display_data_updated.emit({})
         self.thumbnail_paths_updated.emit([])
         self.ini_list_updated.emit([])
@@ -163,7 +167,17 @@ class PreviewPanelVM(QObject):
             logger.debug(
                 f"PreviewPanelVM: Received {len(image_paths)} preview paths for {folder_path}"
             )
+
             self._thumbnail_image_paths = image_paths
+
+            # Optional: preload first image to RAM via QPixmap to prevent disk lock
+            if image_paths:
+                first_image = image_paths[0]
+                pixmap = QPixmap(first_image)
+                self._preview_pixmap = pixmap  # Simpan biar bisa release nanti
+            else:
+                self._preview_pixmap = None
+
             self.thumbnail_paths_updated.emit(self._thumbnail_image_paths)
         else:
             logger.debug(
@@ -189,3 +203,16 @@ class PreviewPanelVM(QObject):
         logger.debug(
             f"PreviewPanel: Operation finished for {original_item_path} -> {final_item_path}. Success: {success}"
         )
+
+    def on_object_path_changed(self, old_path: str, new_path: str):
+        """Update preview panel if current item path has changed."""
+        if not self._current_item:
+            return
+        if os.path.normpath(old_path) != os.path.normpath(self._current_item.path):
+            return
+
+        logger.info(f"PreviewPanelVM: Current item path updated to {new_path}")
+        self._current_item.path = new_path
+
+        self._data_loader.get_ini_files_async(new_path)
+        self._thumbnail_service.find_preview_thumbnails_async(new_path)

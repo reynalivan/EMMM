@@ -1,3 +1,5 @@
+# app/models/folder_item_model.py
+
 from dataclasses import dataclass
 from app.core.constants import DISABLED_PREFIX
 

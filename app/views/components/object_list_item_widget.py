@@ -1,6 +1,5 @@
 # App/views/components/object list item widget.py
 
-
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPoint
@@ -25,7 +24,6 @@ class ObjectListItemWidget(QWidget):
     """Custom widget representing a single item in the ObjectListPanel."""
 
     # ---Signals ---
-
     status_toggled = pyqtSignal(bool)
     bulk_selection_changed = pyqtSignal(bool)
     # ---End Signals ---
@@ -68,26 +66,20 @@ class ObjectListItemWidget(QWidget):
         self.name_label = BodyLabel()
         self.name_label.setObjectName("NameLabel")
         # self.name_label.setwordwrap (true) # activate if necessary wrap on the list
-
         status_widget = QWidget()
         status_layout = QHBoxLayout(status_widget)
         status_layout.setContentsMargins(0, 0, 0, 0)
         status_layout.setSpacing(4)
-
         self.status_switch = SwitchButton()
         self.status_switch.setToolTip("Set modse active/inactive")
         self.status_switch.setEnabled(True)
-
         self.status_label = CaptionLabel()
         self.status_label.setObjectName("StatusLabel")
-
         status_layout.addWidget(self.status_switch)
         status_layout.addWidget(self.status_label)
         status_layout.addStretch(1)
-
         center_layout.addWidget(self.name_label)
         center_layout.addWidget(status_widget)
-
         self.bulk_checkbox = CheckBox()
         self.bulk_checkbox.setToolTip("Select for batch operations")
 
@@ -217,8 +209,10 @@ class ObjectListItemWidget(QWidget):
         """Enable or disable interactive elements (switch, checkbox)."""
         self.status_switch.setEnabled(enabled)
         self.bulk_checkbox.setEnabled(enabled)
-        # Optional: Visual cue for disabled state
-        # self.setOpacity(1.0 if enabled else 0.7)
+        # If stuck, log it
+        logger.debug(
+            f"Widget [{self.item_model.display_name}] interactive set to {enabled}"
+        )
 
     def show_loading_overlay(self, show: bool):
         """Show or hide the loading indicator overlay."""
@@ -245,7 +239,6 @@ class ObjectListItemWidget(QWidget):
         # new_path = data.get('path', self.item_model.path) # Path for tooltip
 
         # Update UI elements
-
         self.name_label.setText(new_display_name)
         self.name_label.setToolTip(new_display_name)  # Update tooltip
 
@@ -253,6 +246,8 @@ class ObjectListItemWidget(QWidget):
             self.status_switch.blockSignals(True)
             self.status_switch.setChecked(new_status)
             self.status_switch.blockSignals(False)
+
+            self.set_interactive(True)
         else:
             logger.warning(
                 f"Widget update skipped invalid status for {self.item_model.display_name}: {new_status}"
@@ -264,8 +259,3 @@ class ObjectListItemWidget(QWidget):
         self.status_switch.blockSignals(True)
         self.status_switch.setChecked(new_status)
         self.status_switch.blockSignals(False)
-
-        # Optionally update internal model if needed, but can cause inconsistencies
-        # self.item_model.status = new_status
-        # self.item_model.display_name = new_display_name # This is tricky if display_name is property
-        # self.item_model.path = new_path

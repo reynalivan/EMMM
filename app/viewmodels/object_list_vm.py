@@ -1,6 +1,5 @@
 # App/viewmodels/object list vm.py
 
-
 import os
 from typing import List, Optional, Literal, Dict, Any  # Import Literal
 
@@ -16,6 +15,7 @@ from .base_item_vm import BaseItemViewModel, ItemModelType  # Import base class
 from app.utils.async_utils import AsyncStatusManager, Debouncer
 from app.viewmodels.folder_grid_vm import FolderGridVM
 from typing import TYPE_CHECKING
+from app.utils.signal_utils import safe_connect
 
 if TYPE_CHECKING:
     from app.viewmodels.main_window_vm import MainWindowVM
@@ -127,10 +127,15 @@ class ObjectListVM(BaseItemViewModel):
     def connect_global_signals(self, main_vm: "MainWindowVM"):
         """Connect to signals from MainWindowVM."""
         # logger.debug("Connecting ObjectListVM to MainWindowVM signals...") # Keep lean
-
         try:
             main_vm.current_game_changed.connect(self._handle_current_game_changed)
-            # TODO: Connect main_vm.global_refresh_requested to a refresh slot
+
+            if self._mod_manager:
+                safe_connect(
+                    self._mod_manager.modStatusChangeComplete,
+                    self._on_mod_status_changed,
+                    self,
+                )
 
         except AttributeError as e:
             logger.error(f"Error connecting global signals in ObjectListVM: {e}")
@@ -139,7 +144,6 @@ class ObjectListVM(BaseItemViewModel):
         """Connects specific data loading signals for this VM."""
         try:
             # Connect objectItemsReady from data_loader
-
             self._data_loader.objectItemsReady.connect(self._on_object_items_loaded)
             # showError signal is inherited from BaseItemViewModel, connection check is optional
 
@@ -160,10 +164,12 @@ class ObjectListVM(BaseItemViewModel):
     def load_objects_for_game(self, game_path: Optional[str]) -> None:
         """Implementation for loading object items."""
         normlpath = os.path.normpath(game_path) if game_path else None
-        self._current_game_path = normlpath  # Update context path
 
+        if normlpath != self._current_game_path:
+            self.select_object_item(None)
+
+        self._current_game_path = normlpath  # Update context path
         self.set_loading(True)  # Use base class method to set loading state
-        self.select_object_item(None)  # Deselect previous item
 
         if not normlpath:
             self._all_object_items = []
@@ -230,17 +236,39 @@ class ObjectListVM(BaseItemViewModel):
             self._selected_item = item_model
             self.objectItemSelected.emit(item_model)  # Emit model or None
 
-    # Object list vm.py
-    def _on_mod_status_changed(self, original_item_path: str, result: dict):
-        """Custom handling for ObjectListVM when object root folder renamed."""
-        # Call parent first
-        super()._on_mod_status_changed(original_item_path, result)
+    def _after_mod_status_change(self, orig_path: str, new_path: str, result: dict):
+        """After mod status change."""
+        if not result.get("success"):
+            return
 
-        # Tambahan ObjectListVM behavior
-        success = result.get("success", False)
-        if success:
-            self._refresh_folder_grid_items()
-            self._refresh_folder_grid_breadcrumbs()
+        affected_item = next(
+            (item for item in self._all_object_items if item.path == orig_path),
+            None,
+        )
+
+        if affected_item:
+            affected_item.path = new_path
+            affected_item.status = result.get("new_status", affected_item.status)
+
+            self.updateItemDisplay.emit(
+                orig_path,
+                {
+                    "status": affected_item.status,
+                    "display_name": affected_item.display_name,
+                    "path": new_path,
+                },
+            )
+
+        # === If this item is still selected, trigger foldergrid update ===
+        if self._selected_item and os.path.normpath(self._selected_item.path) in {
+            os.path.normpath(orig_path),
+            os.path.normpath(new_path),
+        }:
+            logger.info(
+                f"ObjectListVM: Selected item was toggled, updating FolderGrid to {new_path}"
+            )
+            self._selected_item.path = new_path  # update internal state
+            self._folder_grid_vm.update_root_path(new_path)
 
     def set_filewatcher_service(self, watcher: FileWatcherService):
         """Set file watcher service after construction."""
@@ -253,3 +281,13 @@ class ObjectListVM(BaseItemViewModel):
 
     def _set_current_path_context(self, path: str):
         self._current_game_path = path
+
+    def clear_state(self):
+        self._selected_item = None
+        self._all_object_items.clear()
+        self.displayed_items.clear()
+        self._filter_text = ""
+        self._filter_status = "all"
+        self._sort_key = "name"
+        self._sort_order = Qt.SortOrder.AscendingOrder
+        # self.status_changed.emit()

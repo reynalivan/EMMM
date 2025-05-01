@@ -105,9 +105,8 @@ class PreviewPanel(QWidget):
             # Flipview also blank when no item was selected
 
             self.image_view.setCurrentIndex(-1)  # Reset index
-
             self.image_view.clear()  # Delete the previous image
-
+            self.image_view.addImages([])
         else:
             self.title_label.setText(data.get("title", "N/A"))
             # Use all caps text according to other widgets
@@ -124,8 +123,8 @@ class PreviewPanel(QWidget):
         # Delete all old logic (clear_image_stack, loop, addwidget qlabel)
 
         self.image_view.setCurrentIndex(-1)  # Reset index before clear/add
-
         self.image_view.clear()  # Delete old images from flipview
+        self.image_view.addImages([])
 
         if paths:
             valid_paths = [p for p in paths if isinstance(p, str) and os.path.exists(p)]

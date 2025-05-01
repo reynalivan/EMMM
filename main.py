@@ -33,7 +33,7 @@ from app.services.file_watcher_service import FileWatcherService
 def main():
     """Main application entry point."""
     app = QApplication(sys.argv)
-
+    app.setApplicationName("Enabled Model Mods Manager")
     # Apply Fluent Theme
     setTheme(Theme.DARK)
     logger.info("Application starting...")
@@ -60,9 +60,7 @@ def main():
     # Initialize ViewModels
     try:
         folder_vm = FolderGridVM(data_loader, mod_service, thumbnail_service)
-        object_vm = ObjectListVM(
-            data_loader, mod_service, thumbnail_service, FolderGridVM
-        )
+        object_vm = ObjectListVM(data_loader, mod_service, thumbnail_service, folder_vm)
         preview_vm = PreviewPanelVM(
             data_loader, mod_service, thumbnail_service, image_utils
         )
@@ -78,7 +76,7 @@ def main():
 
         # Rebind file watcher
         object_vm.rebind_filewatcher()
-
+        folder_vm.rebind_filewatcher()
         logger.info("View models initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize view models: {e}", exc_info=True)
@@ -87,13 +85,20 @@ def main():
         return 1
 
     # Connect Signals Between VMs
-
     try:
-        # Signature assumes main_vm needed for safe mode check in FolderGridVM
-
-        folder_vm.connect_global_signals(main_vm, object_vm)
         object_vm.connect_global_signals(main_vm)
+        folder_vm.connect_global_signals(main_vm, object_vm)
         preview_vm.connect_folder_grid_vm(folder_vm)
+
+        # --- New: pre-mod-change trigger ---
+        object_vm.pre_mod_status_change.connect(
+            folder_vm.handle_object_root_about_to_change
+        )
+        object_vm.pre_mod_status_change.connect(preview_vm.clear_details)
+
+        # After preview_vm created
+        object_vm.objectItemPathChanged.connect(preview_vm.on_object_path_changed)
+
         folder_vm.bind_mod_service_signals()
         logger.debug("VM signals connected.")
     except AttributeError as e:
@@ -101,10 +106,7 @@ def main():
             f"Error connecting VM signals: {e}. Check method names/signatures."
         )
 
-    # File Watcher related TODOs removed
-
     # Initialize UI Panels
-
     try:
         obj_panel = ObjectListPanel(object_vm)
         fld_panel = FolderGridPanel(folder_vm)
@@ -115,7 +117,6 @@ def main():
         return 1
 
     # Initialize Main Window (UI)
-
     try:
         win = MainWindow(main_vm, obj_panel, fld_panel, prv_panel)
         win.show()
@@ -138,7 +139,12 @@ def main():
     exit_code = app.exec()
     logger.info(f"Application exiting with code {exit_code}")
 
-    # TODO: Add cleanup code here if needed
+    # Clean up file watcher
+    try:
+        file_watcher_service.stop()
+        logger.info("FileWatcherService stopped cleanly.")
+    except Exception as e:
+        logger.warning(f"Failed to stop FileWatcherService: {e}", exc_info=True)
 
     return exit_code
 

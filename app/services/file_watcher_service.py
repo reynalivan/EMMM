@@ -161,6 +161,7 @@ class FileWatcherService(QObject):
         self.stop()
 
     def _enqueue_event(self, evt: FileChangeEvent):
+        logger.debug(f"Enqueueing event: {evt.event_type} -> {evt.src_path}")
         folder_path = os.path.dirname(evt.src_path)
 
         if folder_path not in self._pending_events:
@@ -185,8 +186,12 @@ class FileWatcherService(QObject):
     @pyqtSlot()
     def start_batch_timer_async(self):
         """Safely starts the batch timer from the main thread."""
+        logger.debug("start_batch_timer_async() called")
         if not self._batch_timer.isActive():
             self._batch_timer.start(500)
+            logger.debug("Batch timer started")
+        else:
+            logger.debug("Batch timer already active")
 
     @pyqtSlot(str)
     def emit_file_changed(self, path: str):
@@ -195,6 +200,7 @@ class FileWatcherService(QObject):
 
     def _emit_batch_changes(self):
         if not self._pending_events:
+            logger.debug("No pending events to emit.")
             return
 
         logger.info(
@@ -202,6 +208,8 @@ class FileWatcherService(QObject):
         )
 
         for folder_path, events in self._pending_events.items():
+            logger.info(f"Emitting {len(events)} events for folder: {folder_path}")
+
             if not events:
                 continue
 
@@ -250,7 +258,10 @@ class _WatchdogHandler(FileSystemEventHandler):
         self._service = service
 
     def dispatch(self, event: FileSystemEvent):
+        logger.debug(f"Dispatching event: {event.event_type} - {event.src_path}")
+
         if not self._service._active:
+            logger.debug("Skipping dispatch: service not active")
             return
 
         is_folder = event.is_directory
@@ -259,8 +270,16 @@ class _WatchdogHandler(FileSystemEventHandler):
         if not path:
             return
 
-        if not is_folder and not path.lower().endswith(self.VALID_EXTENSIONS):
-            # For regular files: filter extensions
+        ext = os.path.splitext(path)[1].lower()
+        # Special case: always allow 'deleted', even if extension unknown or is_directory=False
+        if (
+            event.event_type != "deleted"
+            and not is_folder
+            and ext not in self.VALID_EXTENSIONS
+        ):
+            logger.debug(
+                f"Skipped event (filtered): {event.event_type} - {path} (ext={ext}, is_folder={is_folder})"
+            )
             return
 
         logger.debug(

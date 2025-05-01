@@ -5,7 +5,7 @@ import json
 import shutil
 from typing import Literal, Dict, Any, List, Optional
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
-
+import ctypes
 import time
 from app.core import constants
 from app.utils.logger_utils import logger
@@ -61,6 +61,7 @@ class ModManagementService(QObject):
         logger.info(
             f"Request received: {'Enable' if enable else 'Disable'} '{item_path}' (Type: {item_type})"
         )
+
         # Basic validation before starting task
         if not item_path or not os.path.isdir(item_path):
             logger.error(f"Path is not a valid directory: {item_path}")
@@ -196,6 +197,18 @@ class ModManagementService(QObject):
                     new_folder_name = prefix + clean_actual_name
 
                 # Rename folder
+                if ModManagementService._is_folder_locked(original_path):
+                    error_msg = f"Rename blocked: Folder '{original_path}' is in use."
+                    logger.warning(error_msg)
+                    return {
+                        "success": False,
+                        "new_path": None,
+                        "new_status": original_status,
+                        "original_status": original_status,
+                        "actual_name": actual_name,
+                        "item_type": item_type,
+                        "error": error_msg,
+                    }
                 os.rename(original_path, new_path)
                 success = True
                 logger.info(
@@ -224,21 +237,6 @@ class ModManagementService(QObject):
             "item_type": item_type,  # Include item type
             "error": error_msg,
         }
-
-    def retry_rename(
-        src: str, dest: str, max_retries: int = 5, delay: float = 0.5
-    ) -> bool:
-        """Tries to rename with retries to handle temporary file locks."""
-        for attempt in range(max_retries):
-            try:
-                os.rename(src, dest)
-                return True
-            except OSError as e:
-                if attempt < max_retries - 1:
-                    time.sleep(delay)
-                else:
-                    raise e
-        return False
 
     # --- Safe Mode Logic (Sudah ada sebelumnya, pastikan signature cocok jika perlu) ---
     def applySafeModeChanges_async(
@@ -383,6 +381,34 @@ class ModManagementService(QObject):
         except OSError as e:
             logger.error(f"Rename failed via helper (OS Error): {e}")
             return False, None
+
+    @staticmethod
+    def _is_folder_locked(path: str) -> bool:
+        """Check if folder is locked by trying to rename temporarily."""
+        try:
+            test_path = path + "_lock_test"
+            os.rename(path, test_path)
+            os.rename(test_path, path)
+            return False
+        except Exception as e:
+            logger.warning(f"Folder lock check failed: {e}")
+            return True
+
+    @staticmethod
+    def retry_rename(
+        src: str, dest: str, max_retries: int = 5, delay: float = 0.5
+    ) -> bool:
+        """Tries to rename with retries to handle temporary file locks."""
+        for attempt in range(max_retries):
+            try:
+                os.rename(src, dest)
+                return True
+            except OSError as e:
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                else:
+                    raise e
+        return False
 
     # TODO: Implement _ensure_json_exists helper? Might be combined with _read/_write.
 

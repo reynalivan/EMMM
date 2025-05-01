@@ -79,6 +79,13 @@ class Debouncer(QObject):
             if key in self._timers:
                 self._timers.pop(key).deleteLater()
 
+    def cancel(self, key: Any):
+        """Cancel and remove a scheduled debounce function if exists."""
+        timer = self._timers.pop(key, None)
+        if timer:
+            timer.stop()
+            timer.deleteLater()
+
 
 # --- Async Status Manager ---
 
@@ -102,6 +109,9 @@ class AsyncStatusManager(QObject):
     def mark_success(self, item_path: str):
         self._pending_items.discard(item_path)
         self._success_items.add(item_path)
+        # Auto-clear after delay (prevents toggle lock)
+        QTimer.singleShot(800, lambda: self._success_items.discard(item_path))
+
         self.status_changed.emit()
 
     def mark_failed(self, item_path: str, error_message: str):

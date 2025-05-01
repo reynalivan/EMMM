@@ -2,7 +2,7 @@
 
 import os
 from typing import List, Literal, Optional
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt
 from PyQt6.QtGui import QPixmap
 from app.models.folder_item_model import FolderItemModel
 from app.models.object_item_model import ObjectItemModel
@@ -15,6 +15,8 @@ from app.core.constants import DISABLED_PREFIX
 from app.views.components.breadcrumb_widget import BreadcrumbWidget
 from .base_item_vm import BaseItemViewModel, ItemModelType  # Import base class
 from typing import TYPE_CHECKING
+from app.utils.signal_utils import safe_connect
+
 
 if TYPE_CHECKING:
     from app.viewmodels.object_list_vm import ObjectListVM
@@ -46,6 +48,10 @@ class FolderGridVM(BaseItemViewModel):
 
         self._connect_data_loader_signals()
         logger.debug("FolderGridVM initialized.")
+        self._filter_text = ""
+        self._filter_status = "All"
+        self._sort_key = "display_name"
+        self._sort_order = Qt.SortOrder.AscendingOrder
 
     def _get_item_list(self) -> List[FolderItemModel]:
         """Returns the internal list of folder items."""
@@ -66,40 +72,47 @@ class FolderGridVM(BaseItemViewModel):
         """Returns the current parent folder path being viewed."""
         return self._current_parent_path
 
-    def _filter_and_sort(self):
+    def _filter_and_sort(self, initial_load: bool = False):
         """Filters and sorts the internal list (_all_folder_items)"""
         logger.debug(
             f"FolderGridVM: Filtering and sorting items. Safe mode: {self._is_safe_mode_on}"
         )
-        # TODO: Implement actual filtering based on text, status dropdown
-        # TODO: Implement sorting based on selected criteria
 
         filtered_items = []
         for item in self._all_folder_items:
-            # Safe Mode Filter
             if self._is_safe_mode_on and not item.is_safe:
-                continue  # Skip unsafe items when safe mode is ON
+                continue
 
-            # TODO: Add other filters (text search, status dropdown) here
-            # if self._filter_status == "Enabled" and not item.status: continue
-            # if self._filter_status == "Disabled" and item.status: continue
-            # if self._filter_text and self._filter_text.lower() not in item.display_name.lower(): continue
+            if hasattr(self, "_filter_status"):
+                if self._filter_status == "Enabled" and not item.status:
+                    continue
+                if self._filter_status == "Disabled" and item.status:
+                    continue
+
+            if hasattr(self, "_filter_text") and self._filter_text:
+                if self._filter_text.lower() not in item.display_name.lower():
+                    continue
 
             filtered_items.append(item)
 
-        # TODO: Add sorting logic here
-        # key = lambda i: getattr(i, self._sort_key, i.display_name)
-        # reverse = self._sort_order == Qt.SortOrder.DescendingOrder
-        # filtered_items.sort(key=key, reverse=reverse)
-        filtered_items.sort(
-            key=lambda item: item.display_name
-        )  # Simple sort by name for now
+        # Only sort during the initial load
+        if initial_load:
+            try:
+                filtered_items.sort(
+                    key=lambda i: (not i.status, i.display_name.lower())
+                )
+            except Exception as e:
+                logger.warning(f"Sort fallback due to error: {e}")
+                filtered_items.sort(key=lambda i: i.display_name.lower())
 
         self.displayed_items = filtered_items
         logger.debug(
             f"FolderGridVM: Emitting {len(self.displayed_items)} items after filter/sort."
         )
         self.displayListChanged.emit(self.displayed_items)
+
+        if self._selected_item and self._selected_item in self.displayed_items:
+            self.folderItemSelected.emit(self._selected_item)
 
     def connect_global_signals(
         self, main_vm: "MainWindowVM", object_list_vm: "ObjectListVM"
@@ -129,10 +142,56 @@ class FolderGridVM(BaseItemViewModel):
 
     # bind_mod_service_signals is called from main.py
     def bind_mod_service_signals(self):
-        """Connects to signals from ModManagementService."""
         logger.debug("Binding FolderGridVM to ModManagementService signals.")
-        # safeModeApplyComplete is connected here
-        # TODO: Connect other signals from mod_service (CRUD results etc.) when implemented
+        if self._mod_manager:
+            safe_connect(
+                self._mod_manager.modStatusChangeComplete,
+                self._on_mod_status_changed,
+                self,
+            )
+
+    def _after_mod_status_change(self, orig_path: str, new_path: str, result: dict):
+        if not result.get("success"):
+            return
+
+        found_model = next(
+            (
+                m
+                for m in self._all_folder_items
+                if os.path.normpath(m.path)
+                in {os.path.normpath(orig_path), os.path.normpath(new_path)}
+            ),
+            None,
+        )
+
+        if not found_model:
+            return
+
+        found_model.path = new_path
+        found_model.folder_name = os.path.basename(new_path)
+
+        from app.core.constants import DISABLED_PREFIX
+
+        found_model.status = not found_model.folder_name.lower().startswith(
+            DISABLED_PREFIX.lower()
+        )
+
+        self._update_item_thumbnail(found_model)
+
+        self.updateItemDisplay.emit(
+            orig_path,
+            {
+                "path": new_path,
+                "display_name": found_model.display_name,
+                "status": found_model.status,
+            },
+        )
+
+        path_changed = os.path.normpath(orig_path) != os.path.normpath(new_path)
+
+        if not path_changed:
+            # Only apply filter/sort when no rename occurred
+            self._filter_and_sort()  # No sorting after status switch
 
     def _on_object_item_selected(self, selected_item: ObjectItemModel | None):
         """Handles selection change from ObjectListVM."""
@@ -174,9 +233,9 @@ class FolderGridVM(BaseItemViewModel):
             logger.info(f"FolderGridVM: Loading folders for path: {parent_path}")
             self._current_parent_path = os.path.normpath(parent_path)
             self._data_loader.get_folder_items_async(self._current_parent_path)
-            # add file watcher
+            # clean file watcher and add new
             if self._file_watcher_service and self._file_watcher_service.is_enabled():
-                self.bind_filewatcher(self._file_watcher_service)
+                self.rebind_filewatcher()
         else:
             logger.info(
                 "FolderGridVM: load_folders_for called with None path, clearing."
@@ -185,6 +244,9 @@ class FolderGridVM(BaseItemViewModel):
             self._all_folder_items = []
             self._filter_and_sort()  # Emit empty list
 
+    def select_folder_item(self, item: FolderItemModel):
+        self.folderItemSelected.emit(item)
+
     def _on_folder_items_loaded(self, parent_path: str, items: list[FolderItemModel]):
         """Handles the folder items loaded by DataLoaderService."""
         # Check if the result is for the currently viewed path
@@ -192,7 +254,9 @@ class FolderGridVM(BaseItemViewModel):
             return
         logger.debug(f"FolderGridVM: Received {len(items)} items for {parent_path}")
         self._all_folder_items = items
-        self._filter_and_sort()  # Apply filtering/sorting (includes safe mode)
+        self._filter_and_sort(
+            initial_load=True
+        )  # Apply filtering/sorting (includes safe mode)
         # Request thumbnails
         for item in self._all_folder_items:
             self.request_thumbnail_for(item)
@@ -219,35 +283,9 @@ class FolderGridVM(BaseItemViewModel):
             if self._all_folder_items:  # Only run if we have items loaded
                 logger.debug("Requesting ModManager to apply safe mode changes...")
                 # Pass a copy in case the list changes while task runs? Or ensure task handles it.
-                self._mod_service.applySafeModeChanges_async(
+                self._mod_manager.applySafeModeChanges_async(
                     list(self._all_folder_items), is_on  # Pass a copy
                 )
-
-    def _onSafeModeApplied(self, summary: dict):
-        """Handles completion of the safe mode renaming task."""
-        # The renaming might have happened, reload data to reflect FS changes
-        logger.info(
-            f"FolderGridVM: Safe mode apply task completed: {summary}. Refreshing folder list."
-        )
-        if self._current_parent_path:
-            # Reloading might cause flicker, but ensures consistency with FS
-            self.load_folders_for(self._current_parent_path)
-            # Breadcrumb shouldn't change just from safe mode toggle
-            # self.breadcrumbChanged.emit(self._breadcrumb_path) # Probably not needed here
-        else:
-            logger.warning(
-                "Safe mode applied but current_parent_path is None. Cannot refresh."
-            )
-
-    def select_folder_item(self, item_model: FolderItemModel | None):
-        """Selects a folder item and notifies the PreviewPanel."""
-        if self._selected_item != item_model:
-            logger.debug(
-                f"FolderGridVM: Selecting folder item -> {item_model.path if item_model else 'None'}"
-            )
-            self._selected_item = item_model
-            # Pemanggilan ini sekarang valid untuk item_model=None juga
-            self.folderItemSelected.emit(item_model)
 
     def handle_item_double_click(self, item_model: FolderItemModel):
         """Handles double-clicking on a folder item (navigate into subfolder)."""
@@ -263,7 +301,6 @@ class FolderGridVM(BaseItemViewModel):
 
         # Update breadcrumb
         # Avoid adding duplicate segment if already navigated
-
         self._breadcrumb_path.append(item_model.folder_name)
         self.breadcrumbChanged.emit(self._breadcrumb_path)
 
@@ -313,6 +350,11 @@ class FolderGridVM(BaseItemViewModel):
         path_parts = [self._object_root_path] + self._breadcrumb_path[1:]
         return os.path.normpath(os.path.join(*path_parts))
 
+    def rebind_filewatcher(self):
+        """Rebind file watcher after service is set."""
+        if self._file_watcher_service and self._file_watcher_service.is_enabled():
+            self.bind_filewatcher(self._file_watcher_service)
+
     def _handle_global_refresh(self):
         """Handles the global refresh request signal."""
         logger.info("FolderGridVM: Handling global refresh request.")
@@ -331,115 +373,79 @@ class FolderGridVM(BaseItemViewModel):
             if item.path == path:
                 return item
 
-    def handle_item_status_toggle_request(
-        self, item_model: FolderItemModel, enable: bool
-    ):
-        """Handle toggle request from Grid Panel."""
-        if not item_model or not hasattr(item_model, "path"):
-            logger.error(
-                f"FolderGridVM: Invalid item_model in handle_item_status_toggle_request: {item_model}"
-            )
-            return
-
-        path = item_model.path
-
-        if self._status_manager.is_item_pending(path):
-            logger.debug(f"Toggle request ignored, item already pending: {path}")
-            return
-
-        # Save original state
-        self._original_state_on_toggle[path] = {
-            "display_name": item_model.display_name,
-            "status": item_model.status,
-        }
-
-        self._status_manager.mark_pending(path)
-
-        self.operation_started.emit(path, f"{'Enabling' if enable else 'Disabling'}...")
-
-        # Start async task
-        self._mod_manager.set_mod_enabled_async(path, enable, self._get_item_type())
-
-        self.setItemLoadingState.emit(path, True)
-
     def update_root_path(self, new_path: str):
         """Update object root and reload folder list if still active."""
-        self._object_root_path = os.path.normpath(new_path)
-        self._current_parent_path = os.path.normpath(new_path)
+        norm_new = os.path.normpath(new_path)
+        if self._object_root_path == norm_new:
+            return  # avoid redundant reload
+
+        self._object_root_path = norm_new
+        self._current_parent_path = norm_new
         self._breadcrumb_path = [os.path.basename(new_path)]
 
         self.breadcrumbChanged.emit(self._breadcrumb_path)
-        self.load_folders_for(new_path)
+        self.load_folders_for(norm_new)
 
     def _handle_object_path_changed(self, old_path: str, new_path: str):
         """Handles when the object root path is changed due to disable/enable/rename."""
         if not self._object_root_path:
             return
 
-        if os.path.normpath(self._object_root_path) == os.path.normpath(old_path):
+        old_path_norm = os.path.normpath(old_path)
+        new_path_norm = os.path.normpath(new_path)
+        current_parent_norm = (
+            os.path.normpath(self._current_parent_path)
+            if self._current_parent_path
+            else None
+        )
+
+        # Update root if match
+        if os.path.normpath(self._object_root_path) == old_path_norm:
             logger.info(
                 f"FolderGridVM: Detected object root path change -> refreshing to new path: {new_path}"
             )
             self.update_root_path(new_path)
 
-        if self._current_parent_path and self._current_parent_path.startswith(old_path):
-            # Kalau lagi buka subfolder, ikut update path aktif
-            logger.info(
-                f"FolderGridVM: Current view inside renamed object, updating parent path too."
-            )
-            relative = os.path.relpath(self._current_parent_path, old_path)
-            self._current_parent_path = os.path.normpath(
-                os.path.join(new_path, relative)
-            )
+        # Update subfolder view if inside renamed object
+        if current_parent_norm and current_parent_norm.startswith(old_path_norm):
+            relative = os.path.relpath(current_parent_norm, old_path_norm)
+            new_parent_path = os.path.normpath(os.path.join(new_path_norm, relative))
 
-            self.load_folders_for(self._current_parent_path)
+            # Hindari double refresh jika sudah di root
+            if new_parent_path != new_path_norm:
+                logger.info(
+                    f"FolderGridVM: Current view inside renamed object, updating parent path too."
+                )
+                self._current_parent_path = new_parent_path
+                self.load_folders_for(new_parent_path)
 
-            # --- Breadcrumb Update ---
-            # Update breadcrumb supaya segment-segment ikut nama baru
+            # Update breadcrumb segment
             if self._breadcrumb_path:
-                self._breadcrumb_path[0] = os.path.basename(new_path)
-                self.breadcrumbChanged.emit(self._breadcrumb_path)
+                new_segment = os.path.basename(new_path_norm)
+                if self._breadcrumb_path[0] != new_segment:
+                    self._breadcrumb_path[0] = new_segment
+                    self.breadcrumbChanged.emit(self._breadcrumb_path)
 
     def set_filewatcher_service(self, watcher: FileWatcherService):
         """Set file watcher service after construction."""
         self._file_watcher_service = watcher
 
-    def _set_current_path_context(self, path: str):
-        self._current_game_path = path
+    def handle_object_root_about_to_change(self, path: str):
+        """Clear FolderGrid view if the given object path is currently active."""
+        if self._object_root_path and os.path.normpath(
+            self._object_root_path
+        ) == os.path.normpath(path):
+            logger.info(
+                "Object path will change. Clearing FolderGrid state proactively."
+            )
+            self.clear_state()
 
-    def set_breadcrumb_widget(self, breadcrumb_widget: BreadcrumbWidget):
-        """Inject breadcrumb widget reference safely."""
-        self._breadcrumb_widget = breadcrumb_widget
-
-    def _get_breadcrumb_widget(self) -> Optional[BreadcrumbWidget]:
-        return getattr(self, "_breadcrumb_widget", None)
-
-    def prepare_for_folder_rename(self, folder_path: str) -> bool:
-        """Clears active view if inside the given folder path."""
-        if not folder_path:
-            return False
-
-        normalized_active = (
-            os.path.normpath(self._current_parent_path)
-            if self._current_parent_path
-            else None
-        )
-        normalized_folder_path = os.path.normpath(folder_path)
-
-        if normalized_active and normalized_active.startswith(normalized_folder_path):
-            logger.info(f"FolderGridVM: Clearing active view inside {folder_path}")
-
-            self._current_object_item = None
-            self._object_root_path = None
-            self._current_parent_path = None
-            self._breadcrumb_path = []
-            self._all_folder_items = []
-            self.displayed_items = []
-
-            self.breadcrumbChanged.emit([])
-            self.displayListChanged.emit([])
-            self._filter_and_sort()
-            return True
-
-        return False
-
+    def clear_state(self):
+        self._object_root_path = None
+        self._current_parent_path = None
+        self._breadcrumb_path.clear()
+        self._all_folder_items.clear()
+        self.displayed_items.clear()
+        self.breadcrumbChanged.emit([])
+        self.displayListChanged.emit([])
+        self.folderItemSelected.emit(None)
