@@ -11,11 +11,12 @@ from app.services.file_watcher_service import FileChangeEvent, FileWatcherServic
 from app.services.mod_management_service import ModManagementService
 from app.services.thumbnail_service import ThumbnailService
 from app.utils.logger_utils import logger
-from .base_item_vm import BaseItemViewModel, ItemModelType  # Import base class
+from .base_item_vm import BaseItemViewModel  # Import base class
 from app.utils.async_utils import AsyncStatusManager, Debouncer
 from app.viewmodels.folder_grid_vm import FolderGridVM
 from typing import TYPE_CHECKING
 from app.utils.signal_utils import safe_connect
+from app.models.filter_state import FilterState
 
 if TYPE_CHECKING:
     from app.viewmodels.main_window_vm import MainWindowVM
@@ -25,6 +26,8 @@ class ObjectListVM(BaseItemViewModel):
     """ViewModel for the Object List panel."""
 
     objectItemSelected = pyqtSignal(object)
+    filterButtonStateChanged = pyqtSignal(int)  # Number of active filters
+    resultSummaryUpdated = pyqtSignal(str)
 
     def __init__(
         self,
@@ -39,20 +42,16 @@ class ObjectListVM(BaseItemViewModel):
         super().__init__(data_loader, mod_service, thumbnail_service, parent)
         self.set_handling_status_changes(True)
         self._debouncer = Debouncer(self)
-        self._status_manager = AsyncStatusManager(self)
         self._folder_grid_vm = folder_grid_vm
+        self._filter_state = FilterState()
+        self._last_filter_state: Optional[FilterState] = None
+
         # ObjectListVM specific state
         self._selected_item: Optional[ObjectItemModel] = None
         self._current_game_path: Optional[str] = None
         self._all_object_items: List[ObjectItemModel] = []  # The main data list
         self.displayed_items: List[ObjectItemModel] = []
 
-        # Specific Filter/Sort State (could be moved to base if desired later)
-        self._metadata_filters: dict[str, set[str]] = (
-            {}
-        )  # key: category, value: selected filters
-        self._filter_text = ""
-        self._filter_status = "All"
         self._sort_key = "display_name"
         self._sort_order = Qt.SortOrder.AscendingOrder
 
@@ -73,7 +72,9 @@ class ObjectListVM(BaseItemViewModel):
     def _load_items_for_path(self, path: Optional[str]):
         """Loads object items for the given game path."""
         if path:
-            self.load_objects_for_game(path)
+            logger.debug(f"Loading object items for path: {path}")
+            self._current_game_path = os.path.normpath(path)
+            self.load_objects_for_game(self._current_game_path)
         else:
             logger.debug(f"{self.__class__.__name__}: No valid path to load.")
 
@@ -90,7 +91,7 @@ class ObjectListVM(BaseItemViewModel):
 
     def set_metadata_filters(self, new_filters: dict[str, set[str]]):
         """Set new metadata filters and refresh display."""
-        self._metadata_filters = new_filters
+        self._filter_state.metadata = new_filters
         self._filter_and_sort()
 
     def get_metadata_filter_options(self) -> dict[str, list[str]]:
@@ -111,36 +112,43 @@ class ObjectListVM(BaseItemViewModel):
 
     def clear_metadata_filter(self):
         """Clear all active metadata filters."""
-        self._metadata_filters.clear()
+        self._filter_state.metadata.clear()
         self._filter_and_sort()
 
-    def clear_all_metadata_filters(self):
-        self._metadata_filters.clear()
-        self._filter_text = ""
+    def clear_all_filters_and_search(self):
+        self._filter_state.metadata.clear()
+        self._filter_state.text = ""
         self._filter_and_sort()
 
     def _filter_and_sort_logic(self):
-        """Fast filtering and sorting."""
+        """Filter, sort, update display list, and notify UI state using hash-based caching."""
+        current_hash = self._filter_state.hash()
+        if current_hash == getattr(self, "_last_filter_hash", None):
+            logger.debug("FilterState unchanged. Skipping filter/sort.")
+            return
+
+        self._last_filter_hash = current_hash
+
         filtered = []
         for item in self._all_object_items:
-
             # Status filter
-            if self._filter_status == "Enabled" and not item.status:
+            if self._filter_state.status == "Enabled" and not item.status:
                 continue
-            if self._filter_status == "Disabled" and item.status:
+            if self._filter_state.status == "Disabled" and item.status:
                 continue
 
-            # Text filter searchbar
+            # Text search filter
             if (
-                self._filter_text
-                and self._filter_text.lower() not in item.display_name.lower()
+                self._filter_state.text
+                and self._filter_state.text.lower() not in item.display_name.lower()
             ):
                 continue
 
-            # Metadata filter
+            # Metadata filters
             metadata_ok = True
-            for cat, allowed_values in self._metadata_filters.items():
-                if not isinstance(item.properties, dict):
+            for cat, allowed_values in self._filter_state.metadata.items():
+                item_values = item.metadata_index.get(cat, set())
+                if not item_values.intersection(allowed_values):
                     metadata_ok = False
                     break
                 prop_value = item.properties.get(cat)
@@ -151,34 +159,34 @@ class ObjectListVM(BaseItemViewModel):
                 elif prop_value not in allowed_values:
                     metadata_ok = False
                     break
-
             if not metadata_ok:
                 continue
+
             filtered.append(item)
 
-        # Fast sort optimization
+        # Sorting
         try:
             is_reverse = self._sort_order == Qt.SortOrder.DescendingOrder
-
-            # Pre-build (sort_key_value, item) tuples
-            if self._sort_key:
-                prepared = [
-                    (getattr(i, self._sort_key, i.display_name), i) for i in filtered
-                ]
-            else:
-                prepared = [(i.display_name, i) for i in filtered]
-
-            # Sort prepared tuples
-            prepared.sort(key=lambda x: x[0], reverse=is_reverse)
-
-            # Unpack
+            prepared = [
+                ((not i.status, getattr(i, self._sort_key, i.display_name)), i)
+                for i in filtered
+            ]
+            prepared.sort(key=lambda x: x[0])
             self.displayed_items = [i for _, i in prepared]
-
         except Exception as e:
             logger.error(f"Sorting failed: {e}. Falling back to default sort.")
             self.displayed_items = sorted(filtered, key=lambda i: i.display_name)
 
+        # Update UI
         self.displayListChanged.emit(self.displayed_items)
+
+        # Emit filter UI state
+        active_filter_count = sum(len(v) for v in self._filter_state.metadata.values())
+        self.filterButtonStateChanged.emit(active_filter_count)
+
+        show_summary = bool(self._filter_state.text.strip() or active_filter_count)
+        summary = f"{len(self.displayed_items)} items found" if show_summary else ""
+        self.resultSummaryUpdated.emit(summary)
 
     def connect_global_signals(self, main_vm: "MainWindowVM"):
         """Connect to signals from MainWindowVM."""
@@ -211,70 +219,63 @@ class ObjectListVM(BaseItemViewModel):
             logger.error(f"Error connecting data loader signals in ObjectListVM: {e}")
 
     def _handle_current_game_changed(self, game_detail):
-        """Slot for current_game_changed signal."""
-        game_path = game_detail.path if game_detail else None
-        self._load_items_for_path(game_path)  # Use the abstract method call wrapper
+        logger.debug(f"Handling game change: {game_detail}")
+        if self._folder_grid_vm:
+            self._folder_grid_vm.clear_state()
+
+        if not game_detail:
+            self._current_game_path = None
+            self._all_object_items.clear()
+            self.displayListChanged.emit([])  # Force clear UI
+            return
+
+        game_path = game_detail.path
+        self._load_items_for_path(game_path)
 
     # Renamed to match abstract method call pattern
 
     def load_objects_for_game(self, game_path: Optional[str]) -> None:
         """Implementation for loading object items."""
-        normlpath = os.path.normpath(game_path) if game_path else None
+        norm_path = os.path.normpath(game_path) if game_path else None
 
-        if normlpath != self._current_game_path:
+        if norm_path != self._current_game_path:
             self.select_object_item(None)
 
-        self._current_game_path = normlpath  # Update context path
+        self._current_game_path = norm_path  # Update context path
         self.set_loading(True)  # Use base class method to set loading state
-
-        if not normlpath:
+        self.select_object_item(None)  # Deselect previous item
+        if not norm_path:
             self._all_object_items = []
             self._filter_and_sort()  # Update display with empty list
             self.set_loading(False)
             # logger.info("ObjectListVM: No game path provided, list cleared.") # Keep lean
             return
 
-        self._data_loader.get_object_items_async(normlpath)
+        self._data_loader.get_object_items_async(norm_path)
 
     def _on_object_items_loaded(
         self, game_path: str, result: list[ObjectItemModel]
     ) -> None:
         """Slot for objectItemsReady signal."""
-        if self._current_game_path != game_path:
+        if os.path.normpath(self._current_game_path or "") != os.path.normpath(
+            game_path
+        ):
+            logger.debug(
+                f"[ObjectListVM] Ignored async result: path mismatch: {game_path}"
+            )
             return
 
+        logger.debug(f"[ObjectListVM] Received {len(result)} items for {game_path}")
         self._all_object_items = result
         self._filter_and_sort()
         self.set_loading(False)
 
-        # After loading, bind file watcher
-        if self._file_watcher_service and self._file_watcher_service.is_enabled():
-            if result:
-                # Watch root path
-                self.rebind_filewatcher()
-            else:
-                logger.warning(f"No object items loaded to watch.")
-
-        # Request thumbnails
         for item in self._all_object_items:
             self.request_thumbnail_for(item)
-
-    def on_thumbnail_ready(self, path: str, result: dict):
-        if path != self.item_model.path:
-            return  # Bukan untuk item ini
-
-        thumb_path = result.get("path")
-        logger.debug(f"on_thumbnail_ready: {thumb_path}")
-        if thumb_path and os.path.exists(thumb_path):
-            pixmap = QPixmap(thumb_path)
-            self.set_thumbnail(pixmap)
-            logger.debug(f"on_thumbnail_ready applied: {pixmap.isNull()}")
-        else:
-            self.set_placeholder_thumbnail()
+            self.request_thumbnail_for(item)
 
     def apply_filter_text(self, text: str):
-        """Apply search text with debounce."""
-        self._filter_text = text
+        self._filter_state.text = text
         self._debouncer.debounce(
             key="filter_text", func=self._filter_and_sort, delay_ms=200
         )
@@ -327,38 +328,34 @@ class ObjectListVM(BaseItemViewModel):
 
     def set_filewatcher_service(self, watcher: FileWatcherService):
         """Set file watcher service after construction."""
-        self._file_watcher_service = watcher
-
-    def rebind_filewatcher(self):
-        """Rebind file watcher after service is set."""
-        if self._file_watcher_service and self._file_watcher_service.is_enabled():
-            self.bind_filewatcher(self._file_watcher_service)
+        self.bind_filewatcher(watcher)
 
     def _set_current_path_context(self, path: str):
         self._current_game_path = path
 
     def apply_metadata_filter(self, category: str, value: str):
-        """Toggle filter for metadata category and re-apply filter/sort."""
-        # Init set if not exists
-        if category not in self._metadata_filters:
-            self._metadata_filters[category] = set()
-
-        filters = self._metadata_filters[category]
-        if value in filters:
-            filters.remove(value)
-            if not filters:
-                del self._metadata_filters[category]
+        meta = self._filter_state.metadata.setdefault(category, set())
+        if value in meta:
+            meta.remove(value)
+            if not meta:
+                del self._filter_state.metadata[category]
         else:
-            filters.add(value)
-
+            meta.add(value)
         self._filter_and_sort()
 
     def clear_state(self):
         self._selected_item = None
         self._all_object_items.clear()
         self.displayed_items.clear()
-        self._filter_text = ""
-        self._filter_status = "all"
+        self._filter_state.text = ""
+        self._filter_state.status = "all"
         self._sort_key = "name"
         self._sort_order = Qt.SortOrder.AscendingOrder
         # self.status_changed.emit()
+
+    def load_game_items(self, path: Optional[str]):
+        """Public method to load items for a given game path."""
+        self.clear_state()
+        norm_path = os.path.normpath(path) if path else None
+        self._current_game_path = norm_path
+        self._load_items_for_path(path)

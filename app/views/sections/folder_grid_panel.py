@@ -31,7 +31,6 @@ class FolderGridPanel(QWidget):
         super().__init__(parent)
         self.vm = view_model
         self._processing_infobars: Dict[str, InfoBar] = {}
-        self._pending_operations_count = 0
 
         self._setup_ui()
         self._connect_signals()
@@ -100,22 +99,23 @@ class FolderGridPanel(QWidget):
 
         self.gridWidget = FlowGridWidget(self)
         self.scrollArea.setWidget(self.gridWidget)
-
         self.main_layout.addWidget(self.scrollArea, 1)
 
     def _connect_signals(self):
         self.vm.displayListChanged.connect(self.gridWidget.setItems)
-        self.vm.displayListChanged.connect(
-            lambda items: self._update_result_summary(len(items))
-        )
         self.vm.resetFilterState.connect(self.reset_filters_and_search)
         self.vm.breadcrumbChanged.connect(self.breadcrumb_widget.set_path)
         self.vm.setItemLoadingState.connect(self._set_item_loading_state)
         self.vm.updateItemDisplay.connect(self._update_item_display)
-        self.vm.itemThumbnailNeedsUpdate.connect(self._update_item_thumbnail)
+        self.vm.itemThumbnailNeedsUpdate.connect(self.request_thumbnail_for)
         self.vm.operation_started.connect(self._on_operation_started)
         self.vm.operation_finished.connect(self._on_operation_finished)
-
+        self.vm.batchOperationSummaryReady.connect(self._show_batch_summary)
+        self.vm.filterSummaryChanged.connect(self._update_result_summary)
+        self.vm.filterButtonStateChanged.connect(self._update_filter_button_state)
+        self.gridWidget.visiblePathsRequested.connect(
+            self.vm.handle_visible_thumbnail_requests
+        )
         self.breadcrumb_widget.segment_clicked.connect(
             self.vm.navigate_to_breadcrumb_index
         )
@@ -148,7 +148,6 @@ class FolderGridPanel(QWidget):
         )
         self._processing_infobars[key] = bar
         bar.show()
-        self._pending_operations_count += 1
 
     def _on_operation_finished(self, orig: str, final: str, title, content, success):
         key = self._get_clean_path(final)
@@ -159,18 +158,14 @@ class FolderGridPanel(QWidget):
             widget.set_interactive(True)
             widget.show_loading_overlay(False)
 
-        self._pending_operations_count -= 1
-        if self._pending_operations_count <= 0:
-            self._show_batch_summary()
-
-    def _show_batch_summary(self):
-        ok = self.vm._status_manager.get_success_count()
-        fail = self.vm._status_manager.get_fail_count()
-        pos = InfoBarPosition.BOTTOM_RIGHT
-        msg = f"{fail} item(s) failed" if fail else f"{ok} item(s) updated"
-        fn = InfoBar.error if fail else InfoBar.success
-        fn("Batch Update", msg, parent=self.window(), position=pos)
-        self.vm._status_manager.reset_count()
+    def _show_batch_summary(self, msg: str, is_error: bool):
+        fn = InfoBar.error if is_error else InfoBar.success
+        fn(
+            "Batch Update",
+            msg,
+            parent=self.window(),
+            position=InfoBarPosition.BOTTOM_RIGHT,
+        )
 
     def _update_item_display(self, path: str, payload: dict):
         widget = self.gridWidget.findItemWidgetByPath(path)
@@ -181,7 +176,7 @@ class FolderGridPanel(QWidget):
         if new_path:
             self.gridWidget.updateItemPath(path, new_path)
 
-    def _update_item_thumbnail(self, path: str, result: dict):
+    def request_thumbnail_for(self, path: str, result: dict):
         widget = self.gridWidget.findItemWidgetByPath(path)
         if not widget:
             return
@@ -219,7 +214,7 @@ class FolderGridPanel(QWidget):
             return None
 
     def _on_search_changed(self, text: str):
-        self.vm.apply_search(text)
+        self.vm.apply_filter_text(text)
 
     def _on_clear_all(self):
         self.search_box.clear()
@@ -227,18 +222,10 @@ class FolderGridPanel(QWidget):
         self.vm._filter_and_sort()
         self._update_filter_button_state()
 
-    def _update_result_summary(self, count: int):
-        has_filter = bool(self.vm._metadata_filters)
-        has_search = bool(self.vm._filter_text.strip())
-        visible = has_filter or has_search
-
+    def _update_result_summary(self, label: str, visible: bool):
         self.result_label.setVisible(visible)
+        self.result_label.setText(label)
         self.clear_all_btn.setVisible(visible)
-
-        if visible:
-            self.result_label.setText(f"{count} items found")
-        else:
-            self.result_label.setText("")
 
     def _on_filter_clicked(self):
         filters_metadata = self.vm.get_metadata_filter_options()
@@ -258,10 +245,9 @@ class FolderGridPanel(QWidget):
         self.vm.set_metadata_filters(new_filters)
         self.vm._filter_and_sort()
         self._update_filter_button_state()
-        self._update_result_summary(len(self.vm.displayed_items))
 
     def _update_filter_button_state(self):
-        active_count = sum(len(v) for v in self.vm._metadata_filters.values())
+        active_count = sum(len(v) for v in self.vm._filter_state.metadata.values())
         self.filter_btn.setText(
             f"Filter ({active_count})" if active_count else "Filter"
         )
@@ -273,7 +259,7 @@ class FolderGridPanel(QWidget):
         self.result_label.setVisible(False)
         self.clear_all_btn.setVisible(False)
         self.vm.clear_all_metadata_filters()
-        self.vm.apply_search("")
+        self.vm.apply_filter_text("")
         self._update_filter_button_state()
 
     def closeEvent(self, event):

@@ -10,7 +10,29 @@ class ObjectItemModel:
     path: str
     folder_name: str
     properties: dict | None
-    status: bool  # True = Enabled, False = Disabled
+    status: bool
+
+    def __post_init__(self):
+        self._init_metadata_index()
+
+    def _init_metadata_index(self):
+        props = self.properties or {}
+        self._metadata_index: dict[str, set[str]] = {
+            "rarity": {str(props.get("rarity", "")).lower()},
+            "element": {str(props.get("element", "")).lower()},
+            "region": {str(props.get("region", "")).lower()},
+            "gender": {str(props.get("gender", "")).lower()},
+            "weapon": {str(props.get("weapon", "")).lower()},
+            "roles": (
+                set(map(str.lower, props.get("roles", [])))
+                if props.get("roles")
+                else set()
+            ),
+        }
+
+    @property
+    def metadata_index(self) -> dict[str, set[str]]:
+        return self._metadata_index
 
     @property
     def actual_name(self) -> str:

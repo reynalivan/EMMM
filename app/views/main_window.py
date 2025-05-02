@@ -29,6 +29,7 @@ from app.views.sections.object_list_panel import ObjectListPanel
 from app.views.sections.folder_grid_panel import FolderGridPanel
 from app.views.sections.preview_panel import PreviewPanel
 from app.utils.logger_utils import logger
+from app.utils.ui_utils import show_error
 
 # ---End Imports ---
 
@@ -171,6 +172,7 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
             # Use setChecked for SwitchButton state updates
 
             self.vm.safe_mode_status_changed.connect(self.safe_mode_switch.setChecked)
+            self.vm.errorOccurred.connect(self._on_error_occurred)
             # TODO: Connect preset signals later
             # self.vm.presets_list_updated.connect(self._update_preset_dropdown)
 
@@ -180,19 +182,15 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
     def _on_settings_clicked(self):
         logger.info("Settings button clicked.")
         # TODO: Consider using FluentDialog or MessageDialog later
-
         try:
-            # Use direct access for now, consider getter later
-
-            config_service = self.vm._config_service
-            settings_vm = SettingsVM(config_service)
+            settings_vm = self.vm.get_settings_vm()
             dialog = SettingsDialog(
                 settings_vm, parent=self
             )  # Standard QDialog for now
 
             if dialog.exec():
                 logger.info("Settings dialog accepted. Updating game list.")
-                self.vm.update_game_list()
+                self.vm._sync_game_list()
             else:
                 logger.info("Settings dialog cancelled.")
         except AttributeError:
@@ -202,6 +200,14 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
     def _update_gamelist_dropdown(self, games: list):
         """Updates the game list ComboBox."""
         logger.debug(f"Updating gamelist dropdown with {len(games)} games.")
+        new_items = [game.name for game in games]
+        current_items = [
+            self.gamelist_combo.itemText(i) for i in range(self.gamelist_combo.count())
+        ]
+
+        if new_items == current_items:
+            return  # Skip update if identical
+
         self.gamelist_combo.blockSignals(True)
         current_selection = self.gamelist_combo.currentText()  # Store current text
 
@@ -255,21 +261,14 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
     def _select_game_in_dropdown(self, game):
         """Programmatically selects a game in the ComboBox based on VM state."""
         self.gamelist_combo.blockSignals(True)
-        if game and game.name:
-            logger.debug(f"Selecting game in dropdown: {game.name}")
-            self.gamelist_combo.setCurrentText(
-                game.name
-            )  # setCurrentText works well with Fluent ComboBox
-
-            if (
-                self.gamelist_combo.currentText() != game.name
-            ):  # Check if setting worked
-
-                logger.warning(f"Failed to select '{game.name}' in ComboBox.")
-                self.gamelist_combo.setCurrentIndex(-1)  # Fallback if text not found
-
+        if game:
+            index = self.gamelist_combo.findText(game.name)
+            if index != -1:
+                self.gamelist_combo.setCurrentIndex(index)
+            else:
+                logger.warning(f"Game '{game.name}' not found in ComboBox")
+                self.gamelist_combo.setCurrentIndex(-1)
         else:
-            logger.debug("Clearing game selection in dropdown.")
             self.gamelist_combo.setCurrentIndex(-1)
         self.gamelist_combo.blockSignals(False)
 
@@ -277,6 +276,10 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         """Handles toggling the Safe Mode SwitchButton."""
         logger.debug(f"Safe mode switch toggled via UI: {checked}")
         self.vm.set_safe_mode(checked)
+
+    def _on_error_occurred(self, title: str, message: str):
+        """Handles errors emitted by the ViewModel."""
+        show_error(self, title, message)
 
     # TODO: Implement other slots (_on_preset_selection_changed, _on_refresh_clicked, _on_play_clicked)
     # TODO: Implement closeEvent if specific save actions are needed on exit

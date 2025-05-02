@@ -24,6 +24,7 @@ from app.viewmodels.main_window_vm import MainWindowVM
 from app.viewmodels.object_list_vm import ObjectListVM
 from app.viewmodels.preview_panel_vm import PreviewPanelVM
 from app.viewmodels.folder_grid_vm import FolderGridVM
+from app.viewmodels.settings_vm import SettingsVM
 from app.views.sections.object_list_panel import ObjectListPanel
 from app.views.sections.folder_grid_panel import FolderGridPanel
 from app.views.sections.preview_panel import PreviewPanel
@@ -64,8 +65,8 @@ def main():
         preview_vm = PreviewPanelVM(
             data_loader, mod_service, thumbnail_service, image_utils
         )
-        main_vm = MainWindowVM(config_service, object_vm, folder_vm)
-
+        settings_vm = SettingsVM(config_service)
+        main_vm = MainWindowVM(config_service, object_vm, folder_vm, settings_vm)
         # === Set file watcher explicitly ===
         main_vm.bind_filewatcher_service(file_watcher_service)
         object_vm.set_filewatcher_service(file_watcher_service)
@@ -75,8 +76,6 @@ def main():
         file_watcher_service.start()
 
         # Rebind file watcher
-        object_vm.rebind_filewatcher()
-        folder_vm.rebind_filewatcher()
         logger.info("View models initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize view models: {e}", exc_info=True)
@@ -127,7 +126,7 @@ def main():
 
     # Load Initial Application Data
     try:
-        main_vm.load_initial_data()
+        main_vm.initialize_state()
         logger.debug("Initial data loaded.")
     except Exception as e:
         logger.error(f"Error during initial data load: {e}", exc_info=True)

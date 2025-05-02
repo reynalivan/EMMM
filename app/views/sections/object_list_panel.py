@@ -1,3 +1,4 @@
+# app/views/sections/object_list_panel.py
 import os
 from typing import Optional, Dict
 from PyQt6.QtCore import Qt
@@ -101,7 +102,10 @@ class ObjectListPanel(QWidget):
         self.vm.updateItemDisplay.connect(self._update_item_display)
         self.vm.operation_started.connect(self._on_operation_started)
         self.vm.operation_finished.connect(self._on_operation_finished)
+        self.vm.batchSummaryReady.connect(self._show_batch_summary)
         self.vm.showError.connect(self._show_error)
+        self.vm.filterButtonStateChanged.connect(self._update_filter_button_text)
+        self.vm.resultSummaryUpdated.connect(self._update_result_label)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
 
     def _on_filter_button_clicked(self):
@@ -121,21 +125,11 @@ class ObjectListPanel(QWidget):
     def _on_filter_dialog_applied(self, new_filters: dict[str, set[str]]):
         self.vm.set_metadata_filters(new_filters)
         self.vm._filter_and_sort()
-        self._update_filter_button_state()
         # optionally update UI (e.g., chip count, label text)
 
-    def _update_filter_button_state(self):
-        active_count = sum(len(v) for v in self.vm._metadata_filters.values())
-        self.filter_menu.setText(
-            f"Filter ({active_count})" if active_count else "Filter"
-        )
-
     def _on_clear_all(self):
-        self.vm.clear_all_metadata_filters()
-        self.vm.apply_filter_text("")
+        self.vm.clear_all_filters_and_search()
         self.search_bar.setText("")
-        self.vm._filter_and_sort()
-        self._update_filter_button_state()
 
     def _update_display_list(self, items: list):
         """Update list view with filtered and sorted items."""
@@ -162,20 +156,6 @@ class ObjectListPanel(QWidget):
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, widget)
             self.vm.request_thumbnail_for(item_model)
-
-        self._update_filter_button_state()
-        self._update_result_summary(len(items))
-
-    def _update_result_summary(self, count: int):
-        has_filter = bool(self.vm._metadata_filters)
-        has_search = bool(self.vm._filter_text.strip())
-        visible = has_filter or has_search
-
-        self.result_label.setVisible(visible)
-        self.clear_all_btn.setVisible(visible)
-
-        if visible:
-            self.result_label.setText(f"{count} items found")
 
     def _on_item_clicked(self, item: QListWidgetItem):
         widget = self.list_widget.itemWidget(item)
@@ -225,12 +205,12 @@ class ObjectListPanel(QWidget):
             widget.set_interactive(True)
             widget.show_loading_overlay(False)
         self._pending_operations_count -= 1
-        if self._pending_operations_count <= 0:
-            self._show_batch_summary()
 
-    def _show_batch_summary(self):
-        success = self.vm._status_manager.get_success_count()
-        failed = self.vm._status_manager.get_fail_count()
+    def _show_batch_summary(self, result: dict[str, int]):
+        if not result:
+            return
+        success = result.get("success", 0)
+        failed = result.get("failed", 0)
         msg = (
             f"{success} updated, {failed} failed"
             if failed
@@ -242,7 +222,6 @@ class ObjectListPanel(QWidget):
             parent=self.window(),
             position=InfoBarPosition.BOTTOM_RIGHT,
         )
-        self.vm._status_manager.reset_count()
 
     def _show_error(self, title, msg):
         InfoBar.error(
@@ -264,3 +243,12 @@ class ObjectListPanel(QWidget):
         if self.vm:
             self.vm.unbind_filewatcher_service()
         super().closeEvent(event)
+
+    def _update_filter_button_text(self, count: int):
+        self.filter_menu.setText(f"Filter ({count})" if count else "Filter")
+
+    def _update_result_label(self, msg: str):
+        is_visible = bool(msg)
+        self.result_label.setVisible(is_visible)
+        self.clear_all_btn.setVisible(is_visible)
+        self.result_label.setText(msg)

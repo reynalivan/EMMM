@@ -7,7 +7,6 @@ from PyQt6.QtCore import pyqtSignal, QObject
 from qfluentwidgets import FlowLayout
 
 # Adjust import paths based on your actual structure
-
 from app.views.components.folder_grid_item_widget import FolderGridItemWidget
 from app.models.folder_item_model import FolderItemModel
 from app.utils.logger_utils import logger
@@ -20,14 +19,13 @@ class FlowGridWidget(QWidget):
     """
 
     # ---Signals (Emitted by this widget) ---
-
     itemClicked = pyqtSignal(FolderItemModel)
     itemDoubleClicked = pyqtSignal(FolderItemModel)
     itemBulkSelectionChanged = pyqtSignal(FolderItemModel, bool)  # model, is_checked
 
     itemPasteRequested = pyqtSignal(FolderItemModel)  # Model
-
     itemStatusToggled = pyqtSignal(str, bool)
+    visiblePathsRequested = pyqtSignal(list)
     # ---End Signals ---
 
     # Corrected __init__: No VM or Breadcrumb needed here
@@ -121,6 +119,8 @@ class FlowGridWidget(QWidget):
 
         self.flowLayout.invalidate()
         self.updateGeometry()
+        visible_paths = [os.path.normpath(model.path) for model in item_models[:30]]
+        self.visiblePathsRequested.emit(visible_paths)
 
     def sizeHint(self):
         return self.flowLayout.sizeHint()

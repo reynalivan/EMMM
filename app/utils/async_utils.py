@@ -1,4 +1,5 @@
 # app/utils/async_utils.py
+import os
 import traceback
 from typing import Any, Callable, Dict, Optional, Set
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal, QTimer
@@ -24,6 +25,10 @@ class Worker(QRunnable):
 
     def run(self) -> None:
         try:
+            # Validate arguments before executing the function
+            if not self._validate_args():
+                raise ValueError("Invalid arguments provided to the background task.")
+
             result = self.fn(*self.args, **self.kwargs)
         except Exception as e:
             self._handle_error(e)
@@ -31,6 +36,16 @@ class Worker(QRunnable):
             self.signals.result.emit(result)
         finally:
             self.signals.finished.emit()
+
+    def _validate_args(self) -> bool:
+        for arg in self.args:
+            if (
+                isinstance(arg, str)
+                and arg.endswith("_path")
+                and not os.path.exists(arg)
+            ):
+                logger.warning(f"Path doesn't exist yet: {arg}")
+        return True
 
     def _handle_error(self, e: Exception) -> None:
         """Centralized error handling."""
@@ -124,6 +139,9 @@ class AsyncStatusManager(QObject):
         self._success_items.clear()
         self._failed_items.clear()
         self.status_changed.emit()
+
+    def is_all_done(self) -> bool:
+        return self.get_pending_count() <= 0
 
     # Query methods
     def is_item_pending(self, item_path: str) -> bool:

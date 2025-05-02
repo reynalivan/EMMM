@@ -11,6 +11,9 @@ from typing import Optional
 import os
 import glob
 import hashlib
+from collections import deque
+
+MAX_CONCURRENT = 4
 
 
 class ThumbnailService(QObject):
@@ -24,11 +27,19 @@ class ThumbnailService(QObject):
         parent: QObject | None = None,
     ):
         super().__init__(parent)
+        logger.debug("ThumbnailService initialized.")
         self._cache = image_cache
         self._utils = image_utils
-        self._thumbnail_cache: dict[str, dict] = {}
-        logger.debug("ThumbnailService initialized.")
         self._setup_cache_clean_timer()
+        self._thumbnail_cache: dict[str, dict] = {}
+        self._thumbnail_request_queue = deque()
+        self._requested_paths = set()
+        self._active_thumbnail_tasks = set()
+
+        self._thumbnail_queue_timer = QTimer(self)
+        self._thumbnail_queue_timer.setInterval(50)  # 20fps
+        self._thumbnail_queue_timer.timeout.connect(self._process_thumbnail_queue)
+        self._thumbnail_queue_timer.start()
 
     def get_thumbnail_async(
         self, item_path: str, item_type: Literal["object", "folder"]
@@ -74,6 +85,49 @@ class ThumbnailService(QObject):
         worker = run_in_background(self._get_thumbnail_task, normalized_path, item_type)
         worker.signals.result.connect(_handle_result)
         worker.signals.error.connect(_handle_error)
+
+    def request_thumbnail(self, item_path: str, item_type: Literal["object", "folder"]):
+        normalized_path = os.path.normpath(item_path)
+        key = f"{item_type}:{normalized_path}"
+
+        # skip if already requested
+        if key in self._requested_paths or key in self._active_thumbnail_tasks:
+            return
+
+        # Add to queue
+        self._requested_paths.add(key)
+        self._thumbnail_request_queue.append((normalized_path, item_type))
+
+    def _process_thumbnail_queue(self):
+        if not self._thumbnail_request_queue:
+            return
+
+        while (
+            self._thumbnail_request_queue
+            and len(self._active_thumbnail_tasks) < MAX_CONCURRENT
+        ):
+            item_path, item_type = self._thumbnail_request_queue.popleft()
+            key = f"{item_type}:{item_path}"
+            self._active_thumbnail_tasks.add(key)
+
+            def _on_result(result_dict, p=item_path, t=item_type):
+                k = f"{t}:{p}"
+                self._active_thumbnail_tasks.discard(k)
+                self.thumbnailReady.emit(p, result_dict)
+
+            def _on_error(error_info, p=item_path, t=item_type):
+                k = f"{t}:{p}"
+                self._active_thumbnail_tasks.discard(k)
+                self._handle_thumbnail_error(p, error_info)
+
+            worker = run_in_background(self._get_thumbnail_task, item_path, item_type)
+            worker.signals.result.connect(_on_result)
+            worker.signals.error.connect(_on_error)
+
+    def reset_thumbnail_queue(self):
+        self._thumbnail_request_queue.clear()
+        self._requested_paths.clear()
+        self._active_thumbnail_tasks.clear()
 
     def _generate_cache_key(self, item_path: str, item_type: str) -> str:
         """Generate cache key that survives folder renames, including file size."""
