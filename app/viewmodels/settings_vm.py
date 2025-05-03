@@ -1,5 +1,5 @@
 from PyQt6.QtCore import QObject, pyqtSignal
-from app.models.config_model import GameDetail
+from app.models.game_model import GameDetail
 from app.services.config_service import ConfigService
 from app.core.exceptions import ConfigError
 from app.utils.logger_utils import logger
@@ -9,9 +9,7 @@ class SettingsVM(QObject):
     game_list_changed = pyqtSignal()
     save_finished = pyqtSignal(bool)
 
-    def __init__(self,
-                 config_service: ConfigService,
-                 parent: QObject | None = None):
+    def __init__(self, config_service: ConfigService, parent: QObject | None = None):
         super().__init__(parent)
         self._config_service = config_service
         self._editable_games: list[GameDetail] = []
@@ -20,8 +18,7 @@ class SettingsVM(QObject):
         """Load list of games from config file into internal state"""
         try:
             self._editable_games = self._config_service.load_games()
-            logger.info(
-                f"Loaded {len(self._editable_games)} game(s) from config.ini")
+            logger.info(f"Loaded {len(self._editable_games)} game(s) from config.ini")
             self.game_list_changed.emit()
         except ConfigError as e:
             logger.error("Failed to load games from config.ini", exc_info=True)
@@ -80,3 +77,10 @@ class SettingsVM(QObject):
         else:
             logger.error("Failed to save game list to config.ini")
         self.save_finished.emit(success)
+
+    def set_file_watcher_enabled(self, enabled: bool):
+        if hasattr(self.main_vm, "file_watcher_service"):
+            if enabled:
+                self.main_vm.file_watcher_service.enable()
+            else:
+                self.main_vm.file_watcher_service.disable()

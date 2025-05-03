@@ -1,316 +1,290 @@
 # app/views/sections/object_list_panel.py
-
 import os
-from typing import Dict, Optional
-
+from typing import Optional, Dict
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QListWidgetItem
-
-# Fluent InfoBar
-from qfluentwidgets import InfoBar, InfoBarIcon, InfoBarPosition
-
-# App imports
-from app.models.object_item_model import ObjectItemModel
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QListWidget,
+    QListWidgetItem,
+    QSizePolicy,
+)
+from qfluentwidgets import (
+    DropDownPushButton,
+    InfoBar,
+    InfoBarPosition,
+    FluentIcon as FIF,
+    TransparentToolButton,
+    SearchLineEdit,
+    SubtitleLabel,
+)
+from qfluentwidgets import IndeterminateProgressBar
 from app.viewmodels.object_list_vm import ObjectListVM
-from app.views.components.folder_grid_item_widget import FolderGridItemWidget
 from app.views.components.object_list_item_widget import ObjectListItemWidget
+from app.models.object_item_model import ObjectItemModel
+from app.views.dialogs.filter_dialog import FilterDialog
 from app.utils.logger_utils import logger
 from app.core import constants
 
 
 class ObjectListPanel(QWidget):
-    """Panel displaying the list of object items (mod categories)."""
-
     def __init__(self, view_model: ObjectListVM, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.vm = view_model
-        self.vm.set_handling_status_changes(True)
-
         self._widget_map: Dict[str, ObjectListItemWidget] = {}
         self._processing_infobars: Dict[str, InfoBar] = {}
         self._pending_operations_count = 0
+
         self._setup_ui()
         self._connect_signals()
 
     def _setup_ui(self):
-        """Creates and arranges the UI elements."""
-        # TODO: Add filter/search bar UI elements here
+        top_bar_layout = QHBoxLayout()
+        top_bar_layout.setContentsMargins(10, 10, 10, 0)
+        top_bar_layout.setSpacing(6)
+
+        # Search bar
+        self.search_bar = SearchLineEdit(self)
+        self.search_bar.setPlaceholderText("Search...")
+        self.search_bar.textChanged.connect(self._on_search_changed)
+        top_bar_layout.addWidget(self.search_bar, 1)
+
+        # Filter button
+        self.filter_menu = DropDownPushButton(FIF.FILTER, "Filter", self)
+        self.filter_menu.clicked.connect(self._on_filter_button_clicked)
+        top_bar_layout.addWidget(self.filter_menu)
+        top_bar_layout.addStretch()
+
+        # Result summary bar
+        self.result_summary_bar = QHBoxLayout()
+        self.result_summary_bar.setContentsMargins(10, 0, 10, 0)
+        self.result_summary_bar.setSpacing(8)
+
+        self.result_label = SubtitleLabel("", self)
+        self.result_label.setTextColor("gray")
+        self.result_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+        )
+
+        self.clear_all_btn = TransparentToolButton(FIF.CLOSE, self)
+        self.clear_all_btn.setToolTip("Clear filters and search")
+        self.clear_all_btn.clicked.connect(self._on_clear_all)
+
+        self.result_summary_bar.addWidget(self.result_label)
+        self.result_summary_bar.addStretch()
+        self.result_summary_bar.addWidget(self.clear_all_btn)
+
+        # Initially hidden
+        self.result_label.setVisible(False)
+        self.clear_all_btn.setVisible(False)
+
+        # Loading bar
+        self.loading_bar = IndeterminateProgressBar(self)
+        self.loading_bar.setFixedHeight(2)
+        self.loading_bar.hide()
+
+        self.loading_info_bar: Optional[InfoBar] = None
+
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("ObjectListWidget")
+        self.list_widget.setUniformItemSizes(True)
+        self.list_widget.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.list_widget.setStyleSheet(
-            "QListWidget { border: none; background-color: transparent; }"
+            "QListWidget { border: none; background: transparent; }"
         )
-        # TODO: Implement Model/View + Delegate for performance instead of QListWidget
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        # TODO: Add filter bar to layout
+        layout.addLayout(top_bar_layout)
+        layout.addLayout(self.result_summary_bar)
+        layout.addWidget(self.loading_bar)
         layout.addWidget(self.list_widget)
 
     def _connect_signals(self):
-        """Connects signals between VM and Panel/Widgets."""
-        if not hasattr(self, "vm") or not self.vm:
-            logger.error("ViewModel not available for signal connection.")
-            return
-        try:
-            # VM -> Panel General Updates
-            self.vm.displayListChanged.connect(self._update_display_list)
-            self.vm.loadingStateChanged.connect(self._set_list_loading)
-            self.vm.showError.connect(self._show_error_infobar)
+        self.vm.displayListChanged.connect(self._update_display_list)
+        self.vm.loadingStateChanged.connect(self._on_loading_state_changed)
+        self.vm.loadCompleted.connect(self._on_load_success)
+        self.vm.itemThumbnailNeedsUpdate.connect(self._update_thumbnail)
+        self.vm.setItemLoadingState.connect(self._set_item_loading_state)
+        self.vm.updateItemDisplay.connect(self._update_item_display)
+        self.vm.operation_started.connect(self._on_operation_started)
+        self.vm.operation_finished.connect(self._on_operation_finished)
+        self.vm.batchSummaryReady.connect(self._show_batch_summary)
+        self.vm.showError.connect(self._show_error)
+        self.vm.filterButtonStateChanged.connect(self._update_filter_button_text)
+        self.vm.resultSummaryUpdated.connect(self._update_result_label)
+        self.list_widget.itemClicked.connect(self._on_item_clicked)
 
-            # VM -> Panel (InfoBar Notifications)
-            self.vm.operation_started.connect(self._on_operation_started)
-            self.vm.operation_finished.connect(self._on_operation_finished)
+    def _on_loading_state_changed(self, is_loading: bool):
+        self.list_widget.setDisabled(is_loading)
+        self.loading_bar.setVisible(is_loading)
 
-            # VM -> Panel (Specific Item UI Control)
-            # Use original_path as key from VM signals
-            self.vm.itemThumbnailNeedsUpdate.connect(self._update_item_thumbnail)
+        if is_loading:
+            if not self.loading_info_bar:
+                self.loading_info_bar = InfoBar.info(
+                    title="Loading",
+                    content="Loading data...",
+                    parent=self.window(),
+                    position=InfoBarPosition.BOTTOM_LEFT,
+                    duration=0,
+                )
+        else:
+            if self.loading_info_bar:
+                self.loading_info_bar.close()
+                self.loading_info_bar = None
 
-            self.vm.setItemLoadingState.connect(self._set_item_loading_state)
-            self.vm.updateItemDisplay.connect(self._update_item_display)
+    def _on_filter_button_clicked(self):
+        filters_metadata = self.vm.get_metadata_filter_options()
+        active = self.vm._metadata_filters
+        dialog = FilterDialog(
+            filters=filters_metadata,
+            active_filters=active,
+            apply_callback=self._on_filter_dialog_applied,
+            parent=self,
+        )
+        dialog.exec()
 
-            # Panel Widgets -> VM
-            self.list_widget.itemClicked.connect(self._on_item_clicked)
-            # Note: status_toggled connected in _update_display_list
-        except AttributeError as e:
-            logger.error(
-                f"Error connecting signals in ObjectListPanel: {e}", exc_info=True
-            )
+    def _on_filters_applied(self, result: dict[str, set[str]]):
+        self.vm.set_metadata_filters(result)
 
-    def _clear_widget_map_and_items(self):
-        """Clears the internal widget map and the QListWidget items."""
-        self.list_widget.clear()
-        self._widget_map.clear()
+    def _on_filter_dialog_applied(self, new_filters: dict[str, set[str]]):
+        self.vm.set_metadata_filters(new_filters)
+        self.vm._filter_and_sort()
+        # optionally update UI (e.g., chip count, label text)
+
+    def _on_clear_all(self):
+        self.vm.clear_all_filters_and_search()
+        self.search_bar.setText("")
 
     def _update_display_list(self, items: list):
-        """Populates the list widget with items from the ViewModel."""
-        self._clear_widget_map_and_items()
-        if not items:
-            return
+        """Update list view with filtered and sorted items."""
+        self.list_widget.clear()
+        self._widget_map.clear()
 
         for item_model in items:
             if not isinstance(item_model, ObjectItemModel):
                 continue
 
-            list_item = QListWidgetItem()
             widget = ObjectListItemWidget(item_model)
+            list_item = QListWidgetItem()
             list_item.setSizeHint(widget.sizeHint())
 
-            # --- START MODIFICATION: Use clean path as map key ---
-            clean_path_key = self._get_clean_path(item_model.path)
-            if clean_path_key:  # Only map if path is valid
-                self._widget_map[clean_path_key] = widget
-            else:
-                logger.warning(
-                    f"Could not generate clean path key for {item_model.path}"
-                )
-            # --- END MODIFICATION ---
+            self._widget_map[self._get_clean_path(item_model.path)] = widget
 
-            # Connect the item widget's toggle signal to the VM's request slot
-            try:
-                widget.status_toggled.connect(
-                    lambda checked, mod=item_model: self.vm.handle_item_status_toggle_request(
-                        mod, checked
-                    )
+            # Connect toggle signal
+            widget.status_toggled.connect(
+                lambda checked, m=item_model: self.vm.handle_item_status_toggle_request(
+                    m, checked
                 )
-                # TODO: Connect widget.bulk_selection_changed if needed
-            except AttributeError as e:
-                logger.error(
-                    f"Error connecting signals for {item_model.display_name}: {e}"
-                )
+            )
 
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, widget)
+            self.vm.request_thumbnail_for(item_model)
 
-            # NOTE: Thumbnail requests deferred
-
-    def _find_widget_by_path(self, item_path: str) -> ObjectListItemWidget | None:
-        """Safely retrieves a widget from the internal map using its (usually original) path."""
-        clean_path_key = self._get_clean_path(item_path)
-        if not clean_path_key:
-            logger.error(f"Cannot find widget for invalid path: {item_path}")
-            return None
-
-        widget = self._widget_map.get(clean_path_key)
-        # if not widget: logger.warning(f"Widget not found in map for path: {normalized_path}") # Keep lean
-        return widget
-
-    def _on_item_clicked(self, item: QListWidgetItem):
-        """Handles clicking on an item in the list."""
-        widget = self.list_widget.itemWidget(item)
-        if isinstance(widget, ObjectListItemWidget):
-            model = widget.get_item_model()
-            self.vm.select_object_item(model)
-
-    # --- Slots for Handling VM Signals ---
-
-    def _set_list_loading(self, is_loading: bool):
-        """Handles overall list loading state."""
-        # TODO: Implement better visual indication for list loading
-        self.list_widget.setEnabled(not is_loading)
-
-    def _show_error_infobar(self, title: str, message: str):
-        """Displays a generic error InfoBar."""
-        InfoBar.error(
-            title,
-            message,
-            duration=5000,
-            position=InfoBarPosition.BOTTOM_RIGHT,
+    def _on_load_success(self, msg: str):
+        InfoBar.success(
+            title="Success Load Data",
+            content=msg,
             parent=self.window(),
+            position=InfoBarPosition.BOTTOM_RIGHT,
+            duration=3000,
         )
 
-    def _set_item_loading_state(self, item_path: str, is_loading: bool):
-        """Sets the loading state for a specific item widget (uses clean path for lookup)."""
-        # item_path received here is the original path from VM signal
-        clean_path_key = self._get_clean_path(item_path)
-        if not clean_path_key:
-            return
-        widget = self._find_widget_by_path(clean_path_key)
+    def _on_item_clicked(self, item: QListWidgetItem):
+        widget = self.list_widget.itemWidget(item)
+        if isinstance(widget, ObjectListItemWidget):
+            self.vm.select_object_item(widget.get_item_model())
 
+    def _update_thumbnail(self, path: str, result: dict):
+        widget = self._widget_map.get(self._get_clean_path(path))
+        if widget:
+            pixmap_path = result.get("path")
+            if pixmap_path and QPixmap(pixmap_path).isNull() is False:
+                widget.set_thumbnail(QPixmap(pixmap_path))
+            else:
+                widget.set_placeholder_thumbnail()
+
+    def _set_item_loading_state(self, path: str, is_loading: bool):
+        widget = self._widget_map.get(self._get_clean_path(path))
         if widget:
             widget.set_interactive(not is_loading)
             widget.show_loading_overlay(is_loading)
-        # else: logger.warning(...) # Keep lean
 
-    def _update_item_thumbnail(self, item_path: str, thumb_result: dict):
-        """Updates the thumbnail of a specific item widget."""
-        # Find widget using the original item path from the signal
-        # _find_widget_by_path handles cleaning the path for map lookup
-        widget = self.gridWidget.findItemWidgetByPath(item_path)
-        if widget:
-            thumbnail_path = thumb_result.get("path")
-            status = thumb_result.get("status")
-            pixmap = None
-            if (
-                status in ["hit", "generated"]
-                and thumbnail_path
-                and os.path.exists(thumbnail_path)
-            ):
-                try:
-                    pixmap = QPixmap(thumbnail_path)
-                    if pixmap.isNull():
-                        pixmap = None
-                except Exception as e:
-                    logger.error(f"Panel: Error creating QPixmap: {e}")
-                    pixmap = None  # Ensure pixmap is None on error
-            # Ensure widget has the method before calling
-            if hasattr(widget, "set_thumbnail"):
-                widget.set_thumbnail(pixmap)
-
-    def _on_operation_started(self, item_path: str, title: str):
-        """Mark item as loading and lock interaction."""
-        clean_path_key = self._get_clean_path(item_path)
-        if not clean_path_key:
+    def _update_item_display(self, old_path: str, payload: dict):
+        new_path = payload.get("path")
+        if not new_path:
             return
 
-        if existing_bar := self._processing_infobars.pop(clean_path_key, None):
-            existing_bar.close()
+        old_key = self._get_clean_path(old_path)
+        new_key = self._get_clean_path(new_path)
 
-        widget = self._find_widget_by_path(clean_path_key)
+        widget = self._widget_map.pop(old_key, None)
+        if widget:
+            widget.update_display(payload)
+            self._widget_map[new_key] = widget
+
+    def _on_operation_started(self, path: str, title: str):
+        widget = self._widget_map.get(self._get_clean_path(path))
         if widget:
             widget.set_interactive(False)
             widget.show_loading_overlay(True)
-
-        processing_bar = InfoBar(
-            icon=InfoBarIcon.INFORMATION,
-            title=title,
-            content="Processing...",
-            isClosable=False,
-            position=InfoBarPosition.BOTTOM_RIGHT,
-            duration=-1,
-            parent=self.window(),
-        )
-        self._processing_infobars[clean_path_key] = processing_bar
-        processing_bar.show()
-
         self._pending_operations_count += 1
 
-    def _on_operation_finished(
-        self,
-        original_item_path: str,
-        final_item_path: str,
-        title: str,
-        content: str,
-        success: bool,
-    ):
-        """Unlock item and handle batch InfoBar after all operations done."""
-        clean_final_path = self._get_clean_path(final_item_path)
-
-        if existing_bar := self._processing_infobars.pop(clean_final_path, None):
-            existing_bar.close()
-
-        widget = self._find_widget_by_path(clean_final_path)
+    def _on_operation_finished(self, orig, final, title, content, success):
+        widget = self._widget_map.get(
+            self._get_clean_path(final)
+        ) or self._widget_map.get(self._get_clean_path(orig))
         if widget:
             widget.set_interactive(True)
             widget.show_loading_overlay(False)
-
         self._pending_operations_count -= 1
 
-        if self._pending_operations_count <= 0:
-            self._show_batch_summary_infobar()
-
-    def _show_batch_summary_infobar(self):
-        """Show one final InfoBar summarizing the batch operation result."""
-        success_count = self.vm._status_manager.get_success_count()
-        failed_count = self.vm._status_manager.get_fail_count()
-
-        position = InfoBarPosition.BOTTOM_RIGHT
-        parent_window = self.window()
-        duration = 2500 if failed_count == 0 else 5000
-
-        if failed_count > 0:
-            InfoBar.error(
-                title=f"{failed_count} item(s) failed",
-                content="Some items could not be updated. Please check.",
-                isClosable=True,
-                duration=duration,
-                position=position,
-                parent=parent_window,
-            )
-        else:
-            InfoBar.success(
-                title=f"{success_count} item(s) updated successfully",
-                content="All items processed without errors.",
-                isClosable=True,
-                duration=duration,
-                position=position,
-                parent=parent_window,
-            )
-
-        self.vm._status_manager.reset_count()
-
-    def _get_clean_path(self, item_path: str) -> str:
-        """Removes the DISABLED prefix from the folder name in the path."""
-        if not item_path:
-            return ""
-        dir_name = os.path.dirname(item_path)
-        base_name = os.path.basename(item_path)
-        prefix = constants.DISABLED_PREFIX
-        if base_name.lower().startswith(prefix.lower()):
-            clean_base_name = base_name[len(prefix) :]
-            return os.path.normpath(os.path.join(dir_name, clean_base_name))
-        else:
-            return os.path.normpath(item_path)
-
-    def _set_item_loading_state(self, item_path: str, is_loading: bool):
-        clean_path_key = self._get_clean_path(item_path)
-        if not clean_path_key:
+    def _show_batch_summary(self, result: dict[str, int]):
+        if not result:
             return
-        widget = self._find_widget_by_path(clean_path_key)
-        if widget:
-            widget.set_interactive(not is_loading)
-            widget.show_loading_overlay(is_loading)
+        success = result.get("success", 0)
+        failed = result.get("failed", 0)
+        msg = (
+            f"{success} updated, {failed} failed"
+            if failed
+            else f"{success} updated successfully"
+        )
+        InfoBar.success(
+            "Batch Result",
+            msg,
+            parent=self.window(),
+            position=InfoBarPosition.BOTTOM_RIGHT,
+        )
 
-    def _update_item_display(self, item_path: str, payload: dict):
-        widget = self._find_widget_by_path(item_path)
-        if widget:
-            widget.update_display(payload)
+    def _show_error(self, title, msg):
+        InfoBar.error(
+            title, msg, parent=self.window(), position=InfoBarPosition.BOTTOM_RIGHT
+        )
 
-    def _find_widget_by_path(self, item_path: str) -> ObjectListItemWidget | None:
-        """Safely retrieves a widget from the internal map using its clean path."""
-        clean_path_key = self._get_clean_path(item_path)
-        if not clean_path_key:
-            logger.error(f"Cannot find widget for invalid path: {item_path}")
-            return None
-        return self._widget_map.get(clean_path_key)
+    def _get_clean_path(self, path: str) -> str:
+        if not path:
+            return ""
+        name = os.path.basename(path)
+        if name.lower().startswith(constants.DISABLED_PREFIX.lower()):
+            name = name[len(constants.DISABLED_PREFIX) :]
+        return os.path.normpath(os.path.join(os.path.dirname(path), name))
+
+    def _on_search_changed(self, text: str):
+        self.vm.apply_filter_text(text.strip())  # or current status filter if needed
+
+    def closeEvent(self, event):
+        if self.vm:
+            self.vm.unbind_filewatcher()
+        super().closeEvent(event)
+
+    def _update_filter_button_text(self, count: int):
+        self.filter_menu.setText(f"Filter ({count})" if count else "Filter")
+
+    def _update_result_label(self, msg: str):
+        is_visible = bool(msg)
+        self.result_label.setVisible(is_visible)
+        self.clear_all_btn.setVisible(is_visible)
+        self.result_label.setText(msg)

@@ -60,6 +60,7 @@ class FolderGridItemWidget(
         self._setup_ui()
         self._update_ui_from_model()
         self._connect_signals()
+        self._setup_loading_overlay()
 
         self.setObjectName(
             f"FolderGridItemCard_{model.folder_name}"

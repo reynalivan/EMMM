@@ -1,14 +1,19 @@
 # app/services/thumbnail_service.py
 
 from typing import Literal
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from app.utils.image_cache import ImageCache
 from app.utils.image_utils import ImageUtils
 from app.utils.logger_utils import logger
 from app.utils.async_utils import Worker, run_in_background
 from app.core import constants
+from typing import Optional
 import os
 import glob
+import hashlib
+from collections import deque
+
+MAX_CONCURRENT = 4
 
 
 class ThumbnailService(QObject):
@@ -22,23 +27,134 @@ class ThumbnailService(QObject):
         parent: QObject | None = None,
     ):
         super().__init__(parent)
+        logger.debug("ThumbnailService initialized.")
         self._cache = image_cache
         self._utils = image_utils
-        logger.debug("ThumbnailService initialized.")
+        self._setup_cache_clean_timer()
+        self._thumbnail_cache: dict[str, dict] = {}
+        self._thumbnail_request_queue = deque()
+        self._requested_paths = set()
+        self._active_thumbnail_tasks = set()
+
+        self._thumbnail_queue_timer = QTimer(self)
+        self._thumbnail_queue_timer.setInterval(50)  # 20fps
+        self._thumbnail_queue_timer.timeout.connect(self._process_thumbnail_queue)
+        self._thumbnail_queue_timer.start()
 
     def get_thumbnail_async(
         self, item_path: str, item_type: Literal["object", "folder"]
     ):
+        """
         logger.debug(
             f"Requesting thumbnail async for '{item_path}' (type: {item_type})"
         )
-        worker = run_in_background(self._get_thumbnail_task, item_path, item_type)
-        worker.signals.result.connect(
-            lambda result_dict, p=item_path: self.thumbnailReady.emit(p, result_dict)
-        )
-        worker.signals.error.connect(
-            lambda error_info, p=item_path: self._handle_thumbnail_error(p, error_info)
-        )
+        """
+
+        normalized_path = os.path.normpath(item_path)
+        cache_key = self._generate_cache_key(normalized_path, item_type)
+
+        # Optimasi: Check cache dulu, kalau ada emit langsung tanpa worker
+        cached_path = self._cache.get(cache_key)
+        if cached_path and os.path.exists(cached_path):
+            logger.debug(
+                f"ThumbnailService: Immediate cache hit for '{normalized_path}'"
+            )
+            self.thumbnailReady.emit(
+                normalized_path,
+                {"path": cached_path, "status": "hit", "error_msg": None},
+            )
+            return  # Skip spawn worker
+
+        # Kalau tidak ada, baru async worker
+        def _handle_result(result_dict):
+            if not os.path.exists(normalized_path):
+                logger.warning(
+                    f"ThumbnailService: Path disappeared before result: {normalized_path}"
+                )
+                return
+            self.thumbnailReady.emit(normalized_path, result_dict)
+
+        def _handle_error(error_info):
+            if not os.path.exists(normalized_path):
+                logger.warning(
+                    f"ThumbnailService: Path disappeared before error result: {normalized_path}"
+                )
+                return
+            self._handle_thumbnail_error(normalized_path, error_info)
+
+        worker = run_in_background(self._get_thumbnail_task, normalized_path, item_type)
+        worker.signals.result.connect(_handle_result)
+        worker.signals.error.connect(_handle_error)
+
+    def request_thumbnail(self, item_path: str, item_type: Literal["object", "folder"]):
+        normalized_path = os.path.normpath(item_path)
+        key = f"{item_type}:{normalized_path}"
+
+        # skip if already requested
+        if key in self._requested_paths or key in self._active_thumbnail_tasks:
+            return
+
+        # Add to queue
+        self._requested_paths.add(key)
+        self._thumbnail_request_queue.append((normalized_path, item_type))
+
+    def _process_thumbnail_queue(self):
+        if not self._thumbnail_request_queue:
+            return
+
+        while (
+            self._thumbnail_request_queue
+            and len(self._active_thumbnail_tasks) < MAX_CONCURRENT
+        ):
+            item_path, item_type = self._thumbnail_request_queue.popleft()
+            key = f"{item_type}:{item_path}"
+            self._active_thumbnail_tasks.add(key)
+
+            def _on_result(result_dict, p=item_path, t=item_type):
+                k = f"{t}:{p}"
+                self._active_thumbnail_tasks.discard(k)
+                self.thumbnailReady.emit(p, result_dict)
+
+            def _on_error(error_info, p=item_path, t=item_type):
+                k = f"{t}:{p}"
+                self._active_thumbnail_tasks.discard(k)
+                self._handle_thumbnail_error(p, error_info)
+
+            worker = run_in_background(self._get_thumbnail_task, item_path, item_type)
+            worker.signals.result.connect(_on_result)
+            worker.signals.error.connect(_on_error)
+
+    def reset_thumbnail_queue(self):
+        self._thumbnail_request_queue.clear()
+        self._requested_paths.clear()
+        self._active_thumbnail_tasks.clear()
+
+    def _generate_cache_key(self, item_path: str, item_type: str) -> str:
+        """Generate cache key that survives folder renames, including file size."""
+
+        try:
+            # Cari source thumbnail file
+            source_image = self._find_object_thumbnail_source(item_path)
+
+            if source_image and os.path.exists(source_image):
+                mtime = int(os.path.getmtime(source_image))
+                size = os.path.getsize(source_image)
+                basename = os.path.basename(source_image)
+                raw_key = f"{item_type}:{basename}:{mtime}:{size}"
+            else:
+                # Kalau thumbnail tidak ada, fallback pakai nama folder saja
+                clean_base = os.path.basename(item_path)
+                raw_key = f"{item_type}:{clean_base}"
+
+            sha1 = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()
+            return sha1
+
+        except Exception as e:
+            logger.error(
+                f"ThumbnailService: Error generating cache key: {e}", exc_info=True
+            )
+            # Super fallback: hash dari path saja
+            return hashlib.sha1(item_path.encode("utf-8")).hexdigest()
 
     def find_preview_thumbnails_async(self, folder_path: str):
         logger.debug(f"Requesting preview thumbnails async for '{folder_path}'")
@@ -53,17 +169,15 @@ class ThumbnailService(QObject):
     def _get_thumbnail_task(
         self, item_path: str, item_type: Literal["object", "folder"]
     ) -> dict:
-        cache_key = f"{item_type}_{os.path.basename(item_path)}_{os.path.getmtime(item_path)}".replace(
-            os.sep, "_"
-        )
-        logger.debug(f"Cache key for {item_path}: {cache_key}")
+        cache_key = self._generate_cache_key(item_path, item_type)
+        # logger.debug(f"Cache key for {item_path}: {cache_key}")
 
         cached_path = self._cache.get(cache_key)
         if cached_path and os.path.exists(cached_path):
             logger.debug(f"Cache hit for '{item_path}' -> {cached_path}")
             return {"path": cached_path, "status": "hit", "error_msg": None}
 
-        logger.debug(f"Cache miss for '{item_path}'. Finding source image...")
+        # logger.debug(f"Cache miss for '{item_path}'. Finding source image...")
         source_image_path = None
         try:
             if item_type == "object":
@@ -81,7 +195,7 @@ class ThumbnailService(QObject):
             }
 
         if not source_image_path:
-            logger.debug(f"No source image found for '{item_path}'.")
+            # logger.debug(f"No source image found for '{item_path}'.")
             return {
                 "path": None,
                 "status": "fallback",
@@ -156,7 +270,7 @@ class ThumbnailService(QObject):
             )
             raise e
 
-    def _find_object_thumbnail_source(self, folder_path: str) -> str | None:
+    def _find_object_thumbnail_source(self, folder_path: str) -> Optional[str]:
         try:
             suffix = constants.THUMBNAIL_OBJECT_SUFFIX
             extensions = constants.SUPPORTED_THUMB_EXTENSIONS
@@ -168,9 +282,9 @@ class ThumbnailService(QObject):
                 all_found_files.extend(matches)
 
             if not all_found_files:
-                logger.debug(
+                """logger.debug(
                     f"No files found matching pattern *{suffix}.<ext> in {folder_path}"
-                )
+                )"""
                 return None
 
             preferred_order = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
@@ -178,9 +292,9 @@ class ThumbnailService(QObject):
             for pref_ext in preferred_order:
                 for file_path in all_found_files:
                     if file_path.lower().endswith(pref_ext):
-                        logger.debug(
-                            f"Prioritized thumbnail source found ({pref_ext}): {file_path}"
-                        )
+                        #   logger.debug(
+                        #       f"Prioritized thumbnail source found ({pref_ext}): {file_path}"
+                        #   )
                         return file_path
 
             logger.warning(
@@ -205,58 +319,42 @@ class ThumbnailService(QObject):
         try:
             prefix = constants.THUMBNAIL_FOLDER_PREFIX
             extensions = constants.SUPPORTED_THUMB_EXTENSIONS
-            all_previews = []
-            all_fallbacks = []
 
+            # 1. Cari preview*.jpg/png di root
             for ext in extensions:
-                pattern_glob = os.path.join(folder_path, f"{prefix}*.{ext}")
-                matches = glob.glob(pattern_glob)
-                all_previews.extend(matches)
+                pattern = os.path.join(folder_path, f"{prefix}*.{ext}")
+                matches = glob.glob(pattern)
+                result.extend(matches)
 
-            if all_previews:
+            if result:
                 logger.debug(
-                    f"Found {len(all_previews)} specific preview(s) in {folder_path}"
+                    f"Found {len(result)} specific preview(s) in {folder_path}"
                 )
-                return sorted(all_previews)
+                return sorted(result)[:12]  # Sort + limit 12
 
+            logger.debug(f"No preview* files found, fallback to recursive image scan.")
+
+            # 2. Recursive fallback, max 4 levels
+            fallback_files = []
+            for root, dirs, files in os.walk(folder_path):
+                level = root.replace(folder_path, "").count(os.sep)
+                if level > 4:
+                    continue
+
+                for file in files:
+                    if file.lower().endswith(extensions):
+                        fallback_files.append(os.path.join(root, file))
+
+            # Sort by filename, limit to 12
+            fallback_files = sorted(fallback_files)[:12]
             logger.debug(
-                f"No specific previews found in {folder_path}, falling back to any image."
+                f"Found {len(fallback_files)} fallback image(s) in {folder_path}"
             )
-            fallback_patterns = [f"*.{ext}" for ext in extensions]
-            object_thumb_suffix = constants.THUMBNAIL_OBJECT_SUFFIX
+            return fallback_files
 
-            for ext_pattern in fallback_patterns:
-                pattern_glob = os.path.join(folder_path, ext_pattern)
-                matches = glob.glob(pattern_glob)
-                all_fallbacks.extend(
-                    m
-                    for m in matches
-                    if not os.path.basename(m).startswith(prefix)
-                    and not (
-                        os.path.splitext(os.path.basename(m))[0].endswith(
-                            f"_{object_thumb_suffix}"
-                        )
-                        or os.path.splitext(os.path.basename(m))[0].endswith(
-                            f"-{object_thumb_suffix}"
-                        )
-                    )
-                )
-
-            unique_fallbacks = sorted(list(set(all_fallbacks)))
-            logger.debug(
-                f"Found {len(unique_fallbacks)} fallback image(s) in {folder_path}"
-            )
-            return unique_fallbacks
-
-        except AttributeError as e:
-            logger.error(
-                f"AttributeError accessing constants in _find_preview_thumbnail_sources: {e}."
-            )
-            return []
         except Exception as e:
             logger.error(
-                f"Error finding preview thumbnail sources in {folder_path}: {e}",
-                exc_info=True,
+                f"Error finding preview thumbnails in {folder_path}: {e}", exc_info=True
             )
             return []
 
@@ -271,3 +369,26 @@ class ThumbnailService(QObject):
         exctype, value, tb_str = error_info
         logger.error(f"Worker error scanning previews for '{item_path}': {value}")
         self.previewThumbnailsFound.emit(item_path, [])
+
+    def _setup_cache_clean_timer(self):
+        """Setup a timer to clean expired cache periodically."""
+        self._cache_clean_timer = QTimer(self)
+        self._cache_clean_timer.timeout.connect(self._cache.clean_expired)
+
+        # Set interval 24 hours
+        interval_ms = 24 * 60 * 60 * 1000  # 24 hours
+        self._cache_clean_timer.start(interval_ms)
+
+        logger.info(
+            "ThumbnailService: Scheduled periodic cache cleaning every 24 hours."
+        )
+
+    def get_cached_thumbnail(self, item_path: str, item_type: str) -> dict | None:
+        """Returns cached thumbnail result if available."""
+        normalized_path = os.path.normpath(item_path)
+        cache_key = self._generate_cache_key(normalized_path, item_type)
+
+        cached_path = self._cache.get(cache_key)
+        if cached_path and os.path.exists(cached_path):
+            return {"path": cached_path, "status": "hit", "error_msg": None}
+        return None

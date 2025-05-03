@@ -1,66 +1,80 @@
 # app/utils/async_utils.py
-# Utilities for asynchronous operations and debouncing.
-
+import os
 import traceback
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Set
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal, QTimer
-
-# Assuming logger is configured in logger_utils
 from app.utils.logger_utils import logger
+
+# --- Worker System (Background Task) ---
 
 
 class WorkerSignals(QObject):
-    """Defines signals available from a running worker thread."""
-
     finished = pyqtSignal()
-    error = pyqtSignal(tuple)  # (type, value, traceback)
+    error = pyqtSignal(tuple)
     result = pyqtSignal(object)
-    progress = pyqtSignal(int)  # Optional progress reporting
+    progress = pyqtSignal(int)
 
 
 class Worker(QRunnable):
-    """
-    Worker thread for executing a function in the background.
-
-    Inherits from QRunnable to run correctly with QThreadPool.
-
-    Args:
-        fn: The function callback to run.
-        *args: Arguments to pass to the callback function.
-        **kwargs: Keyword arguments to pass to the callback function.
-    """
-
     def __init__(self, fn: Callable, *args: Any, **kwargs: Any):
         super().__init__()
-        # Store constructor arguments (re-used for processing)
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
         self.signals = WorkerSignals()
 
-        # Add the callback to our kwargs
-        # Optional: Add progress callback mechanism if needed
-        # self.kwargs['progress_callback'] = self.signals.progress
-
     def run(self) -> None:
-        """Execute the worker function."""
-        # Retrieve args/kwargs here; note constructor arguments are kept.
-        #
-        # This method runs in a separate thread provided by QThreadPool.
-        # Be careful with accessing GUI elements or non-thread-safe objects.
         try:
+            # Validate arguments before executing the function
+            if not self._validate_args():
+                raise ValueError("Invalid arguments provided to the background task.")
+
             result = self.fn(*self.args, **self.kwargs)
         except Exception as e:
-            logger.exception(f"Error during background task execution: {e}")
-            exctype, value = type(e), e
-            formatted_traceback = traceback.format_exc()
-            self.signals.error.emit((exctype, value, formatted_traceback))
+            self._handle_error(e)
         else:
-            self.signals.result.emit(result)  # Return result of processing
+            self.signals.result.emit(result)
         finally:
-            self.signals.finished.emit()  # Done
+            self.signals.finished.emit()
+
+    def _validate_args(self) -> bool:
+        for arg in self.args:
+            if (
+                isinstance(arg, str)
+                and arg.endswith("_path")
+                and not os.path.exists(arg)
+            ):
+                logger.warning(f"Path doesn't exist yet: {arg}")
+        return True
+
+    def _handle_error(self, e: Exception) -> None:
+        """Centralized error handling."""
+        logger.exception(f"Error during background task execution: {e}")
+        exctype, value = type(e), e
+        formatted_traceback = traceback.format_exc()
+        self.signals.error.emit((exctype, value, formatted_traceback))
 
 
+def run_in_background(
+    fn: Callable,
+    *args: Any,
+    on_result: Callable = None,
+    on_error: Callable = None,
+    on_finished: Callable = None,
+    **kwargs: Any,
+) -> Worker:
+    worker = Worker(fn, *args, **kwargs)
+    if on_result:
+        worker.signals.result.connect(on_result)
+    if on_error:
+        worker.signals.error.connect(on_error)
+    if on_finished:
+        worker.signals.finished.connect(on_finished)
+    QThreadPool.globalInstance().start(worker)
+    return worker
+
+
+# --- Debouncer System ---
 class Debouncer(QObject):
     """Manages QTimers to debounce function calls based on a key."""
 
@@ -69,32 +83,97 @@ class Debouncer(QObject):
         self._timers: Dict[Any, QTimer] = {}
 
     def debounce(self, key: Any, func: Callable[[], None], delay_ms: int) -> None:
-        """
-        Schedules a function to run after a delay, resetting the timer if called again for the same key.
+        """Schedules a function to run after a delay, resets timer if called again."""
+        # Cancel previous timer if exists
+        if key in self._timers:
+            old_timer = self._timers.pop(key)
+            old_timer.stop()
+            old_timer.deleteLater()
 
-        Args:
-            key: A unique identifier for the debounced action.
-            func: The function (taking no arguments) to call after the delay.
-            delay_ms: The debounce interval in milliseconds.
-        """
-        # Implementation Note: Stop existing timer for key, create new single-shot timer,
-        # connect its timeout to func and timer cleanup, start timer. Store timer in dict.
-        pass  # Skeleton implementation
+        # Create new timer
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._execute_and_cleanup(key, func))
+        timer.start(delay_ms)
+
+        # Store timer
+        self._timers[key] = timer
+
+    def _execute_and_cleanup(self, key: Any, func: Callable[[], None]) -> None:
+        """Internal helper to call function and remove timer reference."""
+        try:
+            func()
+        finally:
+            if key in self._timers:
+                self._timers.pop(key).deleteLater()
+
+    def cancel(self, key: Any):
+        """Cancel and remove a scheduled debounce function if exists."""
+        timer = self._timers.pop(key, None)
+        if timer:
+            timer.stop()
+            timer.deleteLater()
 
 
-# Optional helper function
-def run_in_background(fn: Callable, *args: Any, **kwargs: Any) -> Worker:
-    """
-    Creates a Worker and submits it to the global thread pool.
+# --- Async Status Manager ---
 
-    Args:
-        fn: The function to run in the background.
-        *args: Positional arguments for fn.
-        **kwargs: Keyword arguments for fn.
 
-    Returns:
-        The Worker instance (useful for connecting signals).
-    """
-    worker = Worker(fn, *args, **kwargs)
-    QThreadPool.globalInstance().start(worker)
-    return worker
+class AsyncStatusManager(QObject):
+    """Manage async enable/disable/batch operations state for items."""
+
+    status_changed = pyqtSignal()
+
+    def __init__(self, parent: QObject | None = None):
+        super().__init__(parent)
+        self._pending_items: Set[str] = set()
+        self._success_items: Set[str] = set()
+        self._failed_items: Dict[str, str] = {}
+
+    # Core methods
+    def mark_pending(self, item_path: str):
+        self._pending_items.add(item_path)
+        self.status_changed.emit()
+
+    def mark_success(self, item_path: str):
+        self._pending_items.discard(item_path)
+        self._success_items.add(item_path)
+        # Auto-clear after delay (prevents toggle lock)
+        QTimer.singleShot(800, lambda: self._success_items.discard(item_path))
+
+        self.status_changed.emit()
+
+    def mark_failed(self, item_path: str, error_message: str):
+        self._pending_items.discard(item_path)
+        self._failed_items[item_path] = error_message
+        self.status_changed.emit()
+
+    def clear(self):
+        self._pending_items.clear()
+        self._success_items.clear()
+        self._failed_items.clear()
+        self.status_changed.emit()
+
+    def is_all_done(self) -> bool:
+        return self.get_pending_count() <= 0
+
+    # Query methods
+    def is_item_pending(self, item_path: str) -> bool:
+        return item_path in self._pending_items
+
+    def get_pending_count(self) -> int:
+        return len(self._pending_items)
+
+    def get_success_count(self) -> int:
+        return len(self._success_items)
+
+    def get_fail_count(self) -> int:
+        return len(self._failed_items)
+
+    def reset_count(self) -> None:
+        self.clear()
+
+    def get_all_pending_items(self) -> Set[str]:
+        return set(self._pending_items)
+
+    def get_all_failed_items(self) -> Dict[str, str]:
+        return dict(self._failed_items)

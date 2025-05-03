@@ -1,3 +1,5 @@
+# app/models/folder_item_model.py
+
 from dataclasses import dataclass
 from app.core.constants import DISABLED_PREFIX
 
@@ -28,3 +30,15 @@ class FolderItemModel:
     @property
     def is_safe(self) -> bool:
         return self.info.get("is_safe", False) if self.info else False
+
+    @property
+    def preset_name(self) -> str:
+        return self.info.get("preset_name", "") if self.info else ""
+
+    @property
+    def author(self) -> str:
+        return self.info.get("author", "") if self.info else ""
+
+    @property
+    def safe_mode(self) -> bool:
+        return self.info.get("safe_mode", False) if self.info else False

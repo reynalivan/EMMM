@@ -2,7 +2,9 @@
 
 # === APP INFO ===
 APP_NAME: str = "Mods Manager"
-APP_VERSION: str = "0.1.0"  # TODO: Consider fetching from a version file or build process
+APP_VERSION: str = (
+    "0.1.0"  # TODO: Consider fetching from a version file or build process
+)
 
 # === CONFIG ===
 CONFIG_FILENAME: str = "config.ini"
@@ -22,8 +24,7 @@ THUMBNAIL_OBJECT_SUFFIX: str = "thumb"
 # Prefix for folder/preview thumbnails (used by service to search like <PREFIX>*.<EXT> with priority)
 THUMBNAIL_FOLDER_PREFIX: str = "preview"
 # Supported extensions for thumbnail image files
-SUPPORTED_THUMB_EXTENSIONS: tuple[str,
-                                  ...] = ("png", "jpg", "jpeg", "gif", "webp")
+SUPPORTED_THUMB_EXTENSIONS: tuple[str, ...] = ("png", "jpg", "jpeg", "gif", "webp")
 # Default name for generated/pasted preview thumbnails
 DEFAULT_PREVIEW_FILENAME: str = "preview.png"  # Or use THUMBNAIL_FOLDER_PREFIX + .png
 
@@ -56,7 +57,9 @@ OBJECT_THUMB_SIZE_W: int = 64
 OBJECT_THUMB_SIZE_H: int = 64
 DEFAULT_THUMB_SIZE_W: int = 96  # Increased default size slightly
 DEFAULT_THUMB_SIZE_H: int = 96
-PLACEHOLDER_ICON_PATH: str = "app/assets/placeholder/placeholder.png"  # Define path for placeholder
+PLACEHOLDER_ICON_PATH: str = (
+    "app/assets/placeholder/placeholder.png"  # Define path for placeholder
+)
 
 # === CACHE SETTINGS ===
 DEFAULT_CACHE_MAX_MB: int = 100
@@ -70,3 +73,7 @@ LOG_RETENTION: str = "7 days"
 
 # === TIMEOUT / DELAY ===
 DEBOUNCE_INTERVAL_MS: int = 500  # Debounce for file watcher events
+
+# === FILE WATCHER ===
+MAX_BATCH_SIZE: int = 250
+VALID_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".ini", ".json")

@@ -4,6 +4,7 @@ import os
 import time
 import hashlib
 import shutil
+from typing import Optional
 from ..core import constants
 from ..utils.logger_utils import logger
 
@@ -48,7 +49,7 @@ class ImageCache:
         filename = f"{hashed_key}.png"
         return os.path.join(self._cache_dir, filename)
 
-    def put(self, key: str, data: bytes) -> str | None:
+    def put(self, key: str, data: bytes) -> Optional[str]:
         """
         Saves data bytes to a file in the cache directory using the generated key.
 
@@ -68,8 +69,8 @@ class ImageCache:
             with open(file_path, "wb") as f:
                 f.write(data)
             logger.info(f"Successfully cached: '{key}' -> '{file_path}'")
-            self._manage_cache()  # Call placeholder for size/expiry management
-            return file_path  # Return the path on success
+            self._manage_cache()
+            return file_path
         except (IOError, OSError) as e:
             logger.error(
                 f"Failed to write cache file '{file_path}' for key '{key}': {e}",
@@ -83,7 +84,7 @@ class ImageCache:
                     pass
             return None  # Return None on failure
 
-    def get(self, key: str) -> str | None:
+    def get(self, key: str) -> Optional[str]:
         """
         Gets the file path for a cached item if it exists and is valid (not expired).
 
@@ -163,8 +164,84 @@ class ImageCache:
         return success
 
     def _manage_cache(self) -> None:
-        """Placeholder for cache size and expiry management logic."""
-        # TODO: Implement size check: Get total size, if > max, remove oldest files until size is OK.
-        # TODO: Implement periodic expiry check (maybe not here, but triggered separately).
-        pass
-        # logger.debug("Cache management hook called (implementation pending).") # Keep lean
+        """Manage cache size: remove oldest files if exceeding max size."""
+        if self._max_size_bytes <= 0:
+            return  # No limit set
+
+        try:
+            total_size = 0
+            file_infos = []
+
+            for filename in os.listdir(self._cache_dir):
+                filepath = os.path.join(self._cache_dir, filename)
+                if os.path.isfile(filepath):
+                    try:
+                        stat = os.stat(filepath)
+                        total_size += stat.st_size
+                        file_infos.append((filepath, stat.st_mtime, stat.st_size))
+                    except OSError:
+                        continue  # Skip unreadable files
+
+            if total_size <= self._max_size_bytes:
+                return  # Cache size is OK
+
+            logger.warning(
+                f"Image cache size {total_size} exceeds limit {self._max_size_bytes}, cleaning up..."
+            )
+
+            # Sort files by modification time (oldest first)
+            file_infos.sort(key=lambda x: x[1])
+
+            # Start deleting oldest until under limit
+            for filepath, _, filesize in file_infos:
+                try:
+                    os.remove(filepath)
+                    total_size -= filesize
+                    logger.info(f"Deleted old cache file: {filepath}")
+
+                    if total_size <= self._max_size_bytes:
+                        break  # Done after enough space freed
+                except OSError as e:
+                    logger.error(
+                        f"Failed to delete cache file '{filepath}': {e}", exc_info=True
+                    )
+
+        except Exception as e:
+            logger.error(f"Error managing cache size: {e}", exc_info=True)
+
+    def clean_expired(self) -> None:
+        """Remove cache files that are expired based on modification time."""
+        if self._expiry_seconds <= 0:
+            return  # Expiry check disabled
+
+        try:
+            now = time.time()
+            expired_files = []
+
+            for filename in os.listdir(self._cache_dir):
+                filepath = os.path.join(self._cache_dir, filename)
+                if os.path.isfile(filepath):
+                    try:
+                        mod_time = os.path.getmtime(filepath)
+                        if now - mod_time > self._expiry_seconds:
+                            expired_files.append(filepath)
+                    except OSError:
+                        continue  # Skip unreadable files
+
+            for filepath in expired_files:
+                try:
+                    os.remove(filepath)
+                    logger.info(f"Deleted expired cache file: {filepath}")
+                except OSError as e:
+                    logger.error(
+                        f"Failed to delete expired cache file '{filepath}': {e}",
+                        exc_info=True,
+                    )
+
+            if expired_files:
+                logger.info(
+                    f"Expired cache clean complete. Deleted {len(expired_files)} files."
+                )
+
+        except Exception as e:
+            logger.error(f"Error during expired cache cleaning: {e}", exc_info=True)
