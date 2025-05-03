@@ -276,7 +276,6 @@ class ObjectListItemWidget(QWidget):
         self.status_switch.blockSignals(True)
         self.status_switch.setChecked(new_status)
         self.status_switch.blockSignals(False)
-        self.status_label.setText("Enabled" if new_status else "Disabled")
 
     # app/views/components/object_list_item_widget.py
 

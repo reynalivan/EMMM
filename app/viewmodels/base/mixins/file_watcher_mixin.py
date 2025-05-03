@@ -61,22 +61,71 @@ class FileWatcherMixin:
             return
 
         context = os.path.normpath(context)
-        affected = {os.path.normpath(os.path.dirname(p)) for p in paths}
-        should_reload = any(p.startswith(context) for p in affected)
 
-        if should_reload:
-            logger.info(f"{self.__class__.__name__}: Change detected → reloading...")
+        # refresh specific items
+        updated = 0
+        for p in paths:
+            norm_path = os.path.normpath(p)
+            item = next(
+                (
+                    i
+                    for i in self._get_item_list()
+                    if os.path.normpath(i.path) == norm_path
+                ),
+                None,
+            )
+            if item:
+                try:
+                    self.request_thumbnail_for(item)
+                    self.updateItemDisplay.emit(
+                        item.path,
+                        {
+                            "path": item.path,
+                            "display_name": item.display_name,
+                            "status": item.status,
+                        },
+                    )
+                    updated += 1
+                except Exception as e:
+                    logger.warning(f"Failed to update display for {item.path}: {e}")
+
+        if updated == 0:
+            logger.info(
+                f"{self.__class__.__name__}: No matching items, fallback reload."
+            )
             self._load_items_for_path(context)
+        else:
+            logger.info(
+                f"{self.__class__.__name__}: Updated {updated} item(s) directly."
+            )
 
     def _on_file_batch_changed(self, folder_path: str, events: List[FileChangeEvent]):
         logger.info(
             f"{self.__class__.__name__}: Batch file change at {folder_path} ({len(events)} events)"
         )
-
+        if self._get_item_type() != "object":
+            logger.debug(
+                f"{self.__class__.__name__}: Skipping file batch change – not object type."
+            )
+            return
+        context_path = os.path.normpath(self._get_current_path_context() or "")
+        if not os.path.commonpath([context_path, folder_path]) == context_path:
+            logger.debug(
+                f"{self.__class__.__name__}: Skipping batch – outside current context: {folder_path}"
+            )
+            return
         for evt in events:
             logger.debug(
                 f"[{evt.event_type}] src={evt.src_path} → dest={evt.dest_path}"
             )
+            if evt.event_type == "moved" and (
+                os.path.normpath(evt.src_path) in self._suppressed_renames
+                or os.path.normpath(evt.dest_path or "") in self._suppressed_renames
+            ):
+                logger.debug(
+                    f"Ignoring suppressed rename event: {evt.src_path} → {evt.dest_path}"
+                )
+                continue
             if evt.event_type == "created":
                 self._handle_file_created(evt.src_path)
             elif evt.event_type == "deleted":
@@ -85,7 +134,6 @@ class FileWatcherMixin:
                 self._handle_file_rename(evt.src_path, evt.dest_path)
             elif evt.event_type == "modified":
                 self._pending_refresh_paths.add(evt.src_path)
-
         if not self._refresh_debounce_timer.isActive():
             self._refresh_debounce_timer.start()
 

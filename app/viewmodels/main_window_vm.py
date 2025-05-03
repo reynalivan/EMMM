@@ -4,6 +4,7 @@ import os
 from typing import Optional
 from enum import Enum
 from PyQt6.QtCore import QObject, pyqtSignal
+from app.services.mod_management_service import ModManagementService
 from app.utils.logger_utils import logger
 from app.models.config_model import AppSettings
 from app.models.game_model import GameDetail
@@ -30,6 +31,7 @@ class MainWindowVM(QObject):
     def __init__(
         self,
         config_service: ConfigService,
+        mod_service: ModManagementService,
         file_watcher_service: FileWatcherService,
         object_vm: ObjectListVM,
         folder_vm: FolderGridVM,
@@ -38,6 +40,7 @@ class MainWindowVM(QObject):
     ):
         super().__init__(parent)
         self._config_service = config_service
+        self._mod_service = mod_service
         self._settings_vm = setting_vm
         self._current_game: Optional[GameDetail] = None
         self._is_safe_mode_on: bool = False
@@ -48,6 +51,11 @@ class MainWindowVM(QObject):
         self._app_settings: AppSettings = self._config_service.load_app_settings()
         self.log_stats_filewatcher()
         self.initialize_state()
+
+        # Connect ModManagementService's suppressPathRequested signal to FileWatcherService
+        self._mod_service.suppressPathRequested.connect(
+            self._file_watcher_service.suppress_path
+        )
 
     def initialize_state(self) -> None:
         logger.info("Initializing MainWindowVM: loading config and game list...")

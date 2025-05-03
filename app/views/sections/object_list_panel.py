@@ -20,7 +20,7 @@ from qfluentwidgets import (
     SearchLineEdit,
     SubtitleLabel,
 )
-
+from qfluentwidgets import IndeterminateProgressBar
 from app.viewmodels.object_list_vm import ObjectListVM
 from app.views.components.object_list_item_widget import ObjectListItemWidget
 from app.models.object_item_model import ObjectItemModel
@@ -80,6 +80,13 @@ class ObjectListPanel(QWidget):
         self.result_label.setVisible(False)
         self.clear_all_btn.setVisible(False)
 
+        # Loading bar
+        self.loading_bar = IndeterminateProgressBar(self)
+        self.loading_bar.setFixedHeight(2)
+        self.loading_bar.hide()
+
+        self.loading_info_bar: Optional[InfoBar] = None
+
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("ObjectListWidget")
         self.list_widget.setUniformItemSizes(True)
@@ -92,11 +99,13 @@ class ObjectListPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(top_bar_layout)
         layout.addLayout(self.result_summary_bar)
+        layout.addWidget(self.loading_bar)
         layout.addWidget(self.list_widget)
 
     def _connect_signals(self):
         self.vm.displayListChanged.connect(self._update_display_list)
-        self.vm.loadingStateChanged.connect(self.list_widget.setDisabled)
+        self.vm.loadingStateChanged.connect(self._on_loading_state_changed)
+        self.vm.loadCompleted.connect(self._on_load_success)
         self.vm.itemThumbnailNeedsUpdate.connect(self._update_thumbnail)
         self.vm.setItemLoadingState.connect(self._set_item_loading_state)
         self.vm.updateItemDisplay.connect(self._update_item_display)
@@ -107,6 +116,24 @@ class ObjectListPanel(QWidget):
         self.vm.filterButtonStateChanged.connect(self._update_filter_button_text)
         self.vm.resultSummaryUpdated.connect(self._update_result_label)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
+
+    def _on_loading_state_changed(self, is_loading: bool):
+        self.list_widget.setDisabled(is_loading)
+        self.loading_bar.setVisible(is_loading)
+
+        if is_loading:
+            if not self.loading_info_bar:
+                self.loading_info_bar = InfoBar.info(
+                    title="Loading",
+                    content="Loading data...",
+                    parent=self.window(),
+                    position=InfoBarPosition.BOTTOM_LEFT,
+                    duration=0,
+                )
+        else:
+            if self.loading_info_bar:
+                self.loading_info_bar.close()
+                self.loading_info_bar = None
 
     def _on_filter_button_clicked(self):
         filters_metadata = self.vm.get_metadata_filter_options()
@@ -156,6 +183,15 @@ class ObjectListPanel(QWidget):
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, widget)
             self.vm.request_thumbnail_for(item_model)
+
+    def _on_load_success(self, msg: str):
+        InfoBar.success(
+            title="Success Load Data",
+            content=msg,
+            parent=self.window(),
+            position=InfoBarPosition.BOTTOM_RIGHT,
+            duration=3000,
+        )
 
     def _on_item_clicked(self, item: QListWidgetItem):
         widget = self.list_widget.itemWidget(item)

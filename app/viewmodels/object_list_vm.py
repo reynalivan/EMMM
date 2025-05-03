@@ -1,8 +1,8 @@
 # App/viewmodels/object list vm.py
 
-import os
-from typing import List, Optional, Literal, Dict, Any  # Import Literal
 
+import os
+from typing import List, Optional, Literal, Dict, Any
 from PyQt6.QtCore import pyqtSignal, Qt, QObject, QTimer
 from PyQt6.QtGui import QPixmap
 from app.models.object_item_model import ObjectItemModel
@@ -11,11 +11,10 @@ from app.services.file_watcher_service import FileChangeEvent, FileWatcherServic
 from app.services.mod_management_service import ModManagementService
 from app.services.thumbnail_service import ThumbnailService
 from app.utils.logger_utils import logger
-from .base_item_vm import BaseItemViewModel  # Import base class
+from .base_item_vm import BaseItemViewModel
 from app.utils.async_utils import AsyncStatusManager, Debouncer
 from app.viewmodels.folder_grid_vm import FolderGridVM
 from typing import TYPE_CHECKING
-from app.utils.signal_utils import safe_connect
 from app.models.filter_state import FilterState
 from app.models.game_model import GameDetail
 
@@ -24,11 +23,10 @@ if TYPE_CHECKING:
 
 
 class ObjectListVM(BaseItemViewModel):
-    """ViewModel for the Object List panel."""
-
     objectItemSelected = pyqtSignal(object)
-    filterButtonStateChanged = pyqtSignal(int)  # Number of active filters
+    filterButtonStateChanged = pyqtSignal(int)
     resultSummaryUpdated = pyqtSignal(str)
+    loadCompleted = pyqtSignal(str)
 
     def __init__(
         self,
@@ -39,8 +37,6 @@ class ObjectListVM(BaseItemViewModel):
         folder_grid_vm: FolderGridVM,
         parent: Optional[QObject] = None,
     ):
-        # Call base class constructor with shared services
-
         super().__init__(data_loader, mod_service, thumbnail_service, parent)
         self.set_handling_status_changes(True)
         self._folder_grid_vm = folder_grid_vm
@@ -48,39 +44,18 @@ class ObjectListVM(BaseItemViewModel):
         self._debouncer = Debouncer(self)
         self._filter_state = FilterState()
         self._last_filter_state: Optional[FilterState] = None
-        # ObjectListVM specific state
         self._selected_item: Optional[ObjectItemModel] = None
         self._current_game_path: Optional[str] = None
-        self._all_object_items: List[ObjectItemModel] = []  # The main data list
+        self._all_object_items: List[ObjectItemModel] = []
         self.displayed_items: List[ObjectItemModel] = []
-
         self._sort_key = "display_name"
         self._sort_order = Qt.SortOrder.AscendingOrder
-
-        # Connect signals specific to this VM's data loading
-        logger.debug("ObjectListVM initialized (inherits BaseItemViewModel).")
-
-    def connect_global_signals(self, main_vm: "MainWindowVM"):
-        """Connect to signals from MainWindowVM."""
-        # logger.debug("Connecting ObjectListVM to MainWindowVM signals...") # Keep lean
-        try:
-            if self._mod_manager:
-                safe_connect(
-                    self._mod_manager.modStatusChangeComplete,
-                    self._on_mod_status_changed,
-                    self,
-                )
-            self._connect_data_loader_signals()
-
-        except AttributeError as e:
-            logger.error(f"Error connecting global signals in ObjectListVM: {e}")
+        logger.debug("ObjectListVM initialized.")
+        self._connect_data_loader_signals()
 
     def _connect_data_loader_signals(self):
-        """Connects specific data loading signals for this VM."""
         try:
-            # Connect objectItemsReady from data_loader
             self._data_loader.objectItemsReady.connect(self._on_object_items_loaded)
-            # showError signal is inherited from BaseItemViewModel, connection check is optional
             if hasattr(self, "showError") and self._data_loader:
                 self._data_loader.errorOccurred.connect(
                     lambda name, msg: self.showError.emit(name, msg)
@@ -90,7 +65,6 @@ class ObjectListVM(BaseItemViewModel):
 
     def load_object_items(self, path):
         logger.debug(f"Handling game change: {path}")
-
         self._current_game_path = os.path.normpath(path)
         self.clear_state()
         if self._folder_grid_vm:
@@ -99,44 +73,59 @@ class ObjectListVM(BaseItemViewModel):
         self.bind_filewatcher(self._current_game_path, self._file_watcher_service)
 
     def _load_items_for_path(self, path: Optional[str]):
-        """Loads object items for the given game path."""
-        if path:
-            logger.debug(f"Loading object items for path: {path}")
-            self._current_game_path = os.path.normpath(path)
-            self.load_objects_for_game(self._current_game_path)
-        else:
-            logger.debug(f"{self.__class__.__name__}: No valid path to load.")
+        # Validation if Path is None
 
-    # ---Implementation of Abstract Methods from Base ---
+        if path is None:
+            logger.debug(f"{self.__class__.__name__}: No valid path to load.")
+            return
+
+        # Normalization of path and validation whether the directory is valid
+        norm_path = os.path.normpath(path)
+        if not os.path.isdir(norm_path):
+            logger.warning(
+                f"{self.__class__.__name__}: Path is not a valid directory: {norm_path}"
+            )
+            return
+
+        # Check whether path is being supplied
+        if self._file_watcher_service.is_suppressed(norm_path):
+            logger.debug(
+                f"{self.__class__.__name__}: Path is suppressed, skipping load: {norm_path}"
+            )
+            return
+
+        # Item type validation
+        if self._get_item_type() != "object":
+            logger.warning(f"{self.__class__.__name__}: Invalid item type for this VM.")
+            return
+
+        # Loading process if all validation passes
+
+        logger.debug(f"Loading object items for path: {norm_path}")
+        self._current_game_path = norm_path
+        self.load_objects_for_game(self._current_game_path)
 
     def _get_item_list(self) -> List[ObjectItemModel]:
-        """Returns the internal list of object items."""
         return self._all_object_items
 
     def _get_item_type(self) -> Literal["object", "folder"]:
-        """Returns the item type handled by this VM."""
         return "object"
 
     def _get_current_path_context(self) -> Optional[str]:
-        """Returns the current game path being viewed."""
         return self._current_game_path
 
     def _filter_and_sort(self):
-        """Debounced Filters and sorts the internal object list and emits displayListChanged."""
         self._debouncer.debounce(
             key="object_filter_sort", func=self._filter_and_sort_logic, delay_ms=300
         )
 
     def set_metadata_filters(self, new_filters: dict[str, set[str]]):
-        """Set new metadata filters and refresh display."""
         self._filter_state.metadata = new_filters
         self._filter_and_sort()
 
     def get_metadata_filter_options(self) -> dict[str, list[str]]:
-        """Returns unique values per metadata category."""
         allowed_keys = {"element", "region", "rarity", "gender", "weapon", "roles"}
         result: dict[str, set[str]] = {}
-
         for item in self._all_object_items:
             props = item.properties or {}
             for k in allowed_keys:
@@ -145,11 +134,9 @@ class ObjectListVM(BaseItemViewModel):
                     result.setdefault(k, set()).add(val)
                 elif isinstance(val, list):
                     result.setdefault(k, set()).update(val)
-
         return {k: sorted(v) for k, v in result.items()}
 
     def clear_metadata_filter(self):
-        """Clear all active metadata filters."""
         self._filter_state.metadata.clear()
         self._filter_and_sort()
 
@@ -159,25 +146,18 @@ class ObjectListVM(BaseItemViewModel):
         self._filter_and_sort()
 
     def _filter_and_sort_logic(self):
-        """Filter, sort, update display list, and notify UI state using hash-based caching."""
         logger.debug("Filtering and sorting...")
-
         filtered = []
         for item in self._all_object_items:
-            # Status filter
             if self._filter_state.status == "Enabled" and not item.status:
                 continue
             if self._filter_state.status == "Disabled" and item.status:
                 continue
-
-            # Text search filter
             if (
                 self._filter_state.text
                 and self._filter_state.text.lower() not in item.display_name.lower()
             ):
                 continue
-
-            # Metadata filters
             metadata_ok = True
             for cat, allowed_values in self._filter_state.metadata.items():
                 item_values = item.metadata_index.get(cat, set())
@@ -194,10 +174,7 @@ class ObjectListVM(BaseItemViewModel):
                     break
             if not metadata_ok:
                 continue
-
             filtered.append(item)
-
-        # Sorting
         try:
             is_reverse = self._sort_order == Qt.SortOrder.DescendingOrder
             prepared = [
@@ -209,43 +186,30 @@ class ObjectListVM(BaseItemViewModel):
         except Exception as e:
             logger.error(f"Sorting failed: {e}. Falling back to default sort.")
             self.displayed_items = sorted(filtered, key=lambda i: i.display_name)
-
-        # Update UI
         self.displayListChanged.emit(self.displayed_items)
-
-        # Emit filter UI state
         active_filter_count = sum(len(v) for v in self._filter_state.metadata.values())
         self.filterButtonStateChanged.emit(active_filter_count)
-
         show_summary = bool(self._filter_state.text.strip() or active_filter_count)
         summary = f"{len(self.displayed_items)} items found" if show_summary else ""
         self.resultSummaryUpdated.emit(summary)
 
-    # Renamed to match abstract method call pattern
-
     def load_objects_for_game(self, game_path: Optional[str]) -> None:
-        """Implementation for loading object items."""
         norm_path = os.path.normpath(game_path) if game_path else None
-
         if norm_path != self._current_game_path:
             self.select_object_item(None)
-
-        self._current_game_path = norm_path  # Update context path
-        self.set_loading(True)  # Use base class method to set loading state
-        self.select_object_item(None)  # Deselect previous item
+        self._current_game_path = norm_path
+        self.set_loading(True)
+        self.select_object_item(None)
         if not norm_path:
             self._all_object_items = []
-            self._filter_and_sort()  # Update display with empty list
+            self._filter_and_sort()
             self.set_loading(False)
-            # logger.info("ObjectListVM: No game path provided, list cleared.") # Keep lean
             return
-
         self._data_loader.get_object_items_async(norm_path)
 
     def _on_object_items_loaded(
         self, game_path: str, result: list[ObjectItemModel]
     ) -> None:
-        """Slot for objectItemsReady signal."""
         if os.path.normpath(self._current_game_path or "") != os.path.normpath(
             game_path
         ):
@@ -253,13 +217,11 @@ class ObjectListVM(BaseItemViewModel):
                 f"[ObjectListVM] Ignored async result: path mismatch: {game_path}"
             )
             return
-
         logger.debug(f"[ObjectListVM] Received {len(result)} items for {game_path}")
         self._all_object_items = result
         self._filter_and_sort()
-
+        self.loadCompleted.emit(f"Successfully loaded {len(result)} items")
         self.set_loading(False)
-
         for item in self._all_object_items:
             self.request_thumbnail_for(item)
 
@@ -270,31 +232,131 @@ class ObjectListVM(BaseItemViewModel):
         )
 
     def apply_sort(self, sort_key: str, sort_order: Qt.SortOrder):
-        """Applies sorting criteria."""
         self._sort_key = sort_key
         self._sort_order = sort_order
         self._filter_and_sort()
 
     def select_object_item(self, item_model: Optional[ObjectItemModel]):
-        """Selects an object item and emits the signal."""
         if self._selected_item != item_model:
             self._selected_item = item_model
-            self.objectItemSelected.emit(item_model)  # Emit model or None
+            self.objectItemSelected.emit(item_model)
+
+    def _on_mod_status_changed(self, original_item_path: str, result: dict):
+        if not getattr(self, "_is_handling_status_changes", False):
+            logger.debug(f"{self.__class__.__name__}: Mod status change ignored.")
+            return
+        if result.get("item_type") != "object" or result.get("source") != "object":
+            logger.debug(
+                f"{self.__class__.__name__}: Ignoring foldergrid status change."
+            )
+            return
+        success = result.get("success", False)
+        new_path = result.get("new_path") or original_item_path
+        final_status = result.get("new_status", False)
+        original_status = result.get("original_status", False)
+        actual_name = result.get("actual_name")
+        error_msg = result.get("error")
+        logger.debug(
+            f"{self.__class__.__name__}: Mod result: {original_item_path} ➔ {new_path}, success={success}"
+        )
+        if success:
+            self._status_manager.mark_success(original_item_path)
+            self._suppressed_renames.add(os.path.normpath(new_path))
+            self._file_watcher_service.suppress_path(
+                new_path
+            )  # Suppress di FileWatcherService
+
+        else:
+            self._status_manager.mark_failed(
+                original_item_path, error_msg or "Unknown error"
+            )
+        original_state = self._original_state_on_toggle.pop(original_item_path, None)
+        original_display_name = (
+            original_state["display_name"]
+            if original_state
+            else os.path.basename(original_item_path)
+        )
+        definitive_status = final_status if success else original_status
+        definitive_display_name = (
+            os.path.basename(new_path)
+            if definitive_status
+            else (actual_name or original_display_name)
+        )
+        self.setItemLoadingState.emit(original_item_path, False)
+        self.operation_finished.emit(
+            original_item_path,
+            new_path,
+            (
+                "Operation Failed"
+                if not success
+                else f"Mod {'Enabled' if definitive_status else 'Disabled'}"
+            ),
+            error_msg
+            or f"'{definitive_display_name}' successfully {'enabled' if definitive_status else 'disabled'}.",
+            success,
+        )
+        if self._status_manager.is_all_done():
+            if hasattr(self, "_emit_batch_summary_if_done"):
+                self._emit_batch_summary_if_done()
+            self.batchSummaryReady.emit(
+                {
+                    "success": self._status_manager.get_success_count(),
+                    "failed": self._status_manager.get_fail_count(),
+                }
+            )
+            self._status_manager.reset_count()
+        if not success:
+            if original_state:
+                self.updateItemDisplay.emit(
+                    original_item_path,
+                    {
+                        "path": original_item_path,
+                        "display_name": original_state["display_name"],
+                        "status": original_state["status"],
+                    },
+                )
+            return
+        found_model = next(
+            (
+                m
+                for m in self._all_object_items
+                if os.path.normpath(m.path)
+                in (os.path.normpath(original_item_path), os.path.normpath(new_path))
+            ),
+            None,
+        )
+        if found_model:
+            found_model.status = definitive_status
+            if os.path.normpath(found_model.path) != os.path.normpath(new_path):
+                found_model.path = new_path
+                found_model.folder_name = os.path.basename(new_path)
+                self.request_thumbnail_for(found_model)
+                if self._file_watcher_service:
+                    logger.info(
+                        f"{self.__class__.__name__}: Rebinding watcher after rename."
+                    )
+                    self._file_watcher_service.remove_path(
+                        os.path.dirname(original_item_path)
+                    )
+                    self._file_watcher_service.add_path(os.path.dirname(new_path))
+                self.objectItemPathChanged.emit(original_item_path, new_path)
+        else:
+            logger.warning(
+                f"{self.__class__.__name__}: Model not found for {original_item_path}"
+            )
+        self._after_mod_status_change(original_item_path, new_path, result)
+        QTimer.singleShot(1000, lambda: self._suppressed_renames.discard(new_path))
 
     def _after_mod_status_change(self, orig_path: str, new_path: str, result: dict):
-        """After mod status change."""
         if not result.get("success"):
             return
-
         affected_item = next(
             (item for item in self._all_object_items if item.path == orig_path),
             None,
         )
-
         if affected_item:
             affected_item.path = new_path
             affected_item.status = result.get("new_status", affected_item.status)
-
             self.updateItemDisplay.emit(
                 orig_path,
                 {
@@ -303,8 +365,6 @@ class ObjectListVM(BaseItemViewModel):
                     "path": new_path,
                 },
             )
-
-        # === If this item is still selected, trigger foldergrid update ===
         if self._selected_item and os.path.normpath(self._selected_item.path) in {
             os.path.normpath(orig_path),
             os.path.normpath(new_path),
@@ -312,8 +372,8 @@ class ObjectListVM(BaseItemViewModel):
             logger.info(
                 f"ObjectListVM: Selected item was toggled, updating FolderGrid to {new_path}"
             )
-            self._selected_item.path = new_path  # update internal state
-            self._folder_grid_vm.update_root_path(new_path)
+            self._selected_item.path = new_path
+            self._folder_grid_vm.set_root_path(new_path)
 
     def _set_current_path_context(self, path: str):
         self._current_game_path = path
@@ -332,18 +392,23 @@ class ObjectListVM(BaseItemViewModel):
         self, game_path: str, file_watcher_service: FileWatcherService
     ):
         self._file_watcher_service = file_watcher_service
-
         if not game_path or not os.path.isdir(game_path):
             logger.warning(f"{self.__class__.__name__}: Invalid game path: {game_path}")
             return
-
-        self._unbind_filewatcher()  # optional: cleanup before add
-
+        self._unbind_filewatcher()
         norm_path = os.path.normpath(game_path)
-        file_watcher_service.add_path(norm_path)
-        self._watched_paths = {norm_path}
+        watch_paths = {norm_path}
+        try:
+            for entry in os.scandir(norm_path):
+                if entry.is_dir():
+                    watch_paths.add(os.path.normpath(entry.path))
+        except OSError as e:
+            logger.error(f"Failed to scan game path {norm_path}: {e}")
+        for path in watch_paths:
+            file_watcher_service.add_path(path, recursive=False)  # Non recursive
 
-        logger.info(f"{self.__class__.__name__}: Watching game root {norm_path}")
+        self._watched_paths = watch_paths
+        logger.info(f"{self.__class__.__name__}: Watching {len(watch_paths)} folders.")
         self._connect_file_watcher_signals()
 
     def _unbind_filewatcher(self):

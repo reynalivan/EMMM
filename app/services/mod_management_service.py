@@ -18,6 +18,8 @@ class ModManagementService(QObject):
     # --- Signals ---
     modStatusChangeComplete = pyqtSignal(str, dict)
     safeModeApplyComplete = pyqtSignal(dict)
+    # Signal to notify when a path needs to be suppressed
+    suppressPathRequested = pyqtSignal(str)
     # TODO: Add signals for CRUD operations later
 
     def __init__(self, parent: QObject | None = None):
@@ -57,7 +59,10 @@ class ModManagementService(QObject):
     def set_mod_enabled_async(
         self, item_path: str, enable: bool, item_type: Literal["object", "folder"]
     ):
-        """Asynchronously enables/disables a mod item via folder rename."""
+        """Asynchronously enables/disables a mod item via folder rename.
+
+        Emits modStatusChangeComplete with result including 'source' for identification.
+        """
         logger.info(
             f"Request received: {'Enable' if enable else 'Disable'} '{item_path}' (Type: {item_type})"
         )
@@ -72,9 +77,9 @@ class ModManagementService(QObject):
                 "original_status": None,
                 "actual_name": None,
                 "item_type": item_type,
+                "source": item_type,  # Menambahkan source
                 "error": "Task error: Invalid directory path or other validation failure.",
             }
-            # Emit completion signal immediately for invalid input
             self.modStatusChangeComplete.emit(item_path, result)
             return
 
@@ -88,7 +93,8 @@ class ModManagementService(QObject):
             logger.info(
                 f"set_mod_enabled_async result for '{item_path}': {result_dict}"
             )
-            result_dict["item_type"] = item_type  # Tambahkan item_type langsung
+            result_dict["item_type"] = item_type
+            result_dict["source"] = item_type  # Menambahkan source
             self.modStatusChangeComplete.emit(item_path, result_dict)
 
         def _on_error(err_info):
@@ -105,6 +111,7 @@ class ModManagementService(QObject):
                     "original_status": None,
                     "actual_name": None,
                     "item_type": item_type,
+                    "source": item_type,  # Menambahkan source
                     "error": f"Task Error: {err_info[1]}",
                 },
             )
@@ -119,7 +126,7 @@ class ModManagementService(QObject):
         """
         Background task for enable/disable via folder rename.
         Handles JSON update for 'actual_name' on disable (best effort).
-        Returns detailed result dictionary including original status and item type.
+        Returns detailed result dictionary including original status, item type, and source.
         """
         logger.debug(
             f"Background task _set_mod_enabled_task started for '{original_path}' (Type: {item_type})"
@@ -142,7 +149,7 @@ class ModManagementService(QObject):
         # Check if already in the desired state
         if original_status == target_status:
             logger.debug(
-                f"Folder '{current_folder_name}' already has desired state (disable={target_status})."
+                f"Folder '{current_folder_name}' already has desired state (enable={target_status})."
             )
             return {
                 "success": True,
@@ -151,6 +158,7 @@ class ModManagementService(QObject):
                 "original_status": original_status,
                 "actual_name": actual_name,
                 "item_type": item_type,
+                "source": item_type,  # Menambahkan source
                 "error": None,
             }
 
@@ -171,10 +179,7 @@ class ModManagementService(QObject):
                     if item_type == "folder"
                     else constants.PROPERTIES_FILENAME
                 )
-                json_path = os.path.join(
-                    original_path, json_filename
-                )  # JSON is in the *original* folder path
-
+                json_path = os.path.join(original_path, json_filename)
                 json_data = self._read_json_safe(json_path) or {}
                 if json_data.get(constants.KEY_ACTUAL_NAME) != actual_name:
                     json_data[constants.KEY_ACTUAL_NAME] = actual_name
@@ -187,16 +192,15 @@ class ModManagementService(QObject):
                 logger.debug(
                     f"Renaming '{current_folder_name}' to '{new_folder_name}'..."
                 )
-                # Correct clean actual name first
-                clean_actual_name = actual_name.lstrip()  # In case ada spasi sisa
+                clean_actual_name = actual_name.lstrip()  # Remove leading spaces
+                new_folder_name = (
+                    clean_actual_name if target_status else prefix + clean_actual_name
+                )
+                new_path = os.path.join(base_dir, new_folder_name)
+                # Notify FileWatcherService to suppress the path
+                self.suppressPathRequested.emit(original_path)
+                self.suppressPathRequested.emit(new_path)
 
-                # New folder name logic
-                if target_status is True:  # Enabling
-                    new_folder_name = clean_actual_name
-                else:  # Disabling
-                    new_folder_name = prefix + clean_actual_name
-
-                # Rename folder
                 if ModManagementService._is_folder_locked(original_path):
                     error_msg = f"Rename blocked: Folder '{original_path}' is in use."
                     logger.warning(error_msg)
@@ -207,6 +211,7 @@ class ModManagementService(QObject):
                         "original_status": original_status,
                         "actual_name": actual_name,
                         "item_type": item_type,
+                        "source": item_type,  # Menambahkan source
                         "error": error_msg,
                     }
                 os.rename(original_path, new_path)
@@ -232,38 +237,34 @@ class ModManagementService(QObject):
             "success": success,
             "new_path": final_path,
             "new_status": final_status,
-            "original_status": original_status,  # Include original status
-            "actual_name": actual_name,  # Base name (useful for display on disable)
-            "item_type": item_type,  # Include item type
+            "original_status": original_status,
+            "actual_name": actual_name,
+            "item_type": item_type,
+            "source": item_type,  # Menambahkan source
             "error": error_msg,
         }
 
-    # --- Safe Mode Logic (Sudah ada sebelumnya, pastikan signature cocok jika perlu) ---
+    # --- Safe Mode Logic ---
     def applySafeModeChanges_async(
         self, items_to_check: list, new_safe_mode_state: bool
     ):
+        """Asynchronously applies safe mode changes to a list of items."""
         logger.info(
             f"Requesting apply safe mode changes. New state: {new_safe_mode_state}"
         )
-        # Use the same Worker pattern
         worker = Worker(
             self._applySafeModeChanges_task, items_to_check, new_safe_mode_state
         )
         worker.signals.result.connect(
             lambda summary: self.safeModeApplyComplete.emit(summary)
         )
-
         worker.signals.error.connect(
             lambda err_info: logger.error(f"Error in safe mode task: {err_info[1]}")
-            # Optionally emit a generic error signal? For now just log.
         )
         QThreadPool.globalInstance().start(worker)
 
     def _applySafeModeChanges_task(self, items: list, enable_safe_mode: bool) -> dict:
-        # NOTE: This task might need internal calls to the _set_mod_enabled_task logic
-        # or directly perform similar rename/JSON operations based on 'is_safe' key.
-        # Reusing _set_mod_enabled_task might be complex due to state checks.
-        # Keeping the previous direct implementation for now. Needs review.
+        """Background task to apply safe mode changes."""
         logger.debug(
             f"Task started: Apply safe mode changes (enable={enable_safe_mode})"
         )
@@ -275,9 +276,7 @@ class ModManagementService(QObject):
         for item in items:  # Assuming item is FolderItemModel
             processed += 1
             info_path = os.path.join(item.path, constants.INFO_FILENAME)
-            folder_name = os.path.basename(
-                item.path
-            )  # item.folder_name should also work
+            folder_name = os.path.basename(item.path)
 
             try:
                 info = self._read_json_safe(info_path) or {}
@@ -286,38 +285,31 @@ class ModManagementService(QObject):
                 errors += 1
                 continue
 
-            is_marked_safe = info.get(
-                constants.KEY_IS_SAFE, False
-            )  # Default unsafe if key missing
+            is_marked_safe = info.get(constants.KEY_IS_SAFE, False)
             last_status = info.get(constants.KEY_LAST_STATUS, None)
             is_folder_disabled = folder_name.lower().startswith(prefix_lower)
             is_folder_enabled = not is_folder_disabled
 
             needs_rename = False
-            make_disabled = False  # Target state for rename helper
+            make_disabled = False
 
             if enable_safe_mode:
-                # If safe mode is ON, disable any item marked as NOT safe that is currently enabled
                 if not is_marked_safe and is_folder_enabled:
                     logger.debug(f"Safe Mode ON: Disabling unsafe item '{folder_name}'")
-                    info[constants.KEY_LAST_STATUS] = True  # Store that it was active
-                    self._write_json_safe(info_path, info)  # Save status before rename
+                    info[constants.KEY_LAST_STATUS] = True
+                    self._write_json_safe(info_path, info)
                     needs_rename = True
                     make_disabled = True
-            else:  # enable_safe_mode is False
-                # If safe mode is OFF, re-enable items marked as NOT safe IF they were last active
+            else:
                 if not is_marked_safe and last_status is True and is_folder_disabled:
                     logger.debug(
                         f"Safe Mode OFF: Re-enabling previously active unsafe item '{folder_name}'"
                     )
-                    # We don't need to change KEY_LAST_STATUS back here, just rename
-                    # Or maybe clear it? Let's leave it as True.
                     needs_rename = True
                     make_disabled = False
 
             if needs_rename:
                 try:
-                    # Call internal rename helper
                     success, _ = self._rename_folder_for_status(
                         item.path, make_disabled
                     )
@@ -339,11 +331,7 @@ class ModManagementService(QObject):
     def _rename_folder_for_status(
         self, item_path: str, disable: bool
     ) -> tuple[bool, Optional[str]]:
-        """Internal helper to rename folder based on target status (disable=True/False)."""
-        if os.path.normpath(item_path) == os.path.normpath(new_path):
-            logger.debug("Rename skipped (same path)")
-            return True, item_path
-
+        """Internal helper to rename folder based on target status."""
         prefix = constants.DISABLED_PREFIX
         is_currently_disabled = (
             os.path.basename(item_path).lower().startswith(prefix.lower())
@@ -354,22 +342,18 @@ class ModManagementService(QObject):
         new_path = None
 
         if disable and not is_currently_disabled:
-            # Read JSON first to get potential actual_name, though we use current_name here
-            # json_path = os.path.join(item_path, ...) # Determine JSON path based on type? Need item_type here!
-            # For simplicity in this helper, just use current_name
             new_name = prefix + current_name
         elif not disable and is_currently_disabled:
             if current_name.lower().startswith(prefix.lower()):
                 new_name = current_name[len(prefix) :]
-            else:  # Cannot determine original name if prefix varies
+            else:
                 logger.warning(
                     f"Cannot enable '{current_name}', prefix mismatch or non-standard."
                 )
-                return False, None  # Cannot proceed reliably
+                return False, None
 
-        if new_name is None:  # Already in desired state or error case above
-            # logger.debug(f"Rename skipped: Folder '{current_name}' already has desired state (disable={disable}).")
-            return True, item_path  # Considered success as state matches
+        if new_name is None:
+            return True, item_path
 
         new_path = os.path.join(base_dir, new_name)
 
@@ -381,7 +365,6 @@ class ModManagementService(QObject):
             self.retry_rename(item_path, new_path)
             logger.debug(f"Renamed via helper: '{item_path}' -> '{new_path}'")
             return True, os.path.normpath(new_path)
-
         except OSError as e:
             logger.error(f"Rename failed via helper (OS Error): {e}")
             return False, None
@@ -413,7 +396,3 @@ class ModManagementService(QObject):
                 else:
                     raise e
         return False
-
-    # TODO: Implement _ensure_json_exists helper? Might be combined with _read/_write.
-
-    # TODO: Implement methods for create, rename (user initiated), delete, update info/properties

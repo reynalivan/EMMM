@@ -9,6 +9,7 @@ from app.services.mod_management_service import ModManagementService
 from app.services.thumbnail_service import ThumbnailService
 from app.utils.async_utils import AsyncStatusManager
 from app.utils.logger_utils import logger
+from app.utils.signal_utils import safe_connect
 from app.viewmodels.base.mixins.thumbnail_mixin import ThumbnailMixin
 from app.viewmodels.base.mixins.mod_status_mixin import ModStatusMixin
 from app.viewmodels.base.mixins.file_watcher_mixin import FileWatcherMixin
@@ -85,3 +86,12 @@ class BaseItemViewModel(
         self._connect_mod_status_signal()
         self._connect_thumbnail_signal()
         self._connect_file_watcher_signals()
+
+    def connect_status_signal(self):
+        # Call from main.py
+        if self._mod_manager:
+            safe_connect(
+                self._mod_manager.modStatusChangeComplete,
+                self._on_mod_status_changed,
+                self,
+            )

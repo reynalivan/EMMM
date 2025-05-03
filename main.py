@@ -21,6 +21,7 @@ from app.views.sections.object_list_panel import ObjectListPanel
 from app.views.sections.folder_grid_panel import FolderGridPanel
 from app.views.sections.preview_panel import PreviewPanel
 from app.services.file_watcher_service import FileWatcherService
+from app.utils.signal_utils import safe_connect
 
 
 def main():
@@ -63,30 +64,28 @@ def main():
             data_loader, mod_service, thumbnail_service, image_utils
         )
         main_vm = MainWindowVM(
-            config_service, file_watcher_service, object_vm, folder_vm, settings_vm
+            config_service,
+            mod_service,
+            file_watcher_service,
+            object_vm,
+            folder_vm,
+            settings_vm,
         )
-
         logger.info("View models initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize view models: {e}", exc_info=True)
         return 1
 
-    # Connect Signals Between VMs
     try:
-        object_vm.connect_global_signals(main_vm)
-        folder_vm.connect_global_signals(main_vm, object_vm)
-        preview_vm.connect_folder_grid_vm(folder_vm)
-
-        # --- New: pre-mod-change trigger ---
-        object_vm.pre_mod_status_change.connect(
-            folder_vm.handle_object_root_about_to_change
-        )
+        # Connect Signals Between VMs
+        main_vm.safe_mode_status_changed.connect(folder_vm._on_safe_mode_changed)
         object_vm.pre_mod_status_change.connect(preview_vm.clear_details)
-
-        # After preview_vm created
+        object_vm.objectItemSelected.connect(folder_vm._on_object_item_selected)
         object_vm.objectItemPathChanged.connect(preview_vm.on_object_path_changed)
+        folder_vm.folderItemSelected.connect(preview_vm._on_folder_item_selected)
+        object_vm.connect_status_signal()
+        folder_vm.connect_status_signal()
 
-        folder_vm.bind_mod_service_signals()
         logger.debug("VM signals connected.")
     except AttributeError as e:
         logger.error(
