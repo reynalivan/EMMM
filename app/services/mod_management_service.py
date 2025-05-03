@@ -340,6 +340,10 @@ class ModManagementService(QObject):
         self, item_path: str, disable: bool
     ) -> tuple[bool, Optional[str]]:
         """Internal helper to rename folder based on target status (disable=True/False)."""
+        if os.path.normpath(item_path) == os.path.normpath(new_path):
+            logger.debug("Rename skipped (same path)")
+            return True, item_path
+
         prefix = constants.DISABLED_PREFIX
         is_currently_disabled = (
             os.path.basename(item_path).lower().startswith(prefix.lower())

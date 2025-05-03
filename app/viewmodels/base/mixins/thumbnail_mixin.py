@@ -52,5 +52,5 @@ class ThumbnailMixin:
 
     def _on_thumbnail_ready(self, item_path: str, result: dict):
         """Handles thumbnail results and emits signal for UI update."""
-        logger.debug(f"Thumbnail ready for: {item_path}")
+        # logger.debug(f"Thumbnail ready for: {item_path}")
         self.itemThumbnailNeedsUpdate.emit(item_path, result)

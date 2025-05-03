@@ -2,6 +2,7 @@
 
 import os
 import json
+from typing import Set
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 from app.models.object_item_model import ObjectItemModel
 from app.core.constants import PROPERTIES_FILENAME, DISABLED_PREFIX
@@ -20,9 +21,13 @@ class DataLoaderService(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         logger.debug("DataLoaderService initialized.")
+        self._in_progress_paths: Set[str] = set()
 
     def get_object_items_async(self, game_path: str) -> None:
         """Asynchronously loads ObjectItemModels for the given game path."""
+        if game_path in self._in_progress_paths:
+            return
+        self._in_progress_paths.add(game_path)
         logger.debug(f"Requesting object items async for: {game_path}")
         worker = Worker(self._load_object_items_task, game_path)
         # Connect signals correctly
@@ -36,6 +41,9 @@ class DataLoaderService(QObject):
             lambda err_info, gp=game_path: self.errorOccurred.emit(
                 f"Object Loader ({os.path.basename(gp)})", str(err_info[1])
             )
+        )
+        worker.signals.finished.connect(
+            lambda: self._in_progress_paths.discard(game_path)
         )
         # --- End Modification ---
         QThreadPool.globalInstance().start(worker)

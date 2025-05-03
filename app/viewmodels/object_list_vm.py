@@ -17,6 +17,7 @@ from app.viewmodels.folder_grid_vm import FolderGridVM
 from typing import TYPE_CHECKING
 from app.utils.signal_utils import safe_connect
 from app.models.filter_state import FilterState
+from app.models.game_model import GameDetail
 
 if TYPE_CHECKING:
     from app.viewmodels.main_window_vm import MainWindowVM
@@ -34,6 +35,7 @@ class ObjectListVM(BaseItemViewModel):
         data_loader: DataLoaderService,
         mod_service: ModManagementService,
         thumbnail_service: ThumbnailService,
+        file_watcher_service: FileWatcherService,
         folder_grid_vm: FolderGridVM,
         parent: Optional[QObject] = None,
     ):
@@ -41,11 +43,11 @@ class ObjectListVM(BaseItemViewModel):
 
         super().__init__(data_loader, mod_service, thumbnail_service, parent)
         self.set_handling_status_changes(True)
-        self._debouncer = Debouncer(self)
         self._folder_grid_vm = folder_grid_vm
+        self._file_watcher_service = file_watcher_service
+        self._debouncer = Debouncer(self)
         self._filter_state = FilterState()
         self._last_filter_state: Optional[FilterState] = None
-
         # ObjectListVM specific state
         self._selected_item: Optional[ObjectItemModel] = None
         self._current_game_path: Optional[str] = None
@@ -56,8 +58,54 @@ class ObjectListVM(BaseItemViewModel):
         self._sort_order = Qt.SortOrder.AscendingOrder
 
         # Connect signals specific to this VM's data loading
-        self._connect_data_loader_signals()
         logger.debug("ObjectListVM initialized (inherits BaseItemViewModel).")
+
+    def connect_global_signals(self, main_vm: "MainWindowVM"):
+        """Connect to signals from MainWindowVM."""
+        # logger.debug("Connecting ObjectListVM to MainWindowVM signals...") # Keep lean
+        try:
+            if self._mod_manager:
+                safe_connect(
+                    self._mod_manager.modStatusChangeComplete,
+                    self._on_mod_status_changed,
+                    self,
+                )
+            self._connect_data_loader_signals()
+
+        except AttributeError as e:
+            logger.error(f"Error connecting global signals in ObjectListVM: {e}")
+
+    def _connect_data_loader_signals(self):
+        """Connects specific data loading signals for this VM."""
+        try:
+            # Connect objectItemsReady from data_loader
+            self._data_loader.objectItemsReady.connect(self._on_object_items_loaded)
+            # showError signal is inherited from BaseItemViewModel, connection check is optional
+            if hasattr(self, "showError") and self._data_loader:
+                self._data_loader.errorOccurred.connect(
+                    lambda name, msg: self.showError.emit(name, msg)
+                )
+        except AttributeError as e:
+            logger.error(f"Error connecting data loader signals in ObjectListVM: {e}")
+
+    def load_object_items(self, path):
+        logger.debug(f"Handling game change: {path}")
+
+        self._current_game_path = os.path.normpath(path)
+        self.clear_state()
+        if self._folder_grid_vm:
+            self._folder_grid_vm.clear_state()
+        self._load_items_for_path(self._current_game_path)
+        self.bind_filewatcher(self._current_game_path, self._file_watcher_service)
+
+    def _load_items_for_path(self, path: Optional[str]):
+        """Loads object items for the given game path."""
+        if path:
+            logger.debug(f"Loading object items for path: {path}")
+            self._current_game_path = os.path.normpath(path)
+            self.load_objects_for_game(self._current_game_path)
+        else:
+            logger.debug(f"{self.__class__.__name__}: No valid path to load.")
 
     # ---Implementation of Abstract Methods from Base ---
 
@@ -69,18 +117,8 @@ class ObjectListVM(BaseItemViewModel):
         """Returns the item type handled by this VM."""
         return "object"
 
-    def _load_items_for_path(self, path: Optional[str]):
-        """Loads object items for the given game path."""
-        if path:
-            logger.debug(f"Loading object items for path: {path}")
-            self._current_game_path = os.path.normpath(path)
-            self.load_objects_for_game(self._current_game_path)
-        else:
-            logger.debug(f"{self.__class__.__name__}: No valid path to load.")
-
     def _get_current_path_context(self) -> Optional[str]:
         """Returns the current game path being viewed."""
-        logger.debug(f"Current game path: {self._current_game_path}")
         return self._current_game_path
 
     def _filter_and_sort(self):
@@ -122,12 +160,7 @@ class ObjectListVM(BaseItemViewModel):
 
     def _filter_and_sort_logic(self):
         """Filter, sort, update display list, and notify UI state using hash-based caching."""
-        current_hash = self._filter_state.hash()
-        if current_hash == getattr(self, "_last_filter_hash", None):
-            logger.debug("FilterState unchanged. Skipping filter/sort.")
-            return
-
-        self._last_filter_hash = current_hash
+        logger.debug("Filtering and sorting...")
 
         filtered = []
         for item in self._all_object_items:
@@ -188,50 +221,6 @@ class ObjectListVM(BaseItemViewModel):
         summary = f"{len(self.displayed_items)} items found" if show_summary else ""
         self.resultSummaryUpdated.emit(summary)
 
-    def connect_global_signals(self, main_vm: "MainWindowVM"):
-        """Connect to signals from MainWindowVM."""
-        # logger.debug("Connecting ObjectListVM to MainWindowVM signals...") # Keep lean
-        try:
-            main_vm.current_game_changed.connect(self._handle_current_game_changed)
-
-            if self._mod_manager:
-                safe_connect(
-                    self._mod_manager.modStatusChangeComplete,
-                    self._on_mod_status_changed,
-                    self,
-                )
-
-        except AttributeError as e:
-            logger.error(f"Error connecting global signals in ObjectListVM: {e}")
-
-    def _connect_data_loader_signals(self):
-        """Connects specific data loading signals for this VM."""
-        try:
-            # Connect objectItemsReady from data_loader
-            self._data_loader.objectItemsReady.connect(self._on_object_items_loaded)
-            # showError signal is inherited from BaseItemViewModel, connection check is optional
-
-            if hasattr(self, "showError") and self._data_loader:
-                self._data_loader.errorOccurred.connect(
-                    lambda name, msg: self.showError.emit(name, msg)
-                )
-        except AttributeError as e:
-            logger.error(f"Error connecting data loader signals in ObjectListVM: {e}")
-
-    def _handle_current_game_changed(self, game_detail):
-        logger.debug(f"Handling game change: {game_detail}")
-        if self._folder_grid_vm:
-            self._folder_grid_vm.clear_state()
-
-        if not game_detail:
-            self._current_game_path = None
-            self._all_object_items.clear()
-            self.displayListChanged.emit([])  # Force clear UI
-            return
-
-        game_path = game_detail.path
-        self._load_items_for_path(game_path)
-
     # Renamed to match abstract method call pattern
 
     def load_objects_for_game(self, game_path: Optional[str]) -> None:
@@ -268,10 +257,10 @@ class ObjectListVM(BaseItemViewModel):
         logger.debug(f"[ObjectListVM] Received {len(result)} items for {game_path}")
         self._all_object_items = result
         self._filter_and_sort()
+
         self.set_loading(False)
 
         for item in self._all_object_items:
-            self.request_thumbnail_for(item)
             self.request_thumbnail_for(item)
 
     def apply_filter_text(self, text: str):
@@ -326,10 +315,6 @@ class ObjectListVM(BaseItemViewModel):
             self._selected_item.path = new_path  # update internal state
             self._folder_grid_vm.update_root_path(new_path)
 
-    def set_filewatcher_service(self, watcher: FileWatcherService):
-        """Set file watcher service after construction."""
-        self.bind_filewatcher(watcher)
-
     def _set_current_path_context(self, path: str):
         self._current_game_path = path
 
@@ -343,6 +328,30 @@ class ObjectListVM(BaseItemViewModel):
             meta.add(value)
         self._filter_and_sort()
 
+    def bind_filewatcher(
+        self, game_path: str, file_watcher_service: FileWatcherService
+    ):
+        self._file_watcher_service = file_watcher_service
+
+        if not game_path or not os.path.isdir(game_path):
+            logger.warning(f"{self.__class__.__name__}: Invalid game path: {game_path}")
+            return
+
+        self._unbind_filewatcher()  # optional: cleanup before add
+
+        norm_path = os.path.normpath(game_path)
+        file_watcher_service.add_path(norm_path)
+        self._watched_paths = {norm_path}
+
+        logger.info(f"{self.__class__.__name__}: Watching game root {norm_path}")
+        self._connect_file_watcher_signals()
+
+    def _unbind_filewatcher(self):
+        if self._file_watcher_service:
+            for path in self._watched_paths:
+                self._file_watcher_service.remove_path(path)
+        self._watched_paths.clear()
+
     def clear_state(self):
         self._selected_item = None
         self._all_object_items.clear()
@@ -351,11 +360,4 @@ class ObjectListVM(BaseItemViewModel):
         self._filter_state.status = "all"
         self._sort_key = "name"
         self._sort_order = Qt.SortOrder.AscendingOrder
-        # self.status_changed.emit()
-
-    def load_game_items(self, path: Optional[str]):
-        """Public method to load items for a given game path."""
-        self.clear_state()
-        norm_path = os.path.normpath(path) if path else None
-        self._current_game_path = norm_path
-        self._load_items_for_path(path)
+        self.displayListChanged.emit([])

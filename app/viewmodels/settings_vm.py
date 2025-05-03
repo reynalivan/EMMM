@@ -1,5 +1,5 @@
 from PyQt6.QtCore import QObject, pyqtSignal
-from app.models.config_model import GameDetail
+from app.models.game_model import GameDetail
 from app.services.config_service import ConfigService
 from app.core.exceptions import ConfigError
 from app.utils.logger_utils import logger

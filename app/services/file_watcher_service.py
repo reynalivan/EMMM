@@ -14,6 +14,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from app.utils.logger_utils import logger
 from app.utils.image_cache import ImageCache
+from app.core.constants import VALID_EXTENSIONS, MAX_BATCH_SIZE
 
 
 # --- Event Class ---
@@ -31,11 +32,13 @@ class WatchdogThread(QThread):
         self._observer = Observer()
         self._handler = handler
         self._running = False
+        self._pending_paths = []
 
     def run(self):
         self._running = True
         self._observer.start()
         while self._running:
+            self._schedule_pending_paths()
             self.msleep(200)  # Soft idle
 
     def stop(self):
@@ -44,11 +47,19 @@ class WatchdogThread(QThread):
         self._observer.join()
 
     def schedule(self, handler, path, recursive=False):
-        self._observer.schedule(handler, path, recursive=recursive)
+        self._pending_paths.append((handler, path, recursive))
 
     def unschedule(self, watch):
         """Unschedule a specific watched path safely."""
         self._observer.unschedule(watch)
+
+    def _schedule_pending_paths(self):
+        while self._pending_paths:
+            handler, path, recursive = self._pending_paths.pop(0)
+            try:
+                self._observer.schedule(handler, path, recursive=recursive)
+            except Exception as e:
+                logger.error(f"Failed to schedule path {path}: {e}", exc_info=True)
 
 
 # --- Main Service ---
@@ -56,7 +67,6 @@ class FileWatcherService(QObject):
     fileBatchChanged = pyqtSignal(str, list)  # folder_path, list[FileChangeEvent]
     fileChanged = pyqtSignal(str)
     statsUpdated = pyqtSignal(int, float)  # folder_count: int, change_rate: float
-    MAX_BATCH_SIZE = 250  # Max event per folder per batch
 
     def __init__(
         self, cache: Optional[ImageCache] = None, parent: Optional[QObject] = None
@@ -78,6 +88,9 @@ class FileWatcherService(QObject):
         self._stats_timer.timeout.connect(self._log_stats)
 
     def start(self):
+        if self._thread and self._thread.isRunning():
+            logger.debug("FileWatcherService thread already running, skipping start.")
+            return
         if self._thread is None:
             self._thread = WatchdogThread(self._handler)
         if not self._thread.isRunning():
@@ -96,6 +109,9 @@ class FileWatcherService(QObject):
         self._stats_timer.stop()
 
     def enable(self):
+        if self._active:
+            logger.debug("FileWatcherService already enabled, skipping.")
+            return
         self._active = True
         logger.info("FileWatcherService ENABLED.")
 
@@ -103,41 +119,55 @@ class FileWatcherService(QObject):
         self._active = False
         logger.info("FileWatcherService DISABLED.")
 
-    def is_enabled(self) -> bool:
-        return self._active
-
     def add_path(self, folder_path: str):
         if not self._active:
             logger.debug(
                 f"Watcher ignored add_path because service disabled: {folder_path}"
             )
             return
+
         if not os.path.isdir(folder_path):
             logger.warning(f"Invalid path given to Watcher: {folder_path}")
             return
-        if folder_path in self._watched_paths:
+
+        norm_path = os.path.normpath(folder_path)
+        logger.debug(f"Attempting to add path: {norm_path}")
+
+        if norm_path in self._watched_paths:
+            logger.debug(f"Path already watched: {norm_path}")
             return
 
-        if self._thread is None or not self._thread.isRunning():
-            self.start()
+        if self._thread is None:
+            self._thread = WatchdogThread(self._handler)
+            logger.debug("Watcher thread created.")
 
-        self._thread.schedule(self._handler, folder_path, recursive=False)
-        self._watched_paths.add(folder_path)
-        logger.info(f"Watching {len(self._watched_paths)} folders.")
+        if not self._thread.isRunning():
+            self._thread.start()
+            logger.info("FileWatcherService thread started.")
+
+        try:
+            self._thread.schedule(self._handler, norm_path, recursive=False)
+            self._watched_paths.add(norm_path)
+            logger.info(
+                f"add_path: new folder to watch: {norm_path}. Total: {len(self._watched_paths)} folders."
+            )
+        except Exception as e:
+            logger.exception(f"Failed to schedule watcher for {norm_path}: {e}")
 
     def remove_path(self, folder_path: str):
         """Safely remove a path from watcher."""
-        if not self._thread or not self._thread.isRunning():
+        if (
+            not self._thread
+            or not self._thread.isRunning()
+            or not self._thread._observer
+        ):
             return
 
         normalized_path = os.path.normpath(folder_path)
 
         try:
-            # Akses _watches lewat self._thread._observer._watches
             watch_to_remove = None
-            for (
-                watch
-            ) in self._thread._observer._watches:  # Iterate directly over the set
+            for watch in self._thread._observer._watches:
                 if os.path.normpath(watch.path) == normalized_path:
                     watch_to_remove = watch
                     break
@@ -146,6 +176,7 @@ class FileWatcherService(QObject):
                 self._thread._observer.unschedule(watch_to_remove)
                 self._watched_paths.discard(normalized_path)
                 logger.info(f"FileWatcherService: Unwatched path {normalized_path}")
+                logger.debug(f"Current watched paths: {self._watched_paths}")
             else:
                 logger.warning(
                     f"FileWatcherService: Path not found to unwatch: {normalized_path}"
@@ -213,10 +244,10 @@ class FileWatcherService(QObject):
             if not events:
                 continue
 
-            if len(events) > self.MAX_BATCH_SIZE:
+            if len(events) > MAX_BATCH_SIZE:
                 chunks = [
-                    events[i : i + self.MAX_BATCH_SIZE]
-                    for i in range(0, len(events), self.MAX_BATCH_SIZE)
+                    events[i : i + MAX_BATCH_SIZE]
+                    for i in range(0, len(events), MAX_BATCH_SIZE)
                 ]
                 for chunk in chunks:
                     self._process_cache_removal(chunk)
@@ -251,7 +282,6 @@ class FileWatcherService(QObject):
 
 # --- Watchdog Event Handler ---
 class _WatchdogHandler(FileSystemEventHandler):
-    VALID_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".ini")
 
     def __init__(self, service: FileWatcherService):
         super().__init__()
@@ -275,7 +305,7 @@ class _WatchdogHandler(FileSystemEventHandler):
         if (
             event.event_type != "deleted"
             and not is_folder
-            and ext not in self.VALID_EXTENSIONS
+            and ext not in VALID_EXTENSIONS
         ):
             logger.debug(
                 f"Skipped event (filtered): {event.event_type} - {path} (ext={ext}, is_folder={is_folder})"

@@ -36,11 +36,13 @@ class FolderGridVM(BaseItemViewModel):
         data_loader: DataLoaderService,
         mod_service: ModManagementService,
         thumbnail_service: ThumbnailService,
+        file_watcher_service: FileWatcherService,
         parent: Optional[QObject] = None,
     ):  # Ensure parent is last
         # Call base class constructor with shared services
         super().__init__(data_loader, mod_service, thumbnail_service, parent)
         # FolderGridVM specific state
+        self._file_watcher_service = file_watcher_service
         self._debouncer = Debouncer(self)
         self._suppress_next_load: bool = False
         self._filter_state = FilterState()
@@ -77,6 +79,9 @@ class FolderGridVM(BaseItemViewModel):
 
     def _get_current_path_context(self) -> Optional[str]:
         """Returns the current parent folder path being viewed."""
+        logger.debug(
+            f"FolderGridVM: Returning current parent path: {self._current_parent_path}"
+        )
         return self._current_parent_path
 
     def _filter_and_sort(self, initial_load: bool = False):
@@ -301,6 +306,8 @@ class FolderGridVM(BaseItemViewModel):
             logger.info(f"FolderGridVM: Loading folders for path: {parent_path}")
             self._current_parent_path = os.path.normpath(parent_path)
             self._data_loader.get_folder_items_async(self._current_parent_path)
+            self.bind_filewatcher(parent_path, self._file_watcher_service)
+
         else:
             logger.info(
                 "FolderGridVM: load_folders_for called with None path, clearing."
@@ -308,6 +315,42 @@ class FolderGridVM(BaseItemViewModel):
             self._current_parent_path = None
             self._all_folder_items = []
             self._filter_and_sort()  # Emit empty list
+
+    def bind_filewatcher(
+        self, parent_path: str, file_watcher_service: FileWatcherService
+    ):
+        self._file_watcher_service = file_watcher_service
+
+        if not parent_path or not os.path.isdir(parent_path):
+            logger.warning(
+                f"{self.__class__.__name__}: Invalid parent path: {parent_path}"
+            )
+            return
+
+        self._unbind_filewatcher()
+
+        watch_paths = set()
+        for root, dirs, _ in os.walk(parent_path):
+            level = os.path.relpath(root, parent_path).count(os.sep)
+            if level > 2:
+                continue
+            watch_paths.add(os.path.normpath(root))
+            for d in dirs:
+                full_path = os.path.normpath(os.path.join(root, d))
+                watch_paths.add(full_path)
+
+        for p in watch_paths:
+            file_watcher_service.add_path(p)
+
+        self._watched_paths = watch_paths
+        logger.info(f"{self.__class__.__name__}: Watching {len(watch_paths)} folders.")
+        self._connect_file_watcher_signals()
+
+    def _unbind_filewatcher(self):
+        if self._file_watcher_service:
+            for path in self._watched_paths:
+                self._file_watcher_service.remove_path(path)
+        self._watched_paths.clear()
 
     def select_folder_item(self, item: FolderItemModel):
         self.folderItemSelected.emit(item)
@@ -483,10 +526,6 @@ class FolderGridVM(BaseItemViewModel):
                 if self._breadcrumb_path[0] != new_segment:
                     self._breadcrumb_path[0] = new_segment
                     self.breadcrumbChanged.emit(self._breadcrumb_path)
-
-    def set_filewatcher_service(self, watcher: FileWatcherService):
-        """Set file watcher service after construction."""
-        self._file_watcher_service = watcher
 
     def handle_object_root_about_to_change(self, path: str):
         """Clear FolderGrid view if the given object path is currently active."""

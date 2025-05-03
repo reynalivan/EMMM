@@ -71,11 +71,13 @@ class BatchProcessingService(QObject):
             worker.signals.error.connect(on_worker_error)
             QThreadPool.globalInstance().start(worker)
 
-    def batch_enable_disable_items(self, item_paths: list[str], enable: bool):
-        if not item_paths:
-            return
+    def batch_enable_disable_items(
+        self, item_paths: list[str], enable: bool, item_type: str
+    ):
+        if item_type not in ("object", "folder"):
+            raise ValueError(f"Invalid item_type: {item_type}")
         self._status_manager.begin_batch(item_paths)
-        self.batch_set_mod_enabled_async(item_paths, enable, self._get_item_type())
+        self.batch_set_mod_enabled_async(item_paths, enable, item_type)
 
     def _on_batch_operation_finished(self, summary: dict):
         processed = summary.get("processed", 0)

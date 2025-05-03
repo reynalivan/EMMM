@@ -1,8 +1,15 @@
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTableWidget,
-                             QTableWidgetItem, QPushButton, QWidget, QLineEdit,
-                             QFileDialog)
+from PyQt6.QtWidgets import (
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTableWidget,
+    QTableWidgetItem,
+    QPushButton,
+    QWidget,
+    QLineEdit,
+    QFileDialog,
+)
 from app.viewmodels.settings_vm import SettingsVM
-from app.models.config_model import GameDetail
 from app.utils.logger_utils import logger
 
 
@@ -34,8 +41,11 @@ class SettingsDialog(QDialog):
         self.cancel_button = QPushButton("Cancel")
 
         for btn in [
-                self.add_button, self.edit_button, self.remove_button,
-                self.save_button, self.cancel_button
+            self.add_button,
+            self.edit_button,
+            self.remove_button,
+            self.save_button,
+            self.cancel_button,
         ]:
             button_row.addWidget(btn)
 
@@ -133,6 +143,7 @@ class SettingsDialog(QDialog):
         return text_input.text().strip(), result["ok"]
 
     def _prompt_path(self, default: str = "") -> tuple[str, bool]:
-        result = QFileDialog.getExistingDirectory(self, "Select Game Folder",
-                                                  default or "")
+        result = QFileDialog.getExistingDirectory(
+            self, "Select Game Folder", default or ""
+        )
         return result, bool(result)

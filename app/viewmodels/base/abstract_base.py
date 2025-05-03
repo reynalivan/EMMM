@@ -1,3 +1,4 @@
+# app/viewmodels/base/abstract_base.py
 from abc import ABCMeta, abstractmethod
 from typing import Literal, List, Optional, Union
 from PyQt6.QtCore import QObject

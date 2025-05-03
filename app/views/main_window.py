@@ -78,7 +78,6 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         self.safe_mode_switch = SwitchButton("Safe Mode")
 
         # TODO: Implement Preset ComboBox later
-
         self.preset_combo = ComboBox()
         self.preset_combo.setPlaceholderText("No Presets")
         self.preset_combo.setMinimumWidth(150)
@@ -108,7 +107,6 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         header_layout.addWidget(self.play_button)
 
         # ---Main Content Area (Resizable Panels) ---
-
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(self.obj_list_panel)
         self.splitter.addWidget(self.fld_grid_panel)
@@ -134,8 +132,8 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
 
         main_layout.setSpacing(0)  # No spacing between header and splitter
         main_layout.addWidget(self.header_widget)
-        # Add a small separator line (optional)
 
+        # Add a small separator line (optional)
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
@@ -145,7 +143,6 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
         main_layout.addWidget(self.splitter, 1)  # Splitter takes remaining space
 
         # Set the combined widget as the central content
-
         self.addSubInterface(central_widget, FluentIcon.APPLICATION, self.windowTitle())
 
         # ---Window Title Bar Customization (Optional) ---
@@ -261,15 +258,18 @@ class MainWindow(FluentWindow):  # Inherit from FluentWindow
     def _select_game_in_dropdown(self, game):
         """Programmatically selects a game in the ComboBox based on VM state."""
         self.gamelist_combo.blockSignals(True)
+
         if game:
-            index = self.gamelist_combo.findText(game.name)
+            game_name = game.name  # ✅ FIXED: ambil nama
+            index = self.gamelist_combo.findText(game_name)
             if index != -1:
                 self.gamelist_combo.setCurrentIndex(index)
             else:
-                logger.warning(f"Game '{game.name}' not found in ComboBox")
+                logger.warning(f"Game '{game_name}' not found in ComboBox")
                 self.gamelist_combo.setCurrentIndex(-1)
         else:
             self.gamelist_combo.setCurrentIndex(-1)
+
         self.gamelist_combo.blockSignals(False)
 
     def _on_safe_mode_toggled(self, checked: bool):

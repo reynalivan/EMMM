@@ -164,7 +164,24 @@ class ModStatusMixin:
                     logger.info(
                         f"{self.__class__.__name__}: Rebinding watcher after rename."
                     )
-                    self.bind_filewatcher(self._file_watcher_service)
+
+                    # Perlu if-branch karena object hanya 1 root, folder bisa nested
+                    if self._get_item_type() == "object":
+                        # Only one folder is watched → ganti langsung
+                        self._file_watcher_service.remove_path(
+                            os.path.dirname(original_item_path)
+                        )
+                        self._file_watcher_service.add_path(os.path.dirname(new_path))
+
+                    elif self._get_item_type() == "folder":
+                        # Watcher bisa multi-path → update watched_paths
+                        if os.path.isdir(original_item_path):
+                            self._file_watcher_service.remove_path(original_item_path)
+                            self._watched_paths.discard(original_item_path)
+
+                        if os.path.isdir(new_path):
+                            self._file_watcher_service.add_path(new_path)
+                            self._watched_paths.add(new_path)
 
                 if self._get_item_type() == "object":
                     self.objectItemPathChanged.emit(original_item_path, new_path)

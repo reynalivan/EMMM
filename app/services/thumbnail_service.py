@@ -292,9 +292,9 @@ class ThumbnailService(QObject):
             for pref_ext in preferred_order:
                 for file_path in all_found_files:
                     if file_path.lower().endswith(pref_ext):
-                        logger.debug(
-                            f"Prioritized thumbnail source found ({pref_ext}): {file_path}"
-                        )
+                        #   logger.debug(
+                        #       f"Prioritized thumbnail source found ({pref_ext}): {file_path}"
+                        #   )
                         return file_path
 
             logger.warning(

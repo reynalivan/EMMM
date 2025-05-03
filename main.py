@@ -1,15 +1,7 @@
 # Main.py
 
 import sys
-from PyQt6.QtWidgets import (
-    QApplication,
-    QWidget,
-    QVBoxLayout,
-    QListWidget,
-    QListWidgetItem,
-)  # Make sure Qwidget is there
-
-from typing import Dict, Optional
+from PyQt6.QtWidgets import QApplication
 from qfluentwidgets import setTheme, Theme
 from app.utils.logger_utils import logger
 from app.views.main_window import MainWindow
@@ -60,27 +52,23 @@ def main():
 
     # Initialize ViewModels
     try:
-        folder_vm = FolderGridVM(data_loader, mod_service, thumbnail_service)
-        object_vm = ObjectListVM(data_loader, mod_service, thumbnail_service, folder_vm)
+        settings_vm = SettingsVM(config_service)
+        folder_vm = FolderGridVM(
+            data_loader, mod_service, thumbnail_service, file_watcher_service
+        )
+        object_vm = ObjectListVM(
+            data_loader, mod_service, thumbnail_service, file_watcher_service, folder_vm
+        )
         preview_vm = PreviewPanelVM(
             data_loader, mod_service, thumbnail_service, image_utils
         )
-        settings_vm = SettingsVM(config_service)
-        main_vm = MainWindowVM(config_service, object_vm, folder_vm, settings_vm)
-        # === Set file watcher explicitly ===
-        main_vm.bind_filewatcher_service(file_watcher_service)
-        object_vm.set_filewatcher_service(file_watcher_service)
-        folder_vm.set_filewatcher_service(file_watcher_service)
+        main_vm = MainWindowVM(
+            config_service, file_watcher_service, object_vm, folder_vm, settings_vm
+        )
 
-        file_watcher_service.enable()
-        file_watcher_service.start()
-
-        # Rebind file watcher
         logger.info("View models initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize view models: {e}", exc_info=True)
-        # TODO: Show critical error message to user
-
         return 1
 
     # Connect Signals Between VMs
@@ -133,7 +121,6 @@ def main():
         return 1
 
     # Start Application Event Loop
-
     logger.info("Entering event loop...")
     exit_code = app.exec()
     logger.info(f"Application exiting with code {exit_code}")
@@ -157,5 +144,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Unhandled exception occurred in __main__: {e}", exc_info=True)
         # TODO: Show critical error message box to user if possible
-
         sys.exit(1)

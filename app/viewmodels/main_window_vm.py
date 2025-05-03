@@ -4,15 +4,16 @@ import os
 from typing import Optional
 from enum import Enum
 from PyQt6.QtCore import QObject, pyqtSignal
-from app.services.config_service import ConfigService
-from app.models.config_model import GameDetail, AppSettings
 from app.utils.logger_utils import logger
+from app.models.config_model import AppSettings
+from app.models.game_model import GameDetail
+from app.services.config_service import ConfigService
 from app.services.file_watcher_service import FileWatcherService
 from app.viewmodels.object_list_vm import ObjectListVM
 from app.viewmodels.folder_grid_vm import FolderGridVM
-from typing import List
 from app.viewmodels.settings_vm import SettingsVM
 from app.core.constants import CONFIG_KEY_SAFE_MODE, CONFIG_KEY_LAST_GAME
+from typing import List
 
 
 class MainWindowVM(QObject):
@@ -22,7 +23,6 @@ class MainWindowVM(QObject):
     safe_mode_status_changed = pyqtSignal(bool)
     global_refresh_requested = pyqtSignal()
     errorOccurred = pyqtSignal(str, str)  # title, message
-
     file_watcher_stats_updated = pyqtSignal(
         int, float
     )  # folders_watched, changes_per_sec
@@ -30,6 +30,7 @@ class MainWindowVM(QObject):
     def __init__(
         self,
         config_service: ConfigService,
+        file_watcher_service: FileWatcherService,
         object_vm: ObjectListVM,
         folder_vm: FolderGridVM,
         setting_vm: SettingsVM,
@@ -37,19 +38,21 @@ class MainWindowVM(QObject):
     ):
         super().__init__(parent)
         self._config_service = config_service
-        self._available_games = []
         self._settings_vm = setting_vm
         self._current_game: Optional[GameDetail] = None
         self._is_safe_mode_on: bool = False
-        self.file_watcher_service: Optional[FileWatcherService] = None
+        self._file_watcher_service = file_watcher_service
         self.object_vm = object_vm
         self.folder_vm = folder_vm
+        self._available_games: AppSettings = self._config_service.load_games()
         self._app_settings: AppSettings = self._config_service.load_app_settings()
+        self.log_stats_filewatcher()
+        self.initialize_state()
 
     def initialize_state(self) -> None:
         logger.info("Initializing MainWindowVM: loading config and game list...")
-
         self._update_game_list()
+
         # Find selected game
         selected_game = next(
             (
@@ -61,6 +64,11 @@ class MainWindowVM(QObject):
         )
         if selected_game:
             self.set_current_game(selected_game)
+
+    def _update_game_list(self) -> None:
+        new_list = self._config_service.load_games()
+        logger.debug(f"Loaded game list: {new_list}")
+        self._handle_new_game_list(new_list)
 
     def select_game_by_name(self, name: str | None):
         if name is None:
@@ -85,37 +93,32 @@ class MainWindowVM(QObject):
 
         self._current_game = game
         self.current_game_changed.emit(game)
-
         self.object_vm.clear_state()
         self.folder_vm.clear_state()
-
+        self._file_watcher_service.enable()
+        self._file_watcher_service.start()
         if game:
-            self._load_game_items(game.path)
+            self.object_vm.load_object_items(game.path)
             self._save_last_selected_game()
 
-    def _load_game_items(self, game_path: str):
-        if not game_path:
-            return
-        self.object_vm.load_game_items(game_path)
-        self.folder_vm.clear_state()
+    def _handle_new_game_list(self, new_list):
+        # Extract names and paths
+        names = [item.name for item in new_list]
+        paths = [item.path for item in new_list]
 
-    def _update_game_list(self) -> None:
-        new_list = self._config_service.load_games()
-        self._handle_new_game_list(new_list)
-
-    def _handle_new_game_list(self, new_list: List[GameDetail]):
-        new_keys = {(g.name, g.path) for g in new_list}
+        # Compare new data with old
+        new_keys = set(zip(names, paths))
         old_keys = {(g.name, g.path) for g in self._available_games}
 
-        if new_keys != old_keys:
-            self._available_games = new_list
-            self.game_list_updated.emit(new_list)
-            if self._current_game and self._current_game.name not in [
-                g.name for g in new_list
-            ]:
-                self.set_current_game(None)
-        else:
-            logger.debug("Game list unchanged.")
+        logger.debug(f"New game list keys: {new_keys}")
+        logger.debug(f"Old game list keys: {old_keys}")
+
+        self._available_games = new_list
+        logger.debug("Emitting game_list_updated signal.")
+        self.game_list_updated.emit(new_list)
+
+        if self._current_game and self._current_game.name not in names:
+            self.set_current_game(None)
 
     def _save_last_selected_game(self):
         if self._current_game:
@@ -161,15 +164,12 @@ class MainWindowVM(QObject):
         logger.debug("MainWindowVM: Saving safe mode setting...")
         self._save_setting(CONFIG_KEY_SAFE_MODE, self._is_safe_mode_on)
 
-    def bind_filewatcher_service(self, watcher: FileWatcherService):
+    def log_stats_filewatcher(self):
         """Connect FileWatcherService to MainWindowVM."""
         logger.info("MainWindowVM: Binding FileWatcherService.")
-        if self.file_watcher_service:
-            self.file_watcher_service.statsUpdated.disconnect(
-                self._on_filewatcher_stats_updated
-            )
-        self.file_watcher_service = watcher
-        watcher.statsUpdated.connect(self._on_filewatcher_stats_updated)
+        self._file_watcher_service.statsUpdated.connect(
+            self._on_filewatcher_stats_updated
+        )
 
     def _on_filewatcher_stats_updated(self, folder_count: int, change_rate: float):
         """Internal slot: update UI with file watcher stats."""

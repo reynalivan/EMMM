@@ -55,8 +55,21 @@ class Worker(QRunnable):
         self.signals.error.emit((exctype, value, formatted_traceback))
 
 
-def run_in_background(fn: Callable, *args: Any, **kwargs: Any) -> Worker:
+def run_in_background(
+    fn: Callable,
+    *args: Any,
+    on_result: Callable = None,
+    on_error: Callable = None,
+    on_finished: Callable = None,
+    **kwargs: Any,
+) -> Worker:
     worker = Worker(fn, *args, **kwargs)
+    if on_result:
+        worker.signals.result.connect(on_result)
+    if on_error:
+        worker.signals.error.connect(on_error)
+    if on_finished:
+        worker.signals.finished.connect(on_finished)
     QThreadPool.globalInstance().start(worker)
     return worker
 

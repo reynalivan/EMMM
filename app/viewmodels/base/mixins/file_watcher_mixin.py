@@ -44,42 +44,6 @@ class FileWatcherMixin:
                 self,
             )
 
-    def bind_filewatcher(self, file_watcher_service: FileWatcherService):
-        """Bind FileWatcherService, watch current context."""
-        self._file_watcher_service = file_watcher_service
-        context_path = self._get_current_path_context()
-
-        if not context_path or not os.path.exists(context_path):
-            logger.warning(f"{self.__class__.__name__}: Invalid context path.")
-            return
-
-        # Clear and bind new watch path
-        for path in self._watched_paths.copy():
-            file_watcher_service.remove_path(path)
-        self._watched_paths.clear()
-
-        file_watcher_service.add_path(context_path)
-        self._watched_paths.add(context_path)
-
-        logger.info(f"{self.__class__.__name__}: Watching {context_path}")
-        self._connect_file_watcher_signals()
-
-    def unbind_filewatcher(self):
-        logger.info(f"{self.__class__.__name__}: Unbinding file watcher...")
-        if self._file_watcher_service:
-            for path in self._watched_paths:
-                self._file_watcher_service.remove_path(path)
-            self._watched_paths.clear()
-
-            try:
-                self._file_watcher_service.fileBatchChanged.disconnect(
-                    self._on_file_batch_changed
-                )
-            except Exception:
-                pass
-
-        self._refresh_debounce_timer.stop()
-
     def _process_pending_refresh(self):
         """Debounced refresh executor."""
         if not self._pending_refresh_paths:

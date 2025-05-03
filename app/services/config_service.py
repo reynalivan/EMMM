@@ -1,7 +1,8 @@
 import configparser
 from pathlib import Path
 from typing import List
-from app.models.config_model import GameDetail, AppSettings
+from app.models.config_model import AppSettings
+from app.models.game_model import GameDetail
 from app.core.constants import (
     CONFIG_SECTION_GAMES,
     CONFIG_SECTION_SETTINGS,
@@ -49,7 +50,6 @@ class ConfigService:
         safe_mode = self._parser.getboolean(
             CONFIG_SECTION_SETTINGS, CONFIG_KEY_SAFE_MODE, fallback=False
         )
-        safe_mode = safe_mode in ("1", "true", "yes")
         logger.debug(f"Loaded settings: last_game={last_game}, safe_mode={safe_mode}")
         return AppSettings(
             last_selected_game_name=last_game if last_game else None,

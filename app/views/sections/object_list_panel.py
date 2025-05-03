@@ -241,7 +241,7 @@ class ObjectListPanel(QWidget):
 
     def closeEvent(self, event):
         if self.vm:
-            self.vm.unbind_filewatcher_service()
+            self.vm.unbind_filewatcher()
         super().closeEvent(event)
 
     def _update_filter_button_text(self, count: int):
