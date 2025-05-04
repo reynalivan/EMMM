@@ -92,8 +92,12 @@ class ThumbnailService(QObject):
         normalized_path = os.path.normpath(item_path)
         key = f"{item_type}:{normalized_path}"
 
+        # --- ThumbnailService.request_thumbnail (tambah di awal) ---
         if self._is_recently_sent(key):
-            return  # Skip already emitted recently
+            cached = self.get_cached_thumbnail(normalized_path, item_type)
+            if cached:  # kirim lagi ke UI
+                self.thumbnailReady.emit(normalized_path, cached)
+            return  # selesai, tanpa antre worker
 
         if key in self._requested_paths or key in self._active_thumbnail_tasks:
             return

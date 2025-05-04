@@ -27,6 +27,7 @@ class ObjectListVM(BaseItemViewModel):
     filterButtonStateChanged = pyqtSignal(int)
     resultSummaryUpdated = pyqtSignal(str)
     loadCompleted = pyqtSignal(str)
+    loadMoreRequested = pyqtSignal()
 
     def __init__(
         self,
@@ -43,31 +44,32 @@ class ObjectListVM(BaseItemViewModel):
         self._file_watcher_service = file_watcher_service
         self._debouncer = Debouncer(self)
         self._filter_state = FilterState()
-        self._last_filter_state: Optional[FilterState] = None
         self._selected_item: Optional[ObjectItemModel] = None
         self._current_game_path: Optional[str] = None
         self._all_object_items: List[ObjectItemModel] = []
         self._pending_object_items_for_emit: list[ObjectItemModel] = []
         self._incremental_render_debouncer = Debouncer(self)
         self.displayed_items: List[ObjectItemModel] = []
-
-        self._sort_key = "display_name"
+        self._visible_thumb_requested: set[str] = set()
+        self._MAX_VISIBLE_ITEMS = 10
+        self._is_loading_more = False
+        self._current_display_limit = self._MAX_VISIBLE_ITEMS
+        self._sort_key = "display_name"  # BEFORE logger.debug(...)
         self._sort_order = Qt.SortOrder.AscendingOrder
         logger.debug("ObjectListVM initialized.")
         self._connect_data_loader_signals()
 
     def _connect_data_loader_signals(self):
         try:
-            self._data_loader.objectItemChunkReady.connect(
-                self._on_object_item_chunk_ready
-            )
-
-            if hasattr(self, "showError") and self._data_loader:
-                self._data_loader.errorOccurred.connect(
+            dl = self._data_loader
+            dl.objectItemChunkReady.connect(self._on_object_item_chunk_ready)
+            dl.objectItemsReady.connect(self._on_object_items_ready)
+            if hasattr(dl, "errorOccurred"):
+                dl.errorOccurred.connect(
                     lambda name, msg: self.showError.emit(name, msg)
                 )
         except AttributeError as e:
-            logger.error(f"Error connecting data loader signals in ObjectListVM: {e}")
+            logger.error(f"{self.__class__.__name__}: connect signals error {e}")
 
     def load_object_items(self, path):
         logger.debug(f"Handling game change: {path}")
@@ -78,18 +80,9 @@ class ObjectListVM(BaseItemViewModel):
         self._load_items_for_path(self._current_game_path)
         self.bind_filewatcher(self._current_game_path, self._file_watcher_service)
 
-    def _on_object_item_chunk_ready(self, game_path: str, item: ObjectItemModel):
-        if os.path.normpath(self._current_game_path or "") != os.path.normpath(
-            game_path
-        ):
-            return
-
-        if item is None or not isinstance(item, ObjectItemModel):
-            return
-
-        self._all_object_items.append(item)
-        self._filter_and_sort_item(item)
-        self.request_thumbnail_for(item)
+    def _reset_paging(self):
+        self._current_display_limit = self._MAX_VISIBLE_ITEMS
+        self._pending_object_items_for_emit.clear()
 
     def _load_items_for_path(self, path: Optional[str]):
         # Validation if Path is None
@@ -154,6 +147,56 @@ class ObjectListVM(BaseItemViewModel):
         self._filter_state.metadata.clear()
         self._filter_state.text = ""
 
+    def _on_object_items_ready(
+        self, game_path: str, items: list[ObjectItemModel]
+    ) -> None:
+        if os.path.normpath(game_path) != os.path.normpath(self._current_game_path):
+            return
+
+        # ① reset semua state tampilan
+        self._visible_thumb_requested.clear()
+        self._pending_object_items_for_emit.clear()
+        self._reset_paging()
+
+        # ② simpan & SORT sekali (status → nama)  ➜ sama dgn FolderGrid
+        self._all_object_items = sorted(
+            items, key=lambda m: (not m.status, m.display_name.lower())
+        )
+
+        # ③ rebuild displayed_items + paging awal
+        self.displayed_items = [
+            m for m in self._all_object_items if self._passes_filter(m)
+        ]
+        first_batch = self.displayed_items[: self._current_display_limit]
+
+        # ④ kirim ke UI + langsung minta thumbnail utk batch pertama
+        self.displayListChanged.emit(first_batch)  # bisa [] jika 0 match
+        self.handle_visible_thumbnail_requests([m.path for m in first_batch])
+
+        # ⑤ bookkeeping UI
+        self._emit_filtered_summary()
+        self.set_loading(False)
+        self.loadCompleted.emit(f"Loaded {len(self._all_object_items)} items")
+
+    def try_load_more(self):
+        if self._is_loading_more or self._current_display_limit >= len(
+            self.displayed_items
+        ):
+            return
+        self._is_loading_more = True
+
+        prev_limit = self._current_display_limit
+        self._current_display_limit += self._MAX_VISIBLE_ITEMS
+
+        visible_now = self.displayed_items[: self._current_display_limit]
+        newly_visible = visible_now[prev_limit:]
+
+        self.displayListChanged.emit(visible_now)
+        self.handle_visible_thumbnail_requests([m.path for m in newly_visible])
+        self._emit_filtered_summary()
+
+        self._is_loading_more = False
+
     def _filter_and_sort(self):
         self.displayed_items.clear()
         for item in self._all_object_items:
@@ -166,34 +209,49 @@ class ObjectListVM(BaseItemViewModel):
         if item in self.displayed_items:
             return
 
-        index = next(
+        idx = next(
             (
                 i
-                for i, existing in enumerate(self.displayed_items)
-                if self._sort_compare(item, existing) < 0
+                for i, ex in enumerate(self.displayed_items)
+                if self._sort_compare(item, ex) < 0
             ),
             len(self.displayed_items),
         )
-        self.displayed_items.insert(index, item)
-        self._pending_object_items_for_emit.append(item)
+        self.displayed_items.insert(idx, item)
+
+        # queue item if it is inside the *current* limit
+        if idx < self._current_display_limit:
+            self._pending_object_items_for_emit.append(item)
 
         self._incremental_render_debouncer.debounce(
-            key="object_emit_batch",
-            func=self._emit_object_items_batch,
-            delay_ms=100,
+            "object_emit_batch", self._emit_object_items_batch, 80
         )
+
+    def _sort_compare(self, a: ObjectItemModel, b: ObjectItemModel) -> int:
+        """Basic 2-kunci sort : status (enabled duluan) + nama.
+        Hargai self._sort_order."""
+        a_key = (not a.status, getattr(a, self._sort_key, a.display_name).lower())
+        b_key = (not b.status, getattr(b, self._sort_key, b.display_name).lower())
+
+        if self._sort_order == Qt.SortOrder.DescendingOrder:
+            a_key, b_key = b_key, a_key
+
+        return (a_key > b_key) - (a_key < b_key)
 
     def _emit_object_items_batch(self):
         if not self._pending_object_items_for_emit:
             return
-        self.displayListChanged.emit(self.displayed_items)
-        self._emit_filtered_summary()
+
+        visible = self.displayed_items[: self._current_display_limit]
+        self.displayListChanged.emit(visible)
+
+        # minta thumbnail HANYA utk item pending
+        self.handle_visible_thumbnail_requests(
+            [m.path for m in self._pending_object_items_for_emit]
+        )
         self._pending_object_items_for_emit.clear()
 
-    def _sort_compare(self, a: ObjectItemModel, b: ObjectItemModel) -> int:
-        a_key = (not a.status, getattr(a, self._sort_key, a.display_name).lower())
-        b_key = (not b.status, getattr(b, self._sort_key, b.display_name).lower())
-        return (a_key > b_key) - (a_key < b_key)
+        self._emit_filtered_summary()
 
     def _passes_filter(self, item: ObjectItemModel) -> bool:
         if self._filter_state.status == "Enabled" and not item.status:
@@ -231,22 +289,19 @@ class ObjectListVM(BaseItemViewModel):
             return
         self._data_loader.get_object_items_async(norm_path)
 
-    def _on_object_items_loaded(
-        self, game_path: str, result: list[ObjectItemModel]
-    ) -> None:
-        if os.path.normpath(self._current_game_path or "") != os.path.normpath(
-            game_path
-        ):
-            logger.debug(
-                f"[ObjectListVM] Ignored async result: path mismatch: {game_path}"
-            )
+    def _on_object_item_chunk_ready(self, game_path: str, item: ObjectItemModel):
+        if os.path.normpath(game_path) != os.path.normpath(self._current_game_path):
             return
+        self._all_object_items.append(item)
+        if not self._passes_filter(item):
+            return
+        self.displayed_items.append(item)
 
-        logger.debug(
-            f"[ObjectListVM] Finished loading {len(result)} items (final chunk)"
-        )
-        self.loadCompleted.emit(f"Loaded {len(self._all_object_items)} items")
-        self.set_loading(False)
+        if len(self.displayed_items) <= self._current_display_limit:
+            self._pending_object_items_for_emit.append(item)
+            self._incremental_render_debouncer.debounce(
+                "emit", self._emit_object_items_batch, 60
+            )
 
     def apply_filter_text(self, text: str):
         self._filter_state.text = text
@@ -255,11 +310,16 @@ class ObjectListVM(BaseItemViewModel):
         )
 
     def _refilter_all_items(self):
-        self.displayed_items.clear()
-        self._pending_object_items_for_emit.clear()
+        self._visible_thumb_requested.clear()
+        self._reset_paging()
+        self.displayed_items = []
 
-        for item in self._all_object_items:
-            self._filter_and_sort_item(item)
+        for m in self._all_object_items:  # tetap pakai sort_compare
+            self._filter_and_sort_item(m)
+
+        first_batch = self.displayed_items[: self._current_display_limit]
+        self.displayListChanged.emit(first_batch)  # ← kosong? UI bersih
+        self.handle_visible_thumbnail_requests([m.path for m in first_batch])
         self._emit_filtered_summary()
 
     def apply_sort(self, sort_key: str, sort_order: Qt.SortOrder):
@@ -440,6 +500,23 @@ class ObjectListVM(BaseItemViewModel):
         logger.info(f"{self.__class__.__name__}: Watching {len(watch_paths)} folders.")
         self._connect_file_watcher_signals()
 
+    def handle_visible_thumbnail_requests(self, visible_paths: list[str]) -> None:
+        """
+        Dipanggil panel setelah mem-render batch baru.
+        Minta thumbnail hanya untuk item yang benar-benar tampak
+        dan belum pernah diminta pada sesi tampilan ini.
+        """
+        if not self._thumbnail_service:
+            return
+
+        for p in visible_paths:
+            norm = os.path.normpath(p)
+            if norm in self._visible_thumb_requested:
+                continue  # sudah pernah diminta
+            self._visible_thumb_requested.add(norm)
+            # antrikan di ThumbnailService (pakai pool/queue internal)
+            self._thumbnail_service.request_thumbnail(norm, "object")
+
     def _unbind_filewatcher(self):
         if self._file_watcher_service:
             for path in self._watched_paths:
@@ -452,6 +529,4 @@ class ObjectListVM(BaseItemViewModel):
         self.displayed_items.clear()
         self._filter_state.text = ""
         self._filter_state.status = "all"
-        self._sort_key = "name"
-        self._sort_order = Qt.SortOrder.AscendingOrder
         self.displayListChanged.emit([])

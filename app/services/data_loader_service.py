@@ -21,6 +21,7 @@ class DataLoaderService(QObject):
     errorOccurred = pyqtSignal(str, str)  # operation_name, message
     objectItemChunkReady = pyqtSignal(str, object)
     folderItemChunkReady = pyqtSignal(str, object)
+    objectItemsLoaded = pyqtSignal(str, list)  # game_path, list[ObjectItemModel]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,45 +52,34 @@ class DataLoaderService(QObject):
         QThreadPool.globalInstance().start(worker)
 
     def _load_object_items_task(self, game_path: str) -> list[ObjectItemModel]:
-        result = []
-        chunk = []
-        BATCH_SIZE = 10
-
+        items: list[ObjectItemModel] = []
         if not os.path.isdir(game_path):
-            raise FileNotFoundError(f"Invalid directory: {game_path}")
+            raise FileNotFoundError(game_path)
 
         for folder_name in os.listdir(game_path):
             folder_path = os.path.join(game_path, folder_name)
             if not os.path.isdir(folder_path):
                 continue
-            try:
-                props = self._read_json_safe(
-                    os.path.join(folder_path, PROPERTIES_FILENAME)
-                )
-                status = not folder_name.lower().startswith(DISABLED_PREFIX.lower())
-                model = ObjectItemModel(
+            props = self._read_json_safe(os.path.join(folder_path, PROPERTIES_FILENAME))
+            status = not folder_name.lower().startswith(DISABLED_PREFIX.lower())
+            items.append(
+                ObjectItemModel(
                     path=folder_path,
                     folder_name=folder_name,
                     properties=props,
                     status=status,
                 )
-                logger.debug(f"Loaded object: {folder_name}")
-                chunk.append(model)
-                if len(chunk) >= BATCH_SIZE:
-                    for obj in chunk:
-                        self.objectItemChunkReady.emit(game_path, obj)
-                    result.extend(chunk)
-                    chunk.clear()
-            except Exception as e:
-                logger.warning(f"Failed to load object: {folder_name}, {e}")
-                continue
+            )
 
-        if chunk:
-            for obj in chunk:
-                self.objectItemChunkReady.emit(game_path, obj)
-            result.extend(chunk)
+        # sortir SEKALI, sama seperti FolderGrid
+        items.sort(key=lambda m: (not m.status, m.display_name.lower()))
 
-        return result
+        # stream ke UI menjaga urutan
+        for m in items:
+            self.objectItemChunkReady.emit(game_path, m)
+
+        self.objectItemsLoaded.emit(game_path, items)  # <— beri tahu “selesai”
+        return items
 
     # --- Folder Item Loading ---
     def get_folder_items_async(self, parent_path: str) -> None:

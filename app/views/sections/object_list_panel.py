@@ -1,7 +1,7 @@
 # app/views/sections/object_list_panel.py
 import os
 from typing import Optional, Dict
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QWidget,
@@ -36,7 +36,7 @@ class ObjectListPanel(QWidget):
         self._widget_map: Dict[str, ObjectListItemWidget] = {}
         self._processing_infobars: Dict[str, InfoBar] = {}
         self._pending_operations_count = 0
-
+        self._updating_list = False
         self._setup_ui()
         self._connect_signals()
 
@@ -116,6 +116,7 @@ class ObjectListPanel(QWidget):
         self.vm.filterButtonStateChanged.connect(self._update_filter_button_text)
         self.vm.resultSummaryUpdated.connect(self._update_result_summary)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
+        self.list_widget.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
     def _on_loading_state_changed(self, is_loading: bool):
         self.list_widget.setDisabled(is_loading)
@@ -137,7 +138,7 @@ class ObjectListPanel(QWidget):
 
     def _on_filter_button_clicked(self):
         filters_metadata = self.vm.get_metadata_filter_options()
-        active = self.vm._metadata_filters
+        active = self.vm.set_metadata_filters
         dialog = FilterDialog(
             filters=filters_metadata,
             active_filters=active,
@@ -158,31 +159,54 @@ class ObjectListPanel(QWidget):
         self.vm.clear_all_filters_and_search()
         self.search_bar.setText("")
 
-    def _update_display_list(self, items: list):
-        """Update list view with filtered and sorted items."""
-        self.list_widget.clear()
-        self._widget_map.clear()
+    def _update_display_list(self, items: list[ObjectItemModel]) -> None:
+        self._updating_list = True
+        cur_count = self.list_widget.count()
+        new_count = len(items)
 
-        for item_model in items:
-            if not isinstance(item_model, ObjectItemModel):
+        # 1. Save scroll position
+        scrollbar = self.list_widget.verticalScrollBar()
+        prev_scroll_value = scrollbar.value()
+
+        if len(items) == 0:
+            self.list_widget.clear()
+            self._widget_map.clear()
+            return
+
+        # 2. Only clear if items fully reset
+        if new_count == 0 or new_count < cur_count:
+            self.list_widget.clear()
+            self._widget_map.clear()
+            cur_count = 0
+
+        # 3. Add only new items
+        for idx in range(cur_count, new_count):
+            model = items[idx]
+            if not isinstance(model, ObjectItemModel):
                 continue
 
-            widget = ObjectListItemWidget(item_model)
-            list_item = QListWidgetItem()
+            widget = ObjectListItemWidget(model)
+            list_item = QListWidgetItem(self.list_widget)
             list_item.setSizeHint(widget.sizeHint())
+            self.list_widget.setItemWidget(list_item, widget)
 
-            self._widget_map[self._get_clean_path(item_model.path)] = widget
+            key = self._get_clean_path(model.path)
+            self._widget_map[key] = widget
 
-            # Connect toggle signal
             widget.status_toggled.connect(
-                lambda checked, m=item_model: self.vm.handle_item_status_toggle_request(
+                lambda checked, m=model: self.vm.handle_item_status_toggle_request(
                     m, checked
                 )
             )
 
-            self.list_widget.addItem(list_item)
-            self.list_widget.setItemWidget(list_item, widget)
-            self.vm.request_thumbnail_for(item_model)
+        # 4. Restore scroll position
+        QTimer.singleShot(0, lambda: scrollbar.setValue(prev_scroll_value))
+
+        # 5. Request thumbnails
+        visible_new_paths = [m.path for m in items[cur_count : cur_count + 30]]
+        self.vm.handle_visible_thumbnail_requests(visible_new_paths)
+
+        self._updating_list = False
 
     def _on_load_success(self, msg: str):
         InfoBar.success(
@@ -287,3 +311,10 @@ class ObjectListPanel(QWidget):
         self.result_label.setVisible(bool(summary))
         self.result_label.setText(summary)
         self.clear_all_btn.setVisible(bool(summary))
+
+    def _on_scroll(self, value: int):
+        if self._updating_list:
+            return  # Ignore scroll events during list update
+        sb = self.list_widget.verticalScrollBar()
+        if value > sb.maximum() - 300:
+            self.vm.try_load_more()
