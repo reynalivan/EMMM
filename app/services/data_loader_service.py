@@ -11,12 +11,16 @@ from app.utils.async_utils import Worker, run_in_background
 from app.models.folder_item_model import FolderItemModel
 from app.core.constants import INFO_FILENAME
 
+CHUNK_SIZE = 10
+
 
 class DataLoaderService(QObject):
     objectItemsReady = pyqtSignal(str, list)  # game_path, list[ObjectItemModel]
     folderItemsReady = pyqtSignal(str, list)  # parent_path, list[FolderItemModel]
     iniFilesReady = pyqtSignal(str, list)
     errorOccurred = pyqtSignal(str, str)  # operation_name, message
+    objectItemChunkReady = pyqtSignal(str, object)
+    folderItemChunkReady = pyqtSignal(str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,9 +35,7 @@ class DataLoaderService(QObject):
         logger.debug(f"Requesting object items async for: {game_path}")
         worker = Worker(self._load_object_items_task, game_path)
         # Connect signals correctly
-        worker.signals.result.connect(
-            lambda items, path=game_path: self.objectItemsReady.emit(path, items)
-        )
+
         # --- Start Modification: Fix error signal connection ---
         # worker.signals.error.connect(
         #    lambda items, gp=game_path: self.objectItemsReady.emit(gp, items)) # Incorrect: Error should not emit Ready signal
@@ -49,38 +51,44 @@ class DataLoaderService(QObject):
         QThreadPool.globalInstance().start(worker)
 
     def _load_object_items_task(self, game_path: str) -> list[ObjectItemModel]:
-        """Background task to load ObjectItemModels."""
-        # ... (Implementation remains the same as provided earlier) ...
         result = []
-        logger.debug(f"Task: Loading object items from {game_path}")
-        if not os.path.exists(game_path) or not os.path.isdir(game_path):
-            logger.error(
-                f"Task: Object items path not found or not a directory: {game_path}"
-            )
-            raise FileNotFoundError(f"Path not found or not a directory: {game_path}")
+        chunk = []
+        BATCH_SIZE = 10
+
+        if not os.path.isdir(game_path):
+            raise FileNotFoundError(f"Invalid directory: {game_path}")
 
         for folder_name in os.listdir(game_path):
             folder_path = os.path.join(game_path, folder_name)
             if not os.path.isdir(folder_path):
                 continue
             try:
-                properties_path = os.path.join(folder_path, PROPERTIES_FILENAME)
-                properties = self._read_json_safe(properties_path)  # Use helper
-
+                props = self._read_json_safe(
+                    os.path.join(folder_path, PROPERTIES_FILENAME)
+                )
                 status = not folder_name.lower().startswith(DISABLED_PREFIX.lower())
                 model = ObjectItemModel(
                     path=folder_path,
                     folder_name=folder_name,
-                    properties=properties,
+                    properties=props,
                     status=status,
                 )
-                result.append(model)
+                logger.debug(f"Loaded object: {folder_name}")
+                chunk.append(model)
+                if len(chunk) >= BATCH_SIZE:
+                    for obj in chunk:
+                        self.objectItemChunkReady.emit(game_path, obj)
+                    result.extend(chunk)
+                    chunk.clear()
             except Exception as e:
-                logger.warning(
-                    f"[ObjectLoadTask] Failed on {folder_name}: {e}", exc_info=True
-                )
+                logger.warning(f"Failed to load object: {folder_name}, {e}")
                 continue
-        logger.debug(f"Task: Loaded {len(result)} object items from {game_path}")
+
+        if chunk:
+            for obj in chunk:
+                self.objectItemChunkReady.emit(game_path, obj)
+            result.extend(chunk)
+
         return result
 
     # --- Folder Item Loading ---
@@ -99,33 +107,32 @@ class DataLoaderService(QObject):
         QThreadPool.globalInstance().start(worker)
 
     def _load_folder_items_task(self, parent_path: str) -> list[FolderItemModel]:
-        """Background task to load FolderItemModels."""
-        # ... (Implementation remains the same as provided earlier) ...
         items: list[FolderItemModel] = []
-        logger.debug(f"Task: Loading folder items from {parent_path}")
-        if not os.path.exists(parent_path) or not os.path.isdir(parent_path):
-            logger.error(
-                f"Task: Folder items path not found or not a directory: {parent_path}"
-            )
-            raise FileNotFoundError(f"Invalid parent path: {parent_path}")
+        if not os.path.isdir(parent_path):
+            raise FileNotFoundError(parent_path)
 
         for name in os.listdir(parent_path):
             abs_path = os.path.join(parent_path, name)
             if not os.path.isdir(abs_path):
                 continue
-            try:
-                info_path = os.path.join(abs_path, INFO_FILENAME)
-                info = self._read_json_safe(info_path)  # Use helper
-
-                is_disabled = name.lower().startswith(DISABLED_PREFIX.lower())
-                model = FolderItemModel(
-                    path=abs_path, folder_name=name, info=info, status=not is_disabled
+            info = self._read_json_safe(os.path.join(abs_path, INFO_FILENAME))
+            is_disabled = name.lower().startswith(DISABLED_PREFIX.lower())
+            items.append(
+                FolderItemModel(
+                    path=abs_path,
+                    folder_name=name,
+                    info=info,
+                    status=not is_disabled,
                 )
-                items.append(model)
-            except Exception as e:
-                logger.warning(f"[FolderLoadTask] Failed on {name}: {e}", exc_info=True)
-                continue
-        logger.debug(f"Task: Loaded {len(items)} folder items from {parent_path}")
+            )
+
+        # ➜ ***sort sekali di thread worker***  —> tidak ada resort di UI
+        items.sort(key=lambda m: (not m.status, m.display_name.lower()))
+
+        # streaming : emit model per-item (tetap di urutan ter-sort)
+        for it in items:
+            self.folderItemChunkReady.emit(parent_path, it)
+
         return items
 
     # --- INI File Loading ---

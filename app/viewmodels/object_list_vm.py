@@ -47,7 +47,10 @@ class ObjectListVM(BaseItemViewModel):
         self._selected_item: Optional[ObjectItemModel] = None
         self._current_game_path: Optional[str] = None
         self._all_object_items: List[ObjectItemModel] = []
+        self._pending_object_items_for_emit: list[ObjectItemModel] = []
+        self._incremental_render_debouncer = Debouncer(self)
         self.displayed_items: List[ObjectItemModel] = []
+
         self._sort_key = "display_name"
         self._sort_order = Qt.SortOrder.AscendingOrder
         logger.debug("ObjectListVM initialized.")
@@ -55,7 +58,10 @@ class ObjectListVM(BaseItemViewModel):
 
     def _connect_data_loader_signals(self):
         try:
-            self._data_loader.objectItemsReady.connect(self._on_object_items_loaded)
+            self._data_loader.objectItemChunkReady.connect(
+                self._on_object_item_chunk_ready
+            )
+
             if hasattr(self, "showError") and self._data_loader:
                 self._data_loader.errorOccurred.connect(
                     lambda name, msg: self.showError.emit(name, msg)
@@ -72,9 +78,21 @@ class ObjectListVM(BaseItemViewModel):
         self._load_items_for_path(self._current_game_path)
         self.bind_filewatcher(self._current_game_path, self._file_watcher_service)
 
+    def _on_object_item_chunk_ready(self, game_path: str, item: ObjectItemModel):
+        if os.path.normpath(self._current_game_path or "") != os.path.normpath(
+            game_path
+        ):
+            return
+
+        if item is None or not isinstance(item, ObjectItemModel):
+            return
+
+        self._all_object_items.append(item)
+        self._filter_and_sort_item(item)
+        self.request_thumbnail_for(item)
+
     def _load_items_for_path(self, path: Optional[str]):
         # Validation if Path is None
-
         if path is None:
             logger.debug(f"{self.__class__.__name__}: No valid path to load.")
             return
@@ -100,7 +118,6 @@ class ObjectListVM(BaseItemViewModel):
             return
 
         # Loading process if all validation passes
-
         logger.debug(f"Loading object items for path: {norm_path}")
         self._current_game_path = norm_path
         self.load_objects_for_game(self._current_game_path)
@@ -114,14 +131,8 @@ class ObjectListVM(BaseItemViewModel):
     def _get_current_path_context(self) -> Optional[str]:
         return self._current_game_path
 
-    def _filter_and_sort(self):
-        self._debouncer.debounce(
-            key="object_filter_sort", func=self._filter_and_sort_logic, delay_ms=300
-        )
-
     def set_metadata_filters(self, new_filters: dict[str, set[str]]):
         self._filter_state.metadata = new_filters
-        self._filter_and_sort()
 
     def get_metadata_filter_options(self) -> dict[str, list[str]]:
         allowed_keys = {"element", "region", "rarity", "gender", "weapon", "roles"}
@@ -138,55 +149,69 @@ class ObjectListVM(BaseItemViewModel):
 
     def clear_metadata_filter(self):
         self._filter_state.metadata.clear()
-        self._filter_and_sort()
 
     def clear_all_filters_and_search(self):
         self._filter_state.metadata.clear()
         self._filter_state.text = ""
-        self._filter_and_sort()
 
-    def _filter_and_sort_logic(self):
-        logger.debug("Filtering and sorting...")
-        filtered = []
+    def _filter_and_sort(self):
+        self.displayed_items.clear()
         for item in self._all_object_items:
-            if self._filter_state.status == "Enabled" and not item.status:
-                continue
-            if self._filter_state.status == "Disabled" and item.status:
-                continue
-            if (
-                self._filter_state.text
-                and self._filter_state.text.lower() not in item.display_name.lower()
-            ):
-                continue
-            metadata_ok = True
-            for cat, allowed_values in self._filter_state.metadata.items():
-                item_values = item.metadata_index.get(cat, set())
-                if not item_values.intersection(allowed_values):
-                    metadata_ok = False
-                    break
-                prop_value = item.properties.get(cat)
-                if isinstance(prop_value, list):
-                    if not any(v in allowed_values for v in prop_value):
-                        metadata_ok = False
-                        break
-                elif prop_value not in allowed_values:
-                    metadata_ok = False
-                    break
-            if not metadata_ok:
-                continue
-            filtered.append(item)
-        try:
-            is_reverse = self._sort_order == Qt.SortOrder.DescendingOrder
-            prepared = [
-                ((not i.status, getattr(i, self._sort_key, i.display_name)), i)
-                for i in filtered
-            ]
-            prepared.sort(key=lambda x: x[0])
-            self.displayed_items = [i for _, i in prepared]
-        except Exception as e:
-            logger.error(f"Sorting failed: {e}. Falling back to default sort.")
-            self.displayed_items = sorted(filtered, key=lambda i: i.display_name)
+            self._filter_and_sort_item(item)
+        self._emit_filtered_summary()
+
+    def _filter_and_sort_item(self, item: ObjectItemModel):
+        if not self._passes_filter(item):
+            return
+        if item in self.displayed_items:
+            return
+
+        index = next(
+            (
+                i
+                for i, existing in enumerate(self.displayed_items)
+                if self._sort_compare(item, existing) < 0
+            ),
+            len(self.displayed_items),
+        )
+        self.displayed_items.insert(index, item)
+        self._pending_object_items_for_emit.append(item)
+
+        self._incremental_render_debouncer.debounce(
+            key="object_emit_batch",
+            func=self._emit_object_items_batch,
+            delay_ms=100,
+        )
+
+    def _emit_object_items_batch(self):
+        if not self._pending_object_items_for_emit:
+            return
         self.displayListChanged.emit(self.displayed_items)
+        self._emit_filtered_summary()
+        self._pending_object_items_for_emit.clear()
+
+    def _sort_compare(self, a: ObjectItemModel, b: ObjectItemModel) -> int:
+        a_key = (not a.status, getattr(a, self._sort_key, a.display_name).lower())
+        b_key = (not b.status, getattr(b, self._sort_key, b.display_name).lower())
+        return (a_key > b_key) - (a_key < b_key)
+
+    def _passes_filter(self, item: ObjectItemModel) -> bool:
+        if self._filter_state.status == "Enabled" and not item.status:
+            return False
+        if self._filter_state.status == "Disabled" and item.status:
+            return False
+        if (
+            self._filter_state.text
+            and self._filter_state.text.lower() not in item.display_name.lower()
+        ):
+            return False
+        for cat, allowed_values in self._filter_state.metadata.items():
+            item_values = item.metadata_index.get(cat, set())
+            if not item_values.intersection(allowed_values):
+                return False
+        return True
+
+    def _emit_filtered_summary(self):
         active_filter_count = sum(len(v) for v in self._filter_state.metadata.values())
         self.filterButtonStateChanged.emit(active_filter_count)
         show_summary = bool(self._filter_state.text.strip() or active_filter_count)
@@ -202,7 +227,6 @@ class ObjectListVM(BaseItemViewModel):
         self.select_object_item(None)
         if not norm_path:
             self._all_object_items = []
-            self._filter_and_sort()
             self.set_loading(False)
             return
         self._data_loader.get_object_items_async(norm_path)
@@ -217,24 +241,30 @@ class ObjectListVM(BaseItemViewModel):
                 f"[ObjectListVM] Ignored async result: path mismatch: {game_path}"
             )
             return
-        logger.debug(f"[ObjectListVM] Received {len(result)} items for {game_path}")
-        self._all_object_items = result
-        self._filter_and_sort()
-        self.loadCompleted.emit(f"Successfully loaded {len(result)} items")
+
+        logger.debug(
+            f"[ObjectListVM] Finished loading {len(result)} items (final chunk)"
+        )
+        self.loadCompleted.emit(f"Loaded {len(self._all_object_items)} items")
         self.set_loading(False)
-        for item in self._all_object_items:
-            self.request_thumbnail_for(item)
 
     def apply_filter_text(self, text: str):
         self._filter_state.text = text
         self._debouncer.debounce(
-            key="filter_text", func=self._filter_and_sort, delay_ms=200
+            key="filter_text", func=self._refilter_all_items, delay_ms=200
         )
+
+    def _refilter_all_items(self):
+        self.displayed_items.clear()
+        self._pending_object_items_for_emit.clear()
+
+        for item in self._all_object_items:
+            self._filter_and_sort_item(item)
+        self._emit_filtered_summary()
 
     def apply_sort(self, sort_key: str, sort_order: Qt.SortOrder):
         self._sort_key = sort_key
         self._sort_order = sort_order
-        self._filter_and_sort()
 
     def select_object_item(self, item_model: Optional[ObjectItemModel]):
         if self._selected_item != item_model:
@@ -386,7 +416,6 @@ class ObjectListVM(BaseItemViewModel):
                 del self._filter_state.metadata[category]
         else:
             meta.add(value)
-        self._filter_and_sort()
 
     def bind_filewatcher(
         self, game_path: str, file_watcher_service: FileWatcherService

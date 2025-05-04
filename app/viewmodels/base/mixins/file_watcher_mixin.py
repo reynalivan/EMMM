@@ -143,13 +143,18 @@ class FileWatcherMixin:
         item_type = self._get_item_type()
 
         def _cb(result):
-            if result:
+            if result and self._is_path_still_valid(path):
                 self._insert_item_to_ui(result)
 
         if item_type == "object":
             loader.get_single_object_item_async(path, _cb)
         elif item_type == "folder":
             loader.get_single_folder_item_async(path, _cb)
+
+    def _is_path_still_valid(self, path: str) -> bool:
+        base = os.path.normpath(path)
+        current = getattr(self, "_current_parent_path", None)
+        return current and base.startswith(os.path.normpath(current))
 
     def _handle_file_deleted(self, path: str):
         logger.info(f"{self.__class__.__name__}: File deleted: {path}")

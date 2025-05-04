@@ -22,6 +22,15 @@ class ItemUIHelperMixin:
         items = self._get_item_list()
         norm_new = os.path.normpath(item_model.path)
 
+        # check for stale insert
+        if hasattr(self, "_current_parent_path"):
+            current = getattr(self, "_current_parent_path") or ""
+            if not norm_new.startswith(os.path.normpath(current)):
+                logger.debug(
+                    f"{self.__class__.__name__}: Ignored insert from stale path: {norm_new}"
+                )
+                return
+
         if any(os.path.normpath(i.path) == norm_new for i in items):
             logger.debug(
                 f"{self.__class__.__name__}: Skip insert, already exists: {item_model.path}"

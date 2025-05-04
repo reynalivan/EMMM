@@ -69,57 +69,47 @@ class FlowGridWidget(QWidget):
         self._item_widgets.clear()
         self._path_to_widget.clear()
 
-    # Renamed from _update_display_list
-
-    def setItems(self, item_models: list[FolderItemModel]):
-        """Clears existing items and adds new ones based on the provided models."""
-        self.clearItems()
+    def updateItems(self, item_models: list[FolderItemModel]):
+        """Efficiently adds only new FolderItemModel widgets to the grid."""
+        # ➜ 1️⃣ clear ketika list kosong
+        if not item_models:
+            self.clearItems()
+            return
 
         for model in item_models:
             if not isinstance(model, FolderItemModel):
-                logger.warning(f"FlowGridWidget: Skipping non-FolderItemModel: {model}")
                 continue
 
             normalized_path = os.path.normpath(model.path)
-
             if normalized_path in self._path_to_widget:
-                logger.warning(
-                    f"FlowGridWidget: Duplicate path detected: {normalized_path}, overwriting."
-                )
+                continue  # already exists
 
             widget = FolderGridItemWidget(model)
             self._item_widgets.append(widget)
             self._path_to_widget[normalized_path] = widget
 
-            # Connect widget signals to GridWidget
-            try:
-                widget.clicked.connect(lambda mod=model: self.itemClicked.emit(mod))
-                widget.doubleClicked.connect(
-                    lambda mod=model: self.itemDoubleClicked.emit(mod)
+            # Connect signals
+            widget.clicked.connect(lambda m=model: self.itemClicked.emit(m))
+            widget.doubleClicked.connect(lambda m=model: self.itemDoubleClicked.emit(m))
+            widget.status_toggled.connect(
+                lambda checked, m=widget.item_model: self._on_item_status_toggled(
+                    m, checked
                 )
-                widget.status_toggled.connect(
-                    lambda checked, m=widget.item_model: self._on_item_status_toggled(
-                        m, checked
-                    )
-                )
-                widget.bulk_selection_changed.connect(
-                    lambda checked, mod=model: self.itemBulkSelectionChanged.emit(
-                        mod, checked
-                    )
-                )
-                widget.paste_requested.connect(
-                    lambda mod=model: self.itemPasteRequested.emit(mod)
-                )
-            except AttributeError as e:
-                logger.error(
-                    f"FlowGridWidget: Error connecting signals for {model.display_name}: {e}"
-                )
+            )
+            widget.bulk_selection_changed.connect(
+                lambda checked, m=model: self.itemBulkSelectionChanged.emit(m, checked)
+            )
+            widget.paste_requested.connect(
+                lambda m=model: self.itemPasteRequested.emit(m)
+            )
 
             self.flowLayout.addWidget(widget)
 
         self.flowLayout.invalidate()
         self.updateGeometry()
-        visible_paths = [os.path.normpath(model.path) for model in item_models[:30]]
+
+        # Send visible paths for thumbnail request (only recent additions)
+        visible_paths = [os.path.normpath(m.path) for m in item_models[-30:]]
         self.visiblePathsRequested.emit(visible_paths)
 
     def sizeHint(self):

@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 from app.utils.signal_utils import safe_connect
 from app.utils.async_utils import Debouncer
 from app.models.filter_state import FilterState
+from bisect import bisect_left
+from PyQt6.QtCore import QTimer
 
 if TYPE_CHECKING:
     from app.viewmodels.object_list_vm import ObjectListVM
@@ -28,6 +30,7 @@ class FolderGridVM(BaseItemViewModel):
     filterSummaryChanged = pyqtSignal(str, bool)
     filterButtonStateChanged = pyqtSignal(int)
     batchOperationSummaryReady = pyqtSignal(str, bool)
+    resultSummaryUpdated = pyqtSignal(str)
 
     def __init__(
         self,
@@ -50,8 +53,13 @@ class FolderGridVM(BaseItemViewModel):
         self._selected_item: Optional[FolderItemModel] = None
         self._all_folder_items: List[FolderItemModel] = []
         self.displayed_items: List[FolderItemModel] = []
-        self._breadcrumb_path: List[str] = []
+        self._breadcrumb_path: list[tuple[str, str]] = []
+        self._next_breadcrumb_pending: Optional[tuple[str, str]] = None
+
         self._watched_paths: set[str] = set()
+        self._pending_emit_timer = QTimer(self, interval=0, singleShot=True)
+        self._pending_emit_timer.timeout.connect(self._flush_emit)
+
         self._connect_data_loader_signals()
         logger.debug("FolderGridVM initialized.")
         self._sort_key = "display_name"
@@ -96,42 +104,36 @@ class FolderGridVM(BaseItemViewModel):
         return self._current_parent_path
 
     def _filter_and_sort(self, initial_load: bool = False):
-        current_hash = self._filter_state.hash()
-        if not initial_load and current_hash == self._last_filter_hash:
-            return
-        self._last_filter_hash = current_hash
-        result = [
-            item
-            for item in self._all_folder_items
-            if (not self._is_safe_mode_on or item.is_safe)
-            and (
-                self._filter_state.status == "All"
-                or (self._filter_state.status == "Enabled" and item.status)
-                or (self._filter_state.status == "Disabled" and not item.status)
-            )
-            and (
-                not self._filter_state.text
-                or self._filter_state.text.lower() in item.display_name.lower()
-            )
-            and self._match_metadata(item)
+        """Deprecated in streaming mode. Use _filter_and_sort_item per chunk."""
+        pass
+
+    def _refilter_all_items(self):
+        self.displayed_items = [
+            it for it in self._all_folder_items if self._passes_filter(it)
         ]
-        if initial_load:
-            result.sort(key=lambda i: (not i.status, i.display_name.lower()))
-        self.displayed_items = result
-        self.displayListChanged.emit(self.displayed_items)
-        if self._selected_item in self.displayed_items:
-            self.folderItemSelected.emit(self._selected_item)
-        label = f"{len(self.displayed_items)} items found"
-        visible = bool(self._filter_state.metadata) or bool(
-            self._filter_state.text.strip()
-        )
-        self.filterSummaryChanged.emit(label if visible else "", visible)
-        self.filterButtonStateChanged.emit(self._active_filter_count())
+        self.displayed_items.sort(key=lambda i: (not i.status, i.display_name.lower()))
+        self._flush_emit()
+
+    def _sort_compare(self, a: FolderItemModel, b: FolderItemModel) -> int:
+        """Sorting comparator: Enabled first, then by display_name."""
+        a_key = (not a.status, a.display_name.lower())
+        b_key = (not b.status, b.display_name.lower())
+        return (a_key > b_key) - (a_key < b_key)
 
     def _connect_data_loader_signals(self):
+        if not hasattr(self, "_is_signals_connected"):
+            safe_connect(
+                self._data_loader.folderItemChunkReady,
+                self._on_folder_item_chunk_ready,
+                self,
+            )
+            self._is_signals_connected = True
         safe_connect(
-            self._data_loader.folderItemsReady, self._on_folder_items_loaded, self
+            self._data_loader.folderItemsReady,
+            self._on_folder_items_ready,
+            self,
         )
+        safe_connect(self._data_loader.errorOccurred, self._on_folder_load_error, self)
 
     def _match_metadata(self, item: FolderItemModel) -> bool:
         props = item.info or {}
@@ -147,6 +149,47 @@ class FolderGridVM(BaseItemViewModel):
                 if str(val).lower() not in {str(a).lower() for a in allowed_vals}:
                     return False
         return True
+
+    def _on_folder_item_chunk_ready(self, parent_path: str, item: FolderItemModel):
+        if os.path.normpath(parent_path) != os.path.normpath(
+            self._current_parent_path or ""
+        ):
+            return
+        self._all_folder_items.append(item)
+        if not self._passes_filter(item):
+            return
+        self._insert_sorted(item)
+        if not self._pending_emit_timer.isActive():
+            self._pending_emit_timer.start()  # emit segera (next event-loop)
+        # thumbnail request sesudah item accepted
+        self.request_thumbnail_for(item)
+
+    def _passes_filter(self, item: FolderItemModel) -> bool:
+        if self._is_safe_mode_on and not item.is_safe:
+            return False
+
+        if self._filter_state.status == "Enabled" and not item.status:
+            return False
+        if self._filter_state.status == "Disabled" and item.status:
+            return False
+
+        if (
+            self._filter_state.text
+            and self._filter_state.text.lower() not in item.display_name.lower()
+        ):
+            return False
+
+        return self._match_metadata(item)
+
+    def _insert_sorted(self, item: FolderItemModel):
+        """Masukkan item ke self.displayed_items berdasar sort key tanpa resort global."""
+        key = (not item.status, item.display_name.lower())
+        keys = [(not it.status, it.display_name.lower()) for it in self.displayed_items]
+        idx = bisect_left(keys, key)
+        self.displayed_items.insert(idx, item)
+
+    def _flush_emit(self):
+        self.displayListChanged.emit(self.displayed_items)
 
     def handle_visible_thumbnail_requests(self, visible_paths: list[str]):
         for path in visible_paths:
@@ -176,18 +219,23 @@ class FolderGridVM(BaseItemViewModel):
                     "status": found_model.status,
                 },
             )
-            self._filter_and_sort()
+            self._refilter_all_items()
 
     def _on_object_item_selected(self, selected_item: Optional[ObjectItemModel]):
         if selected_item is None:
             self.clear_state()
+            self._flush_emit()
             return
+
         if self._current_object_item != selected_item:
+            self.clear_state()
+            self._flush_emit()
             self._current_object_item = selected_item
-            self._object_root_path = os.path.normpath(selected_item.path)
-            self._breadcrumb_path = [os.path.basename(self._object_root_path)]
-            self.breadcrumbChanged.emit(self._breadcrumb_path)
-            self.load_folders_for(self._object_root_path)
+            root_path = os.path.normpath(selected_item.path)
+            self._object_root_path = root_path
+            self._breadcrumb_path = [(os.path.basename(root_path), root_path)]
+            self.breadcrumbChanged.emit([os.path.basename(root_path)])
+            self.load_folders_for(root_path)
             self.folderItemSelected.emit(None)
 
     def load_folders_for(self, parent_path: Optional[str]):
@@ -198,8 +246,7 @@ class FolderGridVM(BaseItemViewModel):
             self.bind_filewatcher(parent_path, self._file_watcher_service)
         else:
             self._current_parent_path = None
-            self._all_folder_items = []
-            self._filter_and_sort()
+            self._refilter_all_items()
 
     def bind_filewatcher(
         self, parent_path: str, file_watcher_service: FileWatcherService
@@ -208,18 +255,19 @@ class FolderGridVM(BaseItemViewModel):
         if not parent_path or not os.path.isdir(parent_path):
             return
         self._unbind_filewatcher()
-        watch_paths = set()
-        for root, dirs, _ in os.walk(parent_path):
-            level = os.path.relpath(root, parent_path).count(os.sep)
-            if level > 2:
-                continue
-            watch_paths.add(os.path.normpath(root))
-            for d in dirs:
-                watch_paths.add(os.path.normpath(os.path.join(root, d)))
-        for p in watch_paths:
-            file_watcher_service.add_path(p, recursive=False)  # Non recursive
+        norm_path = os.path.normpath(parent_path)
+        watch_paths = {norm_path}
+        try:
+            for entry in os.scandir(norm_path):
+                if entry.is_dir():
+                    watch_paths.add(os.path.normpath(entry.path))
+        except OSError as e:
+            logger.error(f"Failed to scan game path {norm_path}: {e}")
+        for path in watch_paths:
+            file_watcher_service.add_path(path, recursive=False)  # Non recursive
 
         self._watched_paths = watch_paths
+        logger.info(f"{self.__class__.__name__}: Watching {len(watch_paths)} folders.")
         self._connect_file_watcher_signals()
 
     def _unbind_filewatcher(self):
@@ -230,17 +278,9 @@ class FolderGridVM(BaseItemViewModel):
     def select_folder_item(self, item: FolderItemModel):
         self.folderItemSelected.emit(item)
 
-    def _on_folder_items_loaded(self, parent_path: str, items: list[FolderItemModel]):
-        if parent_path != self._current_parent_path:
-            return
-        self._all_folder_items = items
-        self._filter_and_sort(initial_load=True)
-        for item in self._all_folder_items:
-            self.request_thumbnail_for(item)
-
     def _on_safe_mode_changed(self, is_on: bool):
         self._is_safe_mode_on = is_on
-        self._filter_and_sort()
+        self._refilter_all_items()
         if self._all_folder_items:
             self._mod_manager.applySafeModeChanges_async(
                 list(self._all_folder_items), is_on
@@ -249,25 +289,65 @@ class FolderGridVM(BaseItemViewModel):
     def handle_item_double_click(self, item_model: FolderItemModel):
         if not item_model or not os.path.isdir(item_model.path):
             return
-        self._breadcrumb_path.append(item_model.folder_name)
-        self.breadcrumbChanged.emit(self._breadcrumb_path)
-        self.load_folders_for(item_model.path)
-        self.folderItemSelected.emit(None)
+
+        full_path = os.path.normpath(item_model.path)
+        folder_name = item_model.folder_name
+
+        self._next_breadcrumb_pending = (folder_name, full_path)
+
+        # Clear items before new load (but retain root info & breadcrumb path)
+        self._all_folder_items.clear()
+        self.displayed_items.clear()
+        self._flush_emit()
+
+        # Set as tentative path, wait until _on_folder_items_ready confirms it
+        self._data_loader.get_folder_items_async(full_path)
+        self.bind_filewatcher(full_path, self._file_watcher_service)
 
     def navigate_to_breadcrumb_index(self, index: int):
         if index < 0 or index >= len(self._breadcrumb_path):
             return
+
         self._breadcrumb_path = self._breadcrumb_path[: index + 1]
-        self.breadcrumbChanged.emit(self._breadcrumb_path)
-        path = self._build_path_from_breadcrumb()
+        self.breadcrumbChanged.emit([name for name, _ in self._breadcrumb_path])
+
+        _, path = self._breadcrumb_path[-1]
         self.load_folders_for(path)
         self.folderItemSelected.emit(None)
 
-    def _build_path_from_breadcrumb(self) -> str:
-        if not self._object_root_path:
-            return ""
-        path_parts = [self._object_root_path] + self._breadcrumb_path[1:]
-        return os.path.normpath(os.path.join(*path_parts))
+    def _on_folder_items_ready(self, path: str, items: list[FolderItemModel]):
+        if not self._next_breadcrumb_pending:
+            return
+
+        name, expected_path = self._next_breadcrumb_pending
+        if os.path.normpath(path) != os.path.normpath(expected_path):
+            return
+
+        self._current_parent_path = expected_path
+        self._next_breadcrumb_pending = None
+
+        self._breadcrumb_path.append((name, expected_path))
+        self.breadcrumbChanged.emit([n for n, _ in self._breadcrumb_path])
+
+        self._all_folder_items = []
+        self.displayed_items = []
+
+        for item in items:
+            self._on_folder_item_chunk_ready(expected_path, item)
+
+    def _on_folder_load_error(self, operation_name: str, error_message: str):
+        # Only act if we're waiting on a breadcrumb push
+        if self._next_breadcrumb_pending:
+            logger.warning(
+                f"Load failed for {self._next_breadcrumb_pending[1]}: {error_message}"
+            )
+            self._next_breadcrumb_pending = None
+
+            # Revert parent path to previous one
+            self._current_parent_path = self._build_path_from_breadcrumb()
+            self.bind_filewatcher(self._current_parent_path, self._file_watcher_service)
+
+            # Optional: inform user (signal or toast if integrated)
 
     def clear_state(self):
         self._object_root_path = None
@@ -276,6 +356,7 @@ class FolderGridVM(BaseItemViewModel):
         self._all_folder_items.clear()
         self.displayed_items.clear()
         self._selected_item = None
+        self._pending_emit_timer.stop()
         self.breadcrumbChanged.emit([])
         self.displayListChanged.emit([])
         self.folderItemSelected.emit(None)
@@ -302,16 +383,16 @@ class FolderGridVM(BaseItemViewModel):
                 del self._filter_state.metadata[key]
         else:
             filters.add(value)
-        self._filter_and_sort()
+        self._refilter_all_items()
 
     def clear_all_metadata_filters(self):
         self._filter_state.metadata.clear()
-        self._filter_and_sort()
+        self._refilter_all_items()
 
     def set_metadata_filters(self, filters: dict[str, set[str]]):
         self._filter_state.metadata = filters
         self.filterButtonStateChanged.emit(self._active_filter_count())
-        self._filter_and_sort()
+        self._refilter_all_items()
 
     def _active_filter_count(self) -> int:
         return sum(len(v) for v in self._filter_state.metadata.values())
@@ -320,16 +401,17 @@ class FolderGridVM(BaseItemViewModel):
         norm_new = os.path.normpath(new_path)
         if self._object_root_path == norm_new:
             return
+        self.clear_state()
         self._object_root_path = norm_new
         self._current_parent_path = norm_new
-        self._breadcrumb_path = [os.path.basename(new_path)]
-        self.breadcrumbChanged.emit(self._breadcrumb_path)
+        self._breadcrumb_path = [(os.path.basename(new_path), norm_new)]
+        self.breadcrumbChanged.emit([os.path.basename(new_path)])
         self._suppress_next_load = True
         self.load_folders_for(norm_new)
 
     def apply_filter_text(self, text: str):
         self._filter_state.text = text.strip()
-        self._debouncer.debounce("folder_search", self._filter_and_sort, delay_ms=300)
+        self._debouncer.debounce("folder_search", self._refilter_all_items, 200)
 
     def find_model_by_path(self, path: str) -> FolderItemModel | None:
         for item in self._all_folder_items:

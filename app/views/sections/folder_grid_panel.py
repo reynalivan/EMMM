@@ -102,7 +102,7 @@ class FolderGridPanel(QWidget):
         self.main_layout.addWidget(self.scrollArea, 1)
 
     def _connect_signals(self):
-        self.vm.displayListChanged.connect(self.gridWidget.setItems)
+        self.vm.resultSummaryUpdated.connect(self._update_result_summary)
         self.vm.resetFilterState.connect(self.reset_filters_and_search)
         self.vm.breadcrumbChanged.connect(self.breadcrumb_widget.set_path)
         self.vm.setItemLoadingState.connect(self._set_item_loading_state)
@@ -119,6 +119,7 @@ class FolderGridPanel(QWidget):
         self.breadcrumb_widget.segment_clicked.connect(
             self.vm.navigate_to_breadcrumb_index
         )
+        self.vm.displayListChanged.connect(self.gridWidget.updateItems)
 
         self.gridWidget.itemClicked.connect(self.vm.select_folder_item)
         self.gridWidget.itemDoubleClicked.connect(self.vm.handle_item_double_click)

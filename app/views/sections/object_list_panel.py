@@ -114,7 +114,7 @@ class ObjectListPanel(QWidget):
         self.vm.batchSummaryReady.connect(self._show_batch_summary)
         self.vm.showError.connect(self._show_error)
         self.vm.filterButtonStateChanged.connect(self._update_filter_button_text)
-        self.vm.resultSummaryUpdated.connect(self._update_result_label)
+        self.vm.resultSummaryUpdated.connect(self._update_result_summary)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
 
     def _on_loading_state_changed(self, is_loading: bool):
@@ -283,8 +283,7 @@ class ObjectListPanel(QWidget):
     def _update_filter_button_text(self, count: int):
         self.filter_menu.setText(f"Filter ({count})" if count else "Filter")
 
-    def _update_result_label(self, msg: str):
-        is_visible = bool(msg)
-        self.result_label.setVisible(is_visible)
-        self.clear_all_btn.setVisible(is_visible)
-        self.result_label.setText(msg)
+    def _update_result_summary(self, summary: str):
+        self.result_label.setVisible(bool(summary))
+        self.result_label.setText(summary)
+        self.clear_all_btn.setVisible(bool(summary))
