@@ -12,6 +12,7 @@ import os
 import glob
 import hashlib
 from collections import deque
+from collections import OrderedDict
 
 MAX_CONCURRENT = 4
 
@@ -35,6 +36,8 @@ class ThumbnailService(QObject):
         self._thumbnail_request_queue = deque()
         self._requested_paths = set()
         self._active_thumbnail_tasks = set()
+        self._thumbnail_sent_cache: OrderedDict[str, None] = OrderedDict()
+        self._MAX_SENT_CACHE = 500  # max thumbnail emit history
 
         self._thumbnail_queue_timer = QTimer(self)
         self._thumbnail_queue_timer.setInterval(50)  # 20fps
@@ -56,14 +59,13 @@ class ThumbnailService(QObject):
         # Optimasi: Check cache dulu, kalau ada emit langsung tanpa worker
         cached_path = self._cache.get(cache_key)
         if cached_path and os.path.exists(cached_path):
-            logger.debug(
-                f"ThumbnailService: Immediate cache hit for '{normalized_path}'"
-            )
-            self.thumbnailReady.emit(
-                normalized_path,
-                {"path": cached_path, "status": "hit", "error_msg": None},
-            )
-            return  # Skip spawn worker
+            if not self._is_recently_sent(cache_key):
+                self._mark_sent(cache_key)
+                self.thumbnailReady.emit(
+                    normalized_path,
+                    {"path": cached_path, "status": "hit", "error_msg": None},
+                )
+            return
 
         # Kalau tidak ada, baru async worker
         def _handle_result(result_dict):
@@ -90,11 +92,12 @@ class ThumbnailService(QObject):
         normalized_path = os.path.normpath(item_path)
         key = f"{item_type}:{normalized_path}"
 
-        # skip if already requested
+        if self._is_recently_sent(key):
+            return  # Skip already emitted recently
+
         if key in self._requested_paths or key in self._active_thumbnail_tasks:
             return
 
-        # Add to queue
         self._requested_paths.add(key)
         self._thumbnail_request_queue.append((normalized_path, item_type))
 
@@ -113,6 +116,7 @@ class ThumbnailService(QObject):
             def _on_result(result_dict, p=item_path, t=item_type):
                 k = f"{t}:{p}"
                 self._active_thumbnail_tasks.discard(k)
+                self._mark_sent(k)
                 self.thumbnailReady.emit(p, result_dict)
 
             def _on_error(error_info, p=item_path, t=item_type):
@@ -123,11 +127,6 @@ class ThumbnailService(QObject):
             worker = run_in_background(self._get_thumbnail_task, item_path, item_type)
             worker.signals.result.connect(_on_result)
             worker.signals.error.connect(_on_error)
-
-    def reset_thumbnail_queue(self):
-        self._thumbnail_request_queue.clear()
-        self._requested_paths.clear()
-        self._active_thumbnail_tasks.clear()
 
     def _generate_cache_key(self, item_path: str, item_type: str) -> str:
         """Generate cache key that survives folder renames, including file size."""
@@ -392,3 +391,12 @@ class ThumbnailService(QObject):
         if cached_path and os.path.exists(cached_path):
             return {"path": cached_path, "status": "hit", "error_msg": None}
         return None
+
+    def _is_recently_sent(self, key: str) -> bool:
+        return key in self._thumbnail_sent_cache
+
+    def _mark_sent(self, key: str):
+        self._thumbnail_sent_cache[key] = None
+        self._thumbnail_sent_cache.move_to_end(key)
+        if len(self._thumbnail_sent_cache) > self._MAX_SENT_CACHE:
+            self._thumbnail_sent_cache.popitem(last=False)

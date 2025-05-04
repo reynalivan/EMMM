@@ -316,7 +316,7 @@ class FileWatcherService(QObject):
         logger.info(
             f"FileWatcher Stats: {len(self._watched_paths)} folders watched, {change_rate:.1f} changes/sec"
         )
-        logger.debug(f"FileWatcher Stats list: {self._watched_paths}")
+        # logger.debug(f"FileWatcher Stats list: {self._watched_paths}")
         self.statsUpdated.emit(len(self._watched_paths), change_rate)
         self._events_count = 0
 

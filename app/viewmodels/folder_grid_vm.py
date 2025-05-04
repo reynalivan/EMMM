@@ -30,7 +30,7 @@ class FolderGridVM(BaseItemViewModel):
     filterSummaryChanged = pyqtSignal(str, bool)
     filterButtonStateChanged = pyqtSignal(int)
     batchOperationSummaryReady = pyqtSignal(str, bool)
-    resultSummaryUpdated = pyqtSignal(str)
+    resultSummaryUpdated = pyqtSignal(str, bool)
 
     def __init__(
         self,
@@ -55,10 +55,12 @@ class FolderGridVM(BaseItemViewModel):
         self.displayed_items: List[FolderItemModel] = []
         self._breadcrumb_path: list[tuple[str, str]] = []
         self._next_breadcrumb_pending: Optional[tuple[str, str]] = None
-
+        self._visible_thumb_requested: set[str] = set()
         self._watched_paths: set[str] = set()
         self._pending_emit_timer = QTimer(self, interval=0, singleShot=True)
         self._pending_emit_timer.timeout.connect(self._flush_emit)
+        self._MAX_VISIBLE_ITEMS = 10
+        self._current_display_limit = self._MAX_VISIBLE_ITEMS
 
         self._connect_data_loader_signals()
         logger.debug("FolderGridVM initialized.")
@@ -108,10 +110,13 @@ class FolderGridVM(BaseItemViewModel):
         pass
 
     def _refilter_all_items(self):
+        self._current_display_limit = self._MAX_VISIBLE_ITEMS
+
         self.displayed_items = [
             it for it in self._all_folder_items if self._passes_filter(it)
         ]
         self.displayed_items.sort(key=lambda i: (not i.status, i.display_name.lower()))
+
         self._flush_emit()
 
     def _sort_compare(self, a: FolderItemModel, b: FolderItemModel) -> int:
@@ -155,14 +160,16 @@ class FolderGridVM(BaseItemViewModel):
             self._current_parent_path or ""
         ):
             return
+
         self._all_folder_items.append(item)
+
         if not self._passes_filter(item):
             return
+
         self._insert_sorted(item)
+
         if not self._pending_emit_timer.isActive():
-            self._pending_emit_timer.start()  # emit segera (next event-loop)
-        # thumbnail request sesudah item accepted
-        self.request_thumbnail_for(item)
+            self._pending_emit_timer.start()  # emit di event-loop berikut
 
     def _passes_filter(self, item: FolderItemModel) -> bool:
         if self._is_safe_mode_on and not item.is_safe:
@@ -189,11 +196,49 @@ class FolderGridVM(BaseItemViewModel):
         self.displayed_items.insert(idx, item)
 
     def _flush_emit(self):
-        self.displayListChanged.emit(self.displayed_items)
+        visible = self.displayed_items[: self._current_display_limit]
+
+        # (1) kabari UI
+        self.displayListChanged.emit(visible)
+
+        # (2) kabari hasil ringkas
+        self._emit_result_summary()
+
+        # (3) minta thumbnail untuk item YANG BENAR-BENAR terlihat
+        self.handle_visible_thumbnail_requests([m.path for m in visible])
+
+    def _emit_result_summary(self):
+        total = len(self._all_folder_items)
+        shown = len(self.displayed_items)
+        text = f"{shown} of {total} folders" if shown < total else f"{shown} folders"
+        visible = (
+            shown < total
+            or bool(self._filter_state.text)
+            or bool(self._filter_state.metadata)
+        )
+        self.resultSummaryUpdated.emit(text, visible)
+
+    def try_load_more(self):
+        if self._current_display_limit >= len(self.displayed_items):
+            return  # no more to load
+
+        self._current_display_limit += self._MAX_VISIBLE_ITEMS
+        logger.debug(f"FolderGridVM: Loading more items: {self._current_display_limit}")
+        self._flush_emit()
 
     def handle_visible_thumbnail_requests(self, visible_paths: list[str]):
-        for path in visible_paths:
-            self._thumbnail_service.get_thumbnail_async(path, "folder")
+        if not self._thumbnail_service:
+            return
+
+        for p in visible_paths:
+            # Check cache
+            cached = self._thumbnail_service.get_cached_thumbnail(p, "folder")
+            if cached:
+                self.itemThumbnailNeedsUpdate.emit(p, cached)
+                continue
+
+            # if not have cache, request
+            self._thumbnail_service.request_thumbnail(p, "folder")
 
     def _after_mod_status_change(self, orig_path: str, new_path: str, result: dict):
         if not result.get("success") or result.get("source") != "folder":
@@ -240,13 +285,22 @@ class FolderGridVM(BaseItemViewModel):
 
     def load_folders_for(self, parent_path: Optional[str]):
         self.resetFilterState.emit()
+        self.handle_visible_thumbnail_requests([])
+
+        # Clean up first
+        self._all_folder_items.clear()
+        self.displayed_items.clear()
+        self._visible_thumb_requested.clear()
+        self._current_display_limit = self._MAX_VISIBLE_ITEMS
+        self._flush_emit()
+
         if parent_path:
             self._current_parent_path = os.path.normpath(parent_path)
             self._data_loader.get_folder_items_async(self._current_parent_path)
             self.bind_filewatcher(parent_path, self._file_watcher_service)
         else:
             self._current_parent_path = None
-            self._refilter_all_items()
+            # self._refilter_all_items()
 
     def bind_filewatcher(
         self, parent_path: str, file_watcher_service: FileWatcherService

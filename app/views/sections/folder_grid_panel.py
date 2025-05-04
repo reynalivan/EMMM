@@ -119,6 +119,8 @@ class FolderGridPanel(QWidget):
         self.breadcrumb_widget.segment_clicked.connect(
             self.vm.navigate_to_breadcrumb_index
         )
+        self.gridWidget.scrollNearBottom.connect(self.vm.try_load_more)
+
         self.vm.displayListChanged.connect(self.gridWidget.updateItems)
 
         self.gridWidget.itemClicked.connect(self.vm.select_folder_item)

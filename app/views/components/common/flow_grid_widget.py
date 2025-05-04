@@ -10,6 +10,7 @@ from qfluentwidgets import FlowLayout
 from app.views.components.folder_grid_item_widget import FolderGridItemWidget
 from app.models.folder_item_model import FolderItemModel
 from app.utils.logger_utils import logger
+from PyQt6.QtWidgets import QScrollArea
 
 
 class FlowGridWidget(QWidget):
@@ -22,7 +23,8 @@ class FlowGridWidget(QWidget):
     itemClicked = pyqtSignal(FolderItemModel)
     itemDoubleClicked = pyqtSignal(FolderItemModel)
     itemBulkSelectionChanged = pyqtSignal(FolderItemModel, bool)  # model, is_checked
-
+    scrollNearBottom = pyqtSignal()
+    widgetRemoved = pyqtSignal(str)
     itemPasteRequested = pyqtSignal(FolderItemModel)  # Model
     itemStatusToggled = pyqtSignal(str, bool)
     visiblePathsRequested = pyqtSignal(list)
@@ -40,8 +42,6 @@ class FlowGridWidget(QWidget):
         self.flowLayout.setVerticalSpacing(10)  # Adjust as needed
         self.flowLayout.setHorizontalSpacing(10)  # Adjust as needed
         self._item_widgets: list[FolderGridItemWidget] = []
-        # Removed self.vm, self.breadcrumb_widget
-        # Removed self._connect_signals() call
 
     def clearItems(self):
         """Removes all items from the layout and deletes the widgets safely."""
@@ -70,31 +70,37 @@ class FlowGridWidget(QWidget):
         self._path_to_widget.clear()
 
     def updateItems(self, item_models: list[FolderItemModel]):
-        """Efficiently adds only new FolderItemModel widgets to the grid."""
-        # ➜ 1️⃣ clear ketika list kosong
-        if not item_models:
-            self.clearItems()
-            return
+        # 0.  Normalise semua path yg ingin ditampilkan
+        wanted_paths = {os.path.normpath(m.path) for m in item_models}
 
+        # 1.  --- Clean up widget unneeded -----
+        for path, w in list(self._path_to_widget.items()):
+            if path not in wanted_paths:
+                self.flowLayout.removeWidget(w)
+                w.setParent(None)
+                w.deleteLater()
+                del self._path_to_widget[path]
+                try:
+                    self._item_widgets.remove(w)
+                except ValueError:
+                    pass
+
+        # 2.  --- Add new widgets ---
         for model in item_models:
-            if not isinstance(model, FolderItemModel):
-                continue
-
-            normalized_path = os.path.normpath(model.path)
-            if normalized_path in self._path_to_widget:
-                continue  # already exists
+            n_path = os.path.normpath(model.path)
+            self.widgetRemoved.emit(n_path)
+            if n_path in self._path_to_widget:
+                continue  # sudah ada, skip
 
             widget = FolderGridItemWidget(model)
+            self._path_to_widget[n_path] = widget
             self._item_widgets.append(widget)
-            self._path_to_widget[normalized_path] = widget
 
-            # Connect signals
+            # koneksi sinyal …
             widget.clicked.connect(lambda m=model: self.itemClicked.emit(m))
             widget.doubleClicked.connect(lambda m=model: self.itemDoubleClicked.emit(m))
             widget.status_toggled.connect(
-                lambda checked, m=widget.item_model: self._on_item_status_toggled(
-                    m, checked
-                )
+                lambda checked, m=model: self._on_item_status_toggled(m, checked)
             )
             widget.bulk_selection_changed.connect(
                 lambda checked, m=model: self.itemBulkSelectionChanged.emit(m, checked)
@@ -105,12 +111,21 @@ class FlowGridWidget(QWidget):
 
             self.flowLayout.addWidget(widget)
 
+        # 3.  refresh layout
+        for model in item_models:  # sudah dalam urutan yang di-sort VM
+            n_path = os.path.normpath(model.path)
+            w = self._path_to_widget.get(n_path)
+            if w is None:
+                continue
+            self.flowLayout.removeWidget(w)
+            self.flowLayout.addWidget(w)
+
         self.flowLayout.invalidate()
         self.updateGeometry()
 
-        # Send visible paths for thumbnail request (only recent additions)
-        visible_paths = [os.path.normpath(m.path) for m in item_models[-30:]]
-        self.visiblePathsRequested.emit(visible_paths)
+        # request thumbnail utk item terlihat
+        visible = [w.get_item_model().path for w in self._item_widgets[:30]]
+        self.visiblePathsRequested.emit(visible)
 
     def sizeHint(self):
         return self.flowLayout.sizeHint()
@@ -151,3 +166,21 @@ class FlowGridWidget(QWidget):
         logger.debug(
             f"FlowGridWidget: Path updated {normalized_old} ➔ {normalized_new}"
         )
+
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+        if self._should_trigger_load_more():
+            self.scrollNearBottom.emit()
+
+    def _should_trigger_load_more(self):
+        parent = self.parent()
+        while parent and not isinstance(parent, QScrollArea):
+            parent = parent.parent()
+
+        if isinstance(parent, QScrollArea):
+            scrollbar = parent.verticalScrollBar()
+            return scrollbar.value() > scrollbar.maximum() - 300
+        if not isinstance(parent, QScrollArea):
+            logger.warning("FlowGridWidget: scroll parent not found.")
+
+        return False
