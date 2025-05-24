@@ -5,10 +5,11 @@
 # GUI Framework (Qt 6 Bindings)
 PyQt6==6.9.0
 PyQt6-Qt6==6.9.0
-PyQt6-sip==13.10.0 
+PyQt6-sip==13.10.0
 
-# UI Theming
+# UI Theming & Fluent Widgets
 qt-material==2.14
+pyqt-fluent-widgets>=1.7.0
 
 # Filesystem Monitoring
 watchdog==6.0.0
@@ -20,7 +21,7 @@ loguru==0.7.0
 pillow==11.1.0
 
 # -----------------------------------------
-# Development/Testing Dependencies 
+# Development/Testing Dependencies
 # -----------------------------------------
 # pytest
 # pytest-qt
