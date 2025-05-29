@@ -6,7 +6,6 @@ from PyQt6.QtGui import QPixmap
 from app.services.data_loader_service import DataLoaderService
 from app.services.mod_management_service import ModManagementService
 from app.services.thumbnail_service import ThumbnailService
-from app.utils.image_utils import ImageUtils
 from app.viewmodels.folder_grid_vm import FolderGridVM
 from app.models.folder_item_model import FolderItemModel
 from app.core import constants
@@ -32,13 +31,11 @@ class PreviewPanelVM(QObject):
     )  # original_path, final_path, title, content, success
 
     # --- End Signals ---
-
     def __init__(
         self,
         data_loader: DataLoaderService,
         mod_manager: ModManagementService,
         thumbnail_service: ThumbnailService,
-        image_utils: ImageUtils,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
@@ -46,7 +43,6 @@ class PreviewPanelVM(QObject):
         self._data_loader = data_loader
         self._mod_manager = mod_manager
         self._thumbnail_service = thumbnail_service
-        self._image_utils = image_utils
 
         self._current_item: FolderItemModel | None = None
         self._title: str = ""

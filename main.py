@@ -9,8 +9,6 @@ from app.services.config_service import ConfigService
 from app.services.data_loader_service import DataLoaderService
 from app.services.mod_management_service import ModManagementService
 from app.services.thumbnail_service import ThumbnailService
-from app.utils.image_cache import ImageCache
-from app.utils.image_utils import ImageUtils
 from app.core import constants
 from app.viewmodels.main_window_vm import MainWindowVM
 from app.viewmodels.object_list_vm import ObjectListVM
@@ -27,8 +25,7 @@ from app.utils.signal_utils import safe_connect
 def main():
     """Main application entry point."""
     app = QApplication(sys.argv)
-    app.setApplicationName("Enabled Model Mods Manager")
-    # Apply Fluent Theme
+    app.setApplicationName("Enabled Model Mods Manager")  # Apply Fluent Theme
     setTheme(Theme.DARK)
     logger.info("Application starting...")
 
@@ -37,13 +34,11 @@ def main():
         config_service = ConfigService(config_filepath=constants.CONFIG_FILENAME)
         mod_service = ModManagementService()
         data_loader = DataLoaderService()
-        image_cache = ImageCache(
+        thumbnail_service = ThumbnailService(
             cache_dir=constants.CACHE_DIR,
             max_size_mb=constants.DEFAULT_CACHE_MAX_MB,
             expiry_days=constants.DEFAULT_CACHE_EXPIRY_DAYS,
         )
-        image_utils = ImageUtils()
-        thumbnail_service = ThumbnailService(image_cache, image_utils)
         file_watcher_service = FileWatcherService()
         logger.info("Core services and utilities initialized.")
     except Exception as e:
@@ -60,9 +55,7 @@ def main():
         object_vm = ObjectListVM(
             data_loader, mod_service, thumbnail_service, file_watcher_service, folder_vm
         )
-        preview_vm = PreviewPanelVM(
-            data_loader, mod_service, thumbnail_service, image_utils
-        )
+        preview_vm = PreviewPanelVM(data_loader, mod_service, thumbnail_service)
         main_vm = MainWindowVM(
             config_service,
             mod_service,

@@ -1,6 +1,5 @@
 # App/services/file watcher service.py
 
-
 import os
 from typing import Optional, Set, List, Dict
 from PyQt6.QtCore import (
@@ -16,7 +15,6 @@ from PyQt6.QtCore import (
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from app.utils.logger_utils import logger
-from app.utils.image_cache import ImageCache
 from app.core.constants import VALID_EXTENSIONS, MAX_BATCH_SIZE
 from collections import defaultdict
 import time
@@ -72,13 +70,10 @@ class WatchdogThread(QThread):
 
 class FileWatcherService(QObject):
     fileBatchChanged = pyqtSignal(str, list)  # folder_path, list[FileChangeEvent]
-
     fileChanged = pyqtSignal(str)
     statsUpdated = pyqtSignal(int, float)  # folder_count: int, change_rate: float
 
-    def __init__(
-        self, cache: Optional[ImageCache] = None, parent: Optional[QObject] = None
-    ):
+    def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._thread: Optional[WatchdogThread] = None
         self._suppressed_paths = set()
@@ -91,7 +86,6 @@ class FileWatcherService(QObject):
         self._batch_timer.timeout.connect(self._emit_batch_changes)
         self._last_modified_time: dict[str, float] = {}
         self._modified_cooldown_sec = 2.0
-        self._cache = cache
         self._events_count = 0
         self._stats_timer = QTimer()
         self._stats_timer.timeout.connect(self._log_stats)
@@ -200,7 +194,6 @@ class FileWatcherService(QObject):
         norm_path = os.path.normpath(path)
         self._suppressed_paths.add(norm_path)
         # Delete the Suppress sign after 1 second
-
         QTimer.singleShot(1000, lambda: self._suppressed_paths.discard(norm_path))
 
     def is_suppressed(self, path: str) -> bool:
@@ -208,7 +201,6 @@ class FileWatcherService(QObject):
 
     def _enqueue_event(self, evt: FileChangeEvent):
         # Check whether the event comes from the path that is supplied
-
         if evt.src_path in self._suppressed_paths or (
             evt.dest_path and evt.dest_path in self._suppressed_paths
         ):
@@ -225,12 +217,10 @@ class FileWatcherService(QObject):
                 len(os.path.relpath(evt.src_path, current_context).split(os.sep)) - 1
             )
             if relative_depth > 1:  # Only the event process from the level one folder
-
                 logger.debug(f"Ignored event: {evt.src_path} is deeper than level 1")
                 return
 
         # Skip non-allowed file types and unknown folders
-
         if evt.event_type in {"created", "modified"}:
             is_folder = os.path.isdir(evt.src_path)
             ext = os.path.splitext(evt.src_path)[1].lower()
@@ -239,7 +229,6 @@ class FileWatcherService(QObject):
                 return
 
         # Debounce modified
-
         if evt.event_type == "modified":
             now = time.time()
             last = self._last_modified_time.get(evt.src_path, 0)
@@ -305,11 +294,9 @@ class FileWatcherService(QObject):
         return norm_path in {os.path.normpath(p) for p in self._watched_paths}
 
     def _process_cache_removal(self, events: List[FileChangeEvent]):
-        if not self._cache:
-            return
-        for evt in events:
-            if evt.event_type == "deleted":
-                self._cache.remove_by_path(evt.src_path)
+        # Cache removal is now handled by ThumbnailService internally
+        # This method is kept for potential future use
+        pass
 
     def _log_stats(self):
         change_rate = self._events_count / 5

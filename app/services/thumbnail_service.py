@@ -1,20 +1,373 @@
 # app/services/thumbnail_service.py
 
-from typing import Literal
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer
-from app.utils.image_cache import ImageCache
-from app.utils.image_utils import ImageUtils
-from app.utils.logger_utils import logger
-from app.utils.async_utils import Worker, run_in_background
-from app.core import constants
-from typing import Optional
 import os
 import glob
 import hashlib
-from collections import deque
-from collections import OrderedDict
+import time
+import io
+from typing import Literal, Optional, Tuple, Union
+from collections import deque, OrderedDict
+
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtGui import QImage, QPixmap, QGuiApplication
+from PyQt6.QtCore import QByteArray, QBuffer, QIODevice
+from PIL import Image, ImageSequence
+
+from app.utils.logger_utils import logger
+from app.utils.async_utils import Worker, run_in_background
+from app.core import constants
 
 MAX_CONCURRENT = 4
+ImageSource = Union[str, bytes]
+
+
+class _ImageCache:
+    """
+    Internal image cache handler for thumbnails.
+    """
+
+    def __init__(
+        self,
+        cache_dir: str = constants.CACHE_DIR,
+        max_size_mb: int = constants.DEFAULT_CACHE_MAX_MB,
+        expiry_days: int = constants.DEFAULT_CACHE_EXPIRY_DAYS,
+    ):
+        """Initializes the cache, creates cache directory if needed."""
+        self._cache_dir = os.path.abspath(cache_dir)
+        self._max_size_bytes = max_size_mb * 1024 * 1024 if max_size_mb > 0 else 0
+        self._expiry_seconds = expiry_days * 24 * 60 * 60 if expiry_days > 0 else 0
+
+        try:
+            os.makedirs(self._cache_dir, exist_ok=True)
+            logger.info(f"Image cache directory initialized at: {self._cache_dir}")
+        except OSError as e:
+            logger.critical(
+                f"FATAL: Failed to create cache directory '{self._cache_dir}': {e}",
+                exc_info=True,
+            )
+            raise RuntimeError(
+                f"Cannot create cache directory: {self._cache_dir}"
+            ) from e
+
+    def _get_cache_filepath(self, key: str) -> str:
+        """Generates a unique and safe file path within the cache directory from a key."""
+        hashed_key = hashlib.sha1(key.encode("utf-8")).hexdigest()
+        filename = f"{hashed_key}.png"
+        return os.path.join(self._cache_dir, filename)
+
+    def put(self, key: str, data: bytes) -> Optional[str]:
+        """Saves data bytes to a file in the cache directory using the generated key."""
+        file_path = self._get_cache_filepath(key)
+        logger.debug(
+            f"Caching data for key '{key}' to '{file_path}' ({len(data)} bytes)"
+        )
+        try:
+            with open(file_path, "wb") as f:
+                f.write(data)
+            logger.info(f"Successfully cached: '{key}' -> '{file_path}'")
+            self._manage_cache()
+            return file_path
+        except (IOError, OSError) as e:
+            logger.error(
+                f"Failed to write cache file '{file_path}' for key '{key}': {e}",
+                exc_info=True,
+            )
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+            return None
+
+    def get(self, key: str) -> Optional[str]:
+        """Gets the file path for a cached item if it exists and is valid."""
+        file_path = self._get_cache_filepath(key)
+
+        if not os.path.isfile(file_path):
+            return None
+
+        if self._expiry_seconds > 0:
+            try:
+                file_mod_time = os.path.getmtime(file_path)
+                if time.time() - file_mod_time > self._expiry_seconds:
+                    try:
+                        os.remove(file_path)
+                        logger.debug(f"Expired cache file removed: {file_path}")
+                    except OSError:
+                        pass
+                    return None
+            except OSError as e:
+                logger.warning(f"Error checking cache file expiry: {e}")
+                return None
+
+        return file_path
+
+    def remove(self, key: str) -> bool:
+        """Removes a specific item from the cache by key."""
+        file_path = self._get_cache_filepath(key)
+        logger.debug(f"Attempting to remove cache file: {file_path}")
+        if os.path.isfile(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"Successfully removed cache file: {file_path}")
+                return True
+            except OSError as e:
+                logger.error(f"Failed to remove cache file '{file_path}': {e}")
+                return False
+        return False
+
+    def clear(self) -> bool:
+        """Removes all files within the cache directory."""
+        logger.warning(f"Clearing ALL files from cache directory: {self._cache_dir}")
+        if not os.path.isdir(self._cache_dir):
+            logger.warning("Cache directory does not exist, nothing to clear.")
+            return True
+
+        success = True
+        for filename in os.listdir(self._cache_dir):
+            file_path = os.path.join(self._cache_dir, filename)
+            try:
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                    logger.debug(f"Removed cache file: {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to remove cache file '{file_path}': {e}")
+                success = False
+        logger.info("Cache clear operation finished.")
+        return success
+
+    def _manage_cache(self) -> None:
+        """Manage cache size: remove oldest files if exceeding max size."""
+        if self._max_size_bytes <= 0:
+            return
+
+        try:
+            total_size = 0
+            file_infos = []
+
+            for filename in os.listdir(self._cache_dir):
+                filepath = os.path.join(self._cache_dir, filename)
+                if os.path.isfile(filepath):
+                    stat = os.stat(filepath)
+                    filesize = stat.st_size
+                    mtime = stat.st_mtime
+                    total_size += filesize
+                    file_infos.append((filepath, mtime, filesize))
+
+            if total_size <= self._max_size_bytes:
+                return
+
+            logger.warning(
+                f"Image cache size {total_size} exceeds limit {self._max_size_bytes}, cleaning up..."
+            )
+
+            file_infos.sort(key=lambda x: x[1])
+
+            for filepath, _, filesize in file_infos:
+                try:
+                    os.remove(filepath)
+                    total_size -= filesize
+                    logger.debug(f"Removed old cache file: {filepath}")
+                    if total_size <= self._max_size_bytes:
+                        break
+                except OSError as e:
+                    logger.error(f"Failed to remove old cache file '{filepath}': {e}")
+
+        except Exception as e:
+            logger.error(f"Error managing cache size: {e}", exc_info=True)
+
+    def clean_expired(self) -> None:
+        """Remove cache files that are expired based on modification time."""
+        if self._expiry_seconds <= 0:
+            return
+
+        try:
+            now = time.time()
+            expired_files = []
+
+            for filename in os.listdir(self._cache_dir):
+                filepath = os.path.join(self._cache_dir, filename)
+                if os.path.isfile(filepath):
+                    try:
+                        mtime = os.path.getmtime(filepath)
+                        if now - mtime > self._expiry_seconds:
+                            expired_files.append(filepath)
+                    except OSError:
+                        continue
+
+            for filepath in expired_files:
+                try:
+                    os.remove(filepath)
+                    logger.debug(f"Removed expired cache file: {filepath}")
+                except OSError as e:
+                    logger.error(
+                        f"Failed to remove expired cache file '{filepath}': {e}"
+                    )
+
+            if expired_files:
+                logger.info(
+                    f"Expired cache clean complete. Deleted {len(expired_files)} files."
+                )
+
+        except Exception as e:
+            logger.error(f"Error during expired cache cleaning: {e}", exc_info=True)
+
+
+class _ImageUtils:
+    """
+    Internal image utilities for thumbnail creation.
+    """
+
+    @staticmethod
+    def create_thumbnail(
+        source: ImageSource,
+        target_size: Tuple[int, int] = (
+            constants.DEFAULT_THUMB_SIZE_W,
+            constants.DEFAULT_THUMB_SIZE_H,
+        ),
+        quality: int = 85,
+        output_format: str = "PNG",
+    ) -> Union[bytes, None]:
+        """Creates a thumbnail from an image file path or bytes using Pillow."""
+        if Image is None:
+            logger.critical("Pillow library is required but not installed.")
+            return None
+
+        img = None
+        final_format = output_format.upper()
+
+        try:
+            # Load Image
+            if isinstance(source, str):
+                if not os.path.exists(source):
+                    logger.error(f"Thumbnail source file not found: {source}")
+                    return None
+                try:
+                    img = Image.open(source)
+                    logger.debug(
+                        f"Loaded image from path: {source} (Format: {img.format}, Mode: {img.mode})"
+                    )
+                except Exception as load_err:
+                    logger.error(f"Failed to load image from path {source}: {load_err}")
+                    return None
+            elif isinstance(source, bytes):
+                try:
+                    img = Image.open(io.BytesIO(source))
+                    img.load()
+                    logger.debug(
+                        f"Loaded image from bytes (Format: {img.format}, Mode: {img.mode})"
+                    )
+                except Exception as load_err:
+                    logger.error(f"Failed to load image from bytes: {load_err}")
+                    return None
+            else:
+                logger.error(f"Invalid thumbnail source type provided: {type(source)}")
+                return None
+
+            # Handle Mode & Transparency
+            has_transparency = False
+            if img.mode in ("RGBA", "LA") or (
+                img.mode == "P" and "transparency" in img.info
+            ):
+                has_transparency = True
+
+            if has_transparency:
+                logger.debug(
+                    f"Transparency detected (mode={img.mode}). Ensuring output is PNG."
+                )
+                final_format = "PNG"
+                if img.mode != "RGBA":
+                    img = img.convert("RGBA")
+            elif img.mode != "RGB":
+                logger.debug(f"Converting image mode '{img.mode}' to 'RGB'.")
+                img = img.convert("RGB")
+
+            if final_format not in Image.SAVE:
+                logger.warning(
+                    f"Output format '{final_format}' not supported by Pillow. Defaulting to PNG."
+                )
+                final_format = "PNG"
+
+            # Resize using thumbnail() - Preserves aspect ratio
+            original_size = img.size
+            img.thumbnail(target_size, Image.Resampling.LANCZOS)
+            logger.debug(
+                f"Image resized from {original_size} to {img.size} (target <= {target_size})"
+            )
+
+            # Save to BytesIO stream
+            byte_stream = io.BytesIO()
+            save_params = {"format": final_format}
+
+            if final_format == "JPEG":
+                save_params["quality"] = quality
+                save_params["optimize"] = True
+                if img.mode == "RGBA":
+                    logger.debug("Converting RGBA to RGB before saving as JPEG.")
+                    img = img.convert("RGB")
+            elif final_format == "PNG":
+                save_params["optimize"] = True
+            elif final_format == "WEBP":
+                save_params["quality"] = quality
+                save_params["lossless"] = not has_transparency
+
+            logger.debug(
+                f"Saving thumbnail to BytesIO stream as {final_format} with params: {save_params}"
+            )
+            img.save(byte_stream, **save_params)
+
+            thumbnail_bytes = byte_stream.getvalue()
+            logger.debug(
+                f"Thumbnail created ({len(thumbnail_bytes)} bytes, Format: {final_format})."
+            )
+            return thumbnail_bytes
+
+        except Exception as e:
+            logger.error(f"Unexpected error creating thumbnail: {e}", exc_info=True)
+            return None
+        finally:
+            if img:
+                img.close()
+
+    @staticmethod
+    def get_image_from_clipboard() -> Optional[QImage]:
+        """Retrieves an image from the system clipboard."""
+        try:
+            clipboard = QGuiApplication.clipboard()
+            image = clipboard.image()
+            if not image.isNull():
+                return image
+        except Exception as e:
+            logger.error(f"Error getting image from clipboard: {e}")
+        return None
+
+    @staticmethod
+    def qimage_to_bytes(
+        image: QImage, format: str = "JPEG", quality: int = 90
+    ) -> Optional[bytes]:
+        """Converts a QImage object to bytes in the specified format."""
+        try:
+            byte_array = QByteArray()
+            buffer = QBuffer(byte_array)
+            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+
+            success = image.save(buffer, format.upper(), quality)
+            buffer.close()
+
+            if success:
+                return byte_array.data()
+        except Exception as e:
+            logger.error(f"Error converting QImage to bytes: {e}")
+        return None
+
+    @staticmethod
+    def validate_image_data(data: bytes) -> bool:
+        """Basic validation to check if byte data represents a known image format."""
+        try:
+            image = QImage()
+            return image.loadFromData(data)
+        except Exception:
+            return False
 
 
 class ThumbnailService(QObject):
@@ -23,14 +376,18 @@ class ThumbnailService(QObject):
 
     def __init__(
         self,
-        image_cache: ImageCache,
-        image_utils: ImageUtils,
         parent: QObject | None = None,
+        cache_dir: str = constants.CACHE_DIR,
+        max_size_mb: int = constants.DEFAULT_CACHE_MAX_MB,
+        expiry_days: int = constants.DEFAULT_CACHE_EXPIRY_DAYS,
     ):
         super().__init__(parent)
         logger.debug("ThumbnailService initialized.")
-        self._cache = image_cache
-        self._utils = image_utils
+
+        # Initialize internal cache and utils
+        self._cache = _ImageCache(cache_dir, max_size_mb, expiry_days)
+        self._utils = _ImageUtils()
+
         self._setup_cache_clean_timer()
         self._thumbnail_cache: dict[str, dict] = {}
         self._thumbnail_request_queue = deque()
