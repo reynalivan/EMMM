@@ -22,6 +22,9 @@ class ModManagementService(QObject):
     suppressPathRequested = pyqtSignal(str)
     # TODO: Add signals for CRUD operations later
 
+    # --- Batch Processing ---
+    batchOperationFinished = pyqtSignal(dict)
+
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         logger.debug("ModManagementService initialized.")
@@ -396,3 +399,59 @@ class ModManagementService(QObject):
                 else:
                     raise e
         return False
+
+    # --- Batch Processing ---
+    def batch_set_mod_enabled_async(
+        self, item_paths: list[str], enable: bool, item_type: str
+    ):
+        """Perform batch enable/disable operation."""
+        processed = 0
+        success = 0
+        failed = 0
+
+        def on_worker_result(result: dict):
+            logger.debug(f"Worker result: {result}")
+            nonlocal processed, success, failed
+            processed += 1
+            if result.get("success"):
+                success += 1
+            else:
+                failed += 1
+            if processed == len(item_paths):
+                self.batchOperationFinished.emit(
+                    {
+                        "processed": processed,
+                        "success": success,
+                        "failed": failed,
+                    }
+                )
+
+        def on_worker_error(err_info):
+            nonlocal processed, failed
+            processed += 1
+            failed += 1
+            if processed == len(item_paths):
+                self.batchOperationFinished.emit(
+                    {
+                        "processed": processed,
+                        "success": success,
+                        "failed": failed,
+                    }
+                )
+
+        for path in item_paths:
+            if not path or not os.path.isdir(path):
+                processed += 1
+                failed += 1
+                continue
+            worker = Worker(self._set_mod_enabled_task, path, enable, item_type)
+            worker.signals.result.connect(on_worker_result)
+            worker.signals.error.connect(on_worker_error)
+            QThreadPool.globalInstance().start(worker)
+
+    def batch_enable_disable_items(
+        self, item_paths: list[str], enable: bool, item_type: str
+    ):
+        if item_type not in ("object", "folder"):
+            raise ValueError(f"Invalid item_type: {item_type}")
+        self.batch_set_mod_enabled_async(item_paths, enable, item_type)

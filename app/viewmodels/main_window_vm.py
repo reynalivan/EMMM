@@ -56,6 +56,8 @@ class MainWindowVM(QObject):
         self._mod_service.suppressPathRequested.connect(
             self._file_watcher_service.suppress_path
         )
+        # Connect batchOperationFinished signal to handle batch results
+        self._mod_service.batchOperationFinished.connect(self._on_batch_operation_finished)
 
     def initialize_state(self) -> None:
         logger.info("Initializing MainWindowVM: loading config and game list...")
@@ -189,3 +191,22 @@ class MainWindowVM(QObject):
     def get_settings_vm(self) -> SettingsVM:
         """Expose the settingsvm instance."""
         return self._settings_vm
+
+    def _on_batch_operation_finished(self, summary: dict):
+        """Handle the completion of a batch operation."""
+        processed = summary.get("processed", 0)
+        success = summary.get("success", 0)
+        failed = summary.get("failed", 0)
+
+        logger.info(
+            f"Batch operation completed: {processed} processed, {success} succeeded, {failed} failed."
+        )
+
+        # Emit a global refresh signal to update the UI
+        self.global_refresh_requested.emit()
+
+        # Optionally, show a notification to the user
+        self.errorOccurred.emit(
+            "Batch Operation Completed",
+            f"{success} succeeded, {failed} failed out of {processed} items."
+        )
