@@ -326,6 +326,9 @@ class ModManagementService(QObject):
                     )
                     errors += 1
 
+            # Notify FileWatcherService to suppress the path
+            self.suppressPathRequested.emit(item.path)
+
         logger.info(
             f"[SafeMode Task] Processed={processed} Changed={changed} Errors={errors}"
         )
@@ -448,6 +451,7 @@ class ModManagementService(QObject):
             worker.signals.result.connect(on_worker_result)
             worker.signals.error.connect(on_worker_error)
             QThreadPool.globalInstance().start(worker)
+            self.suppressPathRequested.emit(path)
 
     def batch_enable_disable_items(
         self, item_paths: list[str], enable: bool, item_type: str

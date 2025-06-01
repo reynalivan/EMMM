@@ -190,14 +190,29 @@ class FileWatcherService(QObject):
     def clear_watches(self):
         self.stop()
 
-    def suppress_path(self, path: str):
+    def suppress_path(self, path: str, duration: int = 1000):
+        """Suppress a path for a specified duration in milliseconds."""
         norm_path = os.path.normpath(path)
         self._suppressed_paths.add(norm_path)
-        # Delete the Suppress sign after 1 second
-        QTimer.singleShot(1000, lambda: self._suppressed_paths.discard(norm_path))
+        logger.debug(f"Path suppressed: {norm_path} for {duration}ms")
+        QTimer.singleShot(duration, lambda: self._remove_suppression(norm_path))
+
+    def _remove_suppression(self, path: str):
+        """Remove a path from the suppression list."""
+        norm_path = os.path.normpath(path)
+        if norm_path in self._suppressed_paths:
+            self._suppressed_paths.discard(norm_path)
+            logger.debug(f"Path unsuppressed: {norm_path}")
 
     def is_suppressed(self, path: str) -> bool:
-        return os.path.normpath(path) in self._suppressed_paths
+        """Check if a path is currently suppressed."""
+        norm_path = os.path.normpath(path)
+        return norm_path in self._suppressed_paths
+
+    def suppress_paths_bulk(self, paths: List[str], duration: int = 1000):
+        """Suppress multiple paths for a specified duration in milliseconds."""
+        for path in paths:
+            self.suppress_path(path, duration)
 
     def _enqueue_event(self, evt: FileChangeEvent):
         # Check whether the event comes from the path that is supplied
