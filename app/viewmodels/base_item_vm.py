@@ -14,7 +14,6 @@ from app.utils.logger_utils import logger
 from app.utils.signal_utils import safe_connect
 
 
-
 from app.viewmodels.base.abstract_base import QObjectAbstractItemViewModel
 
 
