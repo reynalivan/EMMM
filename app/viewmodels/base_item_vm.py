@@ -12,16 +12,14 @@ from app.services.file_watcher_service import FileChangeEvent, FileWatcherServic
 from app.utils.async_utils import AsyncStatusManager
 from app.utils.logger_utils import logger
 from app.utils.signal_utils import safe_connect
-from app.viewmodels.base.mixins.thumbnail_mixin import ThumbnailMixin
 
-from app.viewmodels.base.mixins.item_ui_helper_mixin import ItemUIHelperMixin
+
+
 from app.viewmodels.base.abstract_base import QObjectAbstractItemViewModel
 
 
 class BaseItemViewModel(
     QObjectAbstractItemViewModel,
-    ThumbnailMixin,
-    ItemUIHelperMixin,
 ):
     """
     Base ViewModel for item lists, providing common functionality
@@ -479,3 +477,94 @@ class BaseItemViewModel(
         logger.debug(f"{self.__class__.__name__}: Handling status change = {enabled}")
 
     # End Mod Status Methods
+
+    # Thumbnail Methods (migrated from ThumbnailMixin)
+    def _connect_thumbnail_signal(self):
+        """Connect to thumbnail service signals."""
+        if not self._thumbnail_service:
+            logger.warning(
+                f"{self.__class__.__name__}: No thumbnail service found in parent class."
+            )
+            return
+        safe_connect(
+            self._thumbnail_service.thumbnailReady,
+            self._on_thumbnail_ready,
+            self,
+        )
+
+    def request_thumbnail_for(self, item_model):
+        """Request or emit cached thumbnail for a given item."""
+        if not item_model or not self._thumbnail_service:
+            return
+
+        cached = self._thumbnail_service.get_cached_thumbnail(
+            item_model.path, self._get_item_type()
+        )
+        if cached:
+            self.itemThumbnailNeedsUpdate.emit(item_model.path, cached)
+            return
+        else:
+            self._thumbnail_service.request_thumbnail(
+                item_model.path, self._get_item_type()
+            )
+
+    def _on_thumbnail_ready(self, item_path: str, result: dict):
+        """Handles thumbnail results and emits signal for UI update."""
+        # logger.debug(f"Thumbnail ready for: {item_path}")
+        self.itemThumbnailNeedsUpdate.emit(item_path, result)
+
+    # End Thumbnail Methods
+
+    # Item UI Helper Methods (migrated from ItemUIHelperMixin)
+    def _insert_item_to_ui(self, item_model):
+        """Insert new item to UI list and display."""
+        items = self._get_item_list()
+        norm_new = os.path.normpath(item_model.path)
+
+        # check for stale insert
+        if hasattr(self, "_current_parent_path"):
+            current = getattr(self, "_current_parent_path") or ""
+            if not norm_new.startswith(os.path.normpath(current)):
+                logger.debug(
+                    f"{self.__class__.__name__}: Ignored insert from stale path: {norm_new}"
+                )
+                return
+
+        if any(os.path.normpath(i.path) == norm_new for i in items):
+            logger.debug(
+                f"{self.__class__.__name__}: Skip insert, already exists: {item_model.path}"
+            )
+            return
+
+        items.append(item_model)
+        if hasattr(self, "displayed_items"):
+            self.displayed_items.append(item_model)
+
+        self.request_thumbnail_for(item_model)
+        self.displayListChanged.emit(self.displayed_items)
+
+    def _remove_item_from_ui(self, path: str):
+        """Remove item from UI list and display."""
+        norm_path = os.path.normpath(path)
+        items = self._get_item_list()
+
+        removed = [i for i in items if os.path.normpath(i.path) == norm_path]
+        if not removed:
+            logger.debug(f"{self.__class__.__name__}: No match to remove: {path}")
+            return
+
+        for r in removed:
+            items.remove(r)
+            if hasattr(self, "displayed_items") and r in self.displayed_items:
+                self.displayed_items.remove(r)
+
+        logger.info(f"{self.__class__.__name__}: Removed item(s): {path}")
+        self.displayListChanged.emit(self.displayed_items)
+
+    def set_loading(self, is_loading: bool):
+        """Emit loading state to UI if state changed."""
+        if getattr(self, "_is_loading", False) != is_loading:
+            self._is_loading = is_loading
+            self.loadingStateChanged.emit(is_loading)
+
+    # End Item UI Helper Methods
