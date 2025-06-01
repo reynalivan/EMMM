@@ -307,6 +307,24 @@ class FileWatcherService(QObject):
         self.statsUpdated.emit(len(self._watched_paths), change_rate)
         self._events_count = 0
 
+    def update_watched_paths(self, paths_to_watch: Set[str]):
+        """Update the watched paths to match the given set."""
+        # Remove paths that are no longer needed
+        for path in list(self._watched_paths):
+            if path not in paths_to_watch:
+                self.remove_path(path)
+
+        # Add new paths to watch
+        for path in paths_to_watch:
+            if path not in self._watched_paths:
+                self.add_path(path)
+
+    def clear_all_watches(self):
+        """Clear all watched paths."""
+        for path in list(self._watched_paths):
+            self.remove_path(path)
+        self._watched_paths.clear()
+
 
 class _WatchdogHandler(FileSystemEventHandler):
     def __init__(self, service: FileWatcherService):

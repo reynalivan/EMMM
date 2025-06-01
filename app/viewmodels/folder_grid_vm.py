@@ -305,10 +305,18 @@ class FolderGridVM(BaseItemViewModel):
     def bind_filewatcher(
         self, parent_path: str, file_watcher_service: FileWatcherService
     ):
+        """Bind the file watcher to monitor valid files and 1-level subfolders."""
         self._file_watcher_service = file_watcher_service
         if not parent_path or not os.path.isdir(parent_path):
+            logger.warning(
+                f"{self.__class__.__name__}: Invalid parent path: {parent_path}"
+            )
             return
+
+        # Unbind previous watchers
         self._unbind_filewatcher()
+
+        # Normalize the path and gather subfolders
         norm_path = os.path.normpath(parent_path)
         watch_paths = {norm_path}
         try:
@@ -316,18 +324,19 @@ class FolderGridVM(BaseItemViewModel):
                 if entry.is_dir():
                     watch_paths.add(os.path.normpath(entry.path))
         except OSError as e:
-            logger.error(f"Failed to scan game path {norm_path}: {e}")
-        for path in watch_paths:
-            file_watcher_service.add_path(path, recursive=False)  # Non recursive
+            logger.error(
+                f"{self.__class__.__name__}: Failed to scan path {norm_path}: {e}"
+            )
 
-        self._watched_paths = watch_paths
-        logger.info(f"{self.__class__.__name__}: Watching {len(watch_paths)} folders.")
-        self._connect_file_watcher_signals()
+        # Update watcher with valid paths
+        file_watcher_service.update_watched_paths(watch_paths)
+        logger.info(f"{self.__class__.__name__}: Watching {len(watch_paths)} paths.")
 
     def _unbind_filewatcher(self):
-        for path in self._watched_paths:
-            self._file_watcher_service.remove_path(path)
-        self._watched_paths.clear()
+        """Unbind the file watcher to stop monitoring."""
+        if self._file_watcher_service:
+            self._file_watcher_service.clear_all_watches()
+            logger.info(f"{self.__class__.__name__}: Cleared all watches.")
 
     def select_folder_item(self, item: FolderItemModel):
         self.folderItemSelected.emit(item)

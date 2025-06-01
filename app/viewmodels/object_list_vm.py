@@ -480,25 +480,21 @@ class ObjectListVM(BaseItemViewModel):
     def bind_filewatcher(
         self, game_path: str, file_watcher_service: FileWatcherService
     ):
+        """Bind the file watcher to monitor the root game folder."""
         self._file_watcher_service = file_watcher_service
         if not game_path or not os.path.isdir(game_path):
             logger.warning(f"{self.__class__.__name__}: Invalid game path: {game_path}")
             return
-        self._unbind_filewatcher()
-        norm_path = os.path.normpath(game_path)
-        watch_paths = {norm_path}
-        try:
-            for entry in os.scandir(norm_path):
-                if entry.is_dir():
-                    watch_paths.add(os.path.normpath(entry.path))
-        except OSError as e:
-            logger.error(f"Failed to scan game path {norm_path}: {e}")
-        for path in watch_paths:
-            file_watcher_service.add_path(path, recursive=False)  # Non recursive
 
-        self._watched_paths = watch_paths
-        logger.info(f"{self.__class__.__name__}: Watching {len(watch_paths)} folders.")
-        self._connect_file_watcher_signals()
+        # Unbind previous watchers
+        self._unbind_filewatcher()
+
+        # Normalize the path and add to watcher
+        norm_path = os.path.normpath(game_path)
+        file_watcher_service.update_watched_paths({norm_path})
+        logger.info(
+            f"{self.__class__.__name__}: Watching root game folder: {norm_path}"
+        )
 
     def handle_visible_thumbnail_requests(self, visible_paths: list[str]) -> None:
         """
@@ -518,10 +514,10 @@ class ObjectListVM(BaseItemViewModel):
             self._thumbnail_service.request_thumbnail(norm, "object")
 
     def _unbind_filewatcher(self):
+        """Unbind the file watcher to stop monitoring."""
         if self._file_watcher_service:
-            for path in self._watched_paths:
-                self._file_watcher_service.remove_path(path)
-        self._watched_paths.clear()
+            self._file_watcher_service.clear_all_watches()
+            logger.info(f"{self.__class__.__name__}: Cleared all watches.")
 
     def clear_state(self):
         self._selected_item = None
