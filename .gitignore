@@ -1,0 +1,130 @@
+# IDE
+.vscode/
+.idea/
+*.swo
+*.swp
+
+# OS
+**/.DS_Store
+**/Thumbs.db
+
+# Bytecode
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment & tools
+.env
+.env.local
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+.pdm.toml
+.pdm/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.pyre/
+.pytype/
+.dmypy.json
+Pipfile.lock
+poetry.lock
+poetry.toml
+
+# Cache & logs
+cache/
+.cache/
+temp/
+*.log
+logs/
+
+# Build/dist
+build/
+dist/
+downloads/
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
+*.spec
+*.manifest
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+*.o
+*.lo
+*.slo
+cython_debug/
+
+# Packaging tools
+develop-eggs/
+lib/
+lib64/
+parts/
+sdist/
+wheels/
+share/python-wheels/
+.installed.cfg
+target/
+.pybuilder/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.tox/
+.nox/
+coverage.xml
+.coverage
+.coverage.*
+*.cover
+*.py,cover
+nosetests.xml
+htmlcov/
+.hypothesis/
+
+# Docs
+docs/_build/
+site/
+
+# Notebooks
+.ipynb_checkpoints
+
+# PyCharm
+.spyderproject
+.spyproject
+.ropeproject
+
+# Qt/QtCreator
+*.autosave
+*.creator*
+*.qbs.user*
+*.pro.user*
+*.qmlproject.user*
+*.qmlproject.user.*
+*.moc
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*_plugin_import.cpp
+*_qmlcache.qrc
+*.qmlc
+*.jsc
+*.qm
+Makefile*
+CMakeLists.txt.user*
+compile_commands.json
+object_script.*.Release
+object_script.*.Debug
+target_wrapper.*
+
+# Project-specific
+app/logs/

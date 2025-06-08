@@ -1,0 +1,26 @@
+# -----------------------------------------
+# Core Runtime Dependencies for EMMM
+# -----------------------------------------
+
+# GUI Framework (Qt 6 Bindings)
+PyQt6==6.9.0
+PyQt6-Qt6==6.9.0
+
+# UI Theming & Fluent Widgets
+pyqt-fluent-widgets>=1.7.0
+
+# Filesystem Monitoring
+watchdog==6.0.0
+
+# Logging
+loguru==0.7.0
+
+# Image Processing (Thumbnails, Clipboard, etc.)
+pillow==11.1.0
+
+# -----------------------------------------
+# Development/Testing Dependencies
+# -----------------------------------------
+# pytest
+# pytest-qt
+# -----------------------------------------
