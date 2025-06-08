@@ -34,7 +34,7 @@ class ThumbnailService(QObject):
     # Signal emitted when a background-loaded thumbnail is ready.
     thumbnail_ready = pyqtSignal(str, QPixmap)  # item_id, pixmap
 
-    def __init__(self, cache_dir: Path, default_icons: dict[str, Path]):
+    def __init__(self, cache_dir: Path, default_icons: dict[str, str]):
         super().__init__()
         # --- Service Setup ---
         self.cache_dir = cache_dir

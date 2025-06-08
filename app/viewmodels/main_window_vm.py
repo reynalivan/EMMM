@@ -4,6 +4,14 @@ from typing import Optional, List, Dict
 from app.models.config_model import AppConfig
 from app.models.game_model import Game
 from app.models.mod_item_model import ObjectItem
+from enum import Enum, auto
+
+
+class ToastLevel(Enum):
+    INFO = auto()
+    SUCCESS = auto()
+    WARNING = auto()
+    ERROR = auto()
 
 
 class MainWindowViewModel(QObject):
@@ -14,7 +22,7 @@ class MainWindowViewModel(QObject):
 
     # --- Signals for Global UI Feedback ---
     toast_requested = pyqtSignal(
-        str, str
+        str, ToastLevel
     )  # message, level ('info', 'error', 'success')
     global_operation_started = pyqtSignal(str)
     global_operation_finished = pyqtSignal()

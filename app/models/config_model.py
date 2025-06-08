@@ -9,6 +9,15 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class Preset:
+    """Represents a single saved mod preset."""
+
+    name: str
+    type: str  # 'safe' or 'unsafe'
+    enabled_mod_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Holds the application's entire configuration state. Immutable."""
 
@@ -21,7 +30,7 @@ class AppConfig:
 
     # --- Global Settings ---
     safe_mode_enabled: bool = False
-    presets: dict[str, str] = field(default_factory=dict)
+    presets: dict[str, Preset] = field(default_factory=dict)
 
     # --- UI Preferences ---
     window_geometry: tuple[int, int, int, int] | None = None

@@ -1,9 +1,21 @@
 # app/views/components/objectlist_widget.py
+from PyQt6.QtCore import pyqtSignal, QSize, Qt
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import pyqtSignal
-from app.viewmodels.mod_list_vm import ModListViewModel
-from app.models.mod_item_model import FolderItem
+from qfluentwidgets import (
+    BodyLabel,
+    CaptionLabel,
+    FluentIcon,
+    IconWidget,
+    CheckBox,
+    IndeterminateProgressRing,
+    FlowLayout,
+    VBoxLayout,
+)
+
+# Import models and services for type hinting
+from app.models.mod_item_model import ObjectItem
 from app.services.thumbnail_service import ThumbnailService
+from app.viewmodels.mod_list_vm import ModListViewModel
 
 
 class ObjectListItemWidget(QWidget):
@@ -17,7 +29,7 @@ class ObjectListItemWidget(QWidget):
 
     def __init__(
         self,
-        item: FolderItem,
+        item: ObjectItem,
         viewmodel: ModListViewModel,
         thumbnail_service: ThumbnailService,
         parent: QWidget | None = None,
@@ -26,6 +38,7 @@ class ObjectListItemWidget(QWidget):
         self.item = item
         self.view_model = viewmodel
         self.thumbnail_service = thumbnail_service
+        self._thumb_size = QSize(64, 64)
 
         self._init_ui()
         self._connect_signals()
@@ -33,8 +46,77 @@ class ObjectListItemWidget(QWidget):
 
     def _init_ui(self):
         """Initializes the UI components of the widget."""
-        # Create labels, checkbox, switch, and icon widgets.
-        pass
+        self.setObjectName("ObjectListItem")
+
+        # --- Main Layout ---
+        # Use FlowLayout for responsive wrapping if the panel is very narrow
+        main_layout = FlowLayout(self)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setHorizontalSpacing(12)
+        main_layout.setVerticalSpacing(8)
+
+        # --- 1. Left Side: Thumbnail, Checkbox, and Loading Ring ---
+        # Container to layer multiple widgets on top of each other
+        thumbnail_container = QWidget(self)
+        thumbnail_container.setFixedSize(self._thumb_size)
+
+        # The base image. Use standard QLabel as it's the best for QPixmap
+        self.thumbnail_label = CaptionLabel(thumbnail_container)
+        self.thumbnail_label.setFixedSize(self._thumb_size)
+        self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Loading Ring, centered on the container.
+        self.processing_ring = IndeterminateProgressRing(thumbnail_container)
+        self.processing_ring.setFixedSize(32, 32)  # Smaller ring
+        ring_x = (self._thumb_size.width() - self.processing_ring.width()) // 2
+        ring_y = (self._thumb_size.height() - self.processing_ring.height()) // 2
+        self.processing_ring.move(ring_x, ring_y)
+        self.processing_ring.hide()  # Initially hidden
+
+        # Checkbox overlay
+        self.selection_checkbox = CheckBox(thumbnail_container)
+        self.selection_checkbox.setToolTip("Select for bulk operations")
+        self.selection_checkbox.move(4, 4)
+        self.selection_checkbox.hide()
+
+        main_layout.addWidget(thumbnail_container)
+
+        # --- 2. Center: Info Block (Name and Status) ---
+        # We use a container QWidget to host a VBoxLayout inside the FlowLayout
+        info_widget = QWidget(self)
+        info_layout = VBoxLayout(info_widget)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(4)
+
+        self.name_label = BodyLabel()  # Fluent component for standard text
+        self.name_label.setObjectName("NameLabel")
+        info_layout.addWidget(self.name_label)
+
+        # Status Layout (Icon + Text)
+        status_widget = QWidget(self)
+        status_layout = FlowLayout(
+            status_widget, isTight=True
+        )  # isTight=True reduces margins
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setHorizontalSpacing(6)
+
+        self.status_icon = IconWidget(self)  # Fluent component for icons
+        self.status_icon.setFixedSize(16, 16)
+
+        self.status_text = CaptionLabel(self)  # Fluent component for small text
+        self.status_text.setObjectName("StatusTextLabel")
+
+        status_layout.addWidget(self.status_icon)
+        status_layout.addWidget(self.status_text)
+
+        info_layout.addWidget(status_widget)
+        main_layout.addWidget(info_widget)
+
+        # --- 3. Right Side: Pin Indicator ---
+        self.pin_icon = IconWidget(FluentIcon.PIN, self)  # Fluent component
+        self.pin_icon.setToolTip("Pinned")
+        self.pin_icon.hide()  # Initially hidden
+        main_layout.addWidget(self.pin_icon)
 
     def _connect_signals(self):
         """Connects internal UI widget signals to their handler methods."""
@@ -43,7 +125,7 @@ class ObjectListItemWidget(QWidget):
         # self.selection_checkbox.stateChanged.connect(self._on_selection_changed)
         pass
 
-    def set_data(self, item: FolderItem):
+    def set_data(self, item: ObjectItem):
         """Flow 2.2, 3.1a, 4.2.A: Updates the widget's display with new data."""
         self.item = item
         # Update UI elements: name_label, status_switch state, etc.

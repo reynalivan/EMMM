@@ -81,13 +81,3 @@ class FolderItem(BaseModItem):
     is_safe: bool = False
     last_status_active: bool = True
     preset_name: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class KeyBinding:
-    key: str
-    back: Optional[str] = None
-    type: Optional[str] = None
-    variable: Optional[str] = None
-    default_value: Optional[str] = None
-    options: List[str] = field(default_factory=list)

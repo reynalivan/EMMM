@@ -1,29 +1,138 @@
 # app/views/sections/foldergrid_panel.py
-from pathlib import Path
-from PyQt6.QtWidgets import QWidget
 
-# Import all necessary UI components (e.g., GridView, BreadcrumbWidget, etc.)
-# ...
+from pathlib import Path
+from typing import Dict
+
+from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QFrame,
+    QScrollArea,
+    QStackedWidget,
+)
+
+from qfluentwidgets import (
+    BodyLabel,
+    FluentIcon,
+    SearchLineEdit,
+    DropDownPushButton,
+    PrimaryPushButton,
+    PushButton,
+    ComboBox,
+    FlowLayout,
+    SubtitleLabel,
+    IndeterminateProgressBar,
+)
+
+from app.viewmodels.mod_list_vm import ModListViewModel
+from app.views.components.breadcrumb_widget import BreadcrumbWidget
+from app.views.components.common.shimmer_frame import ShimmerFrame
 
 
 class FolderGridPanel(QWidget):
     """The UI panel that displays the grid of mod folders and subfolders."""
 
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.view_model = None
-        self._item_widgets = {}  # Maps item_id to its widget for quick access
+    # Custom signal to notify the main window that a new item is selected for preview
+    item_selected = pyqtSignal(object)
 
-        # --- Initialize UI components ---
-        # self.breadcrumb = BreadcrumbWidget(...)
-        # self.grid_view = GridView(...)
-        # self.search_bar = SearchLineEdit(...)
-        # self.create_button = PushButton("Create New Mod")
-        # self.randomize_button = PushButton("Randomize")
-        # self.preset_combobox = ComboBox(...)
-        # ... other bulk action buttons
-        # self.shimmer_frame = ShimmerFrame(self)
-        pass
+    def __init__(self, viewmodel: ModListViewModel, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.view_model = viewmodel
+        self._item_widgets: Dict[str, QWidget] = {}  # Maps item_id to its widget
+
+        self._init_ui()
+        # self._bind_view_models() # To be implemented later
+
+        # Enable Drag & Drop for this panel
+        self.setAcceptDrops(True)
+
+    def _init_ui(self):
+        """Initializes all UI components for this panel."""
+
+        # --- Toolbar ---
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setContentsMargins(10, 10, 10, 5)
+        toolbar_layout.setSpacing(10)
+
+        self.search_bar = SearchLineEdit(self)
+        self.search_bar.setPlaceholderText("Search in current folder...")
+
+        self.filter_button = DropDownPushButton(FluentIcon.FILTER, "Filter", self)
+
+        self.create_button = PrimaryPushButton(FluentIcon.ADD, "Create", self)
+        self.randomize_button = PushButton(FluentIcon.ROTATE, "Shuffle", self)
+
+        self.preset_combo = ComboBox(self)
+        self.preset_combo.setPlaceholderText("Apply Preset")
+        self.preset_combo.setMinimumWidth(150)
+        self.preset_combo.setEnabled(False)
+
+        toolbar_layout.addWidget(self.search_bar, 1)
+        toolbar_layout.addWidget(self.filter_button)
+        toolbar_layout.addSpacing(20)
+        toolbar_layout.addWidget(self.preset_combo)
+        toolbar_layout.addWidget(self.randomize_button)
+        toolbar_layout.addWidget(self.create_button)
+
+        # --- Breadcrumb Navigation ---
+        self.breadcrumb_widget = BreadcrumbWidget(self)
+
+        # --- Separator Line ---
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        separator.setStyleSheet("border-top: 1px solid rgba(255, 255, 255, 0.08);")
+
+        # --- Main Content Area (Stack for switching between states) ---
+        self.stack = QStackedWidget(self)
+
+        # State 1: Grid Area (inside a ScrollArea)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
+
+        grid_container_widget = QWidget()
+        self.grid_layout = FlowLayout(grid_container_widget, isTight=True)
+        self.grid_layout.setContentsMargins(10, 10, 10, 10)
+        self.grid_layout.setVerticalSpacing(15)
+        self.grid_layout.setHorizontalSpacing(15)
+        self.scroll_area.setWidget(grid_container_widget)
+
+        # State 2: Empty Folder Label
+        self.empty_folder_label = SubtitleLabel(
+            "This folder is empty.\nDrag a .zip file here to create a new mod.", self
+        )
+        self.empty_folder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # State 3: Shimmer Frame for Loading
+        self.shimmer_frame = ShimmerFrame(self)
+
+        # REVISED: State 4: Placeholder for when no object is selected
+        self.placeholder_label = BodyLabel(
+            "Select object on left sidebar to view list of mods", self
+        )
+        self.placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Add all state widgets to the stack
+        self.stack.addWidget(self.placeholder_label)  # Initial view
+        self.stack.addWidget(self.scroll_area)
+        self.stack.addWidget(self.empty_folder_label)
+        self.stack.addWidget(self.shimmer_frame)
+
+        # --- Main Layout ---
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(5, 0, 5, 5)
+        main_layout.setSpacing(5)
+        main_layout.addLayout(toolbar_layout)
+        main_layout.addWidget(self.breadcrumb_widget)
+        main_layout.addWidget(separator)
+        main_layout.addWidget(self.stack, 1)
+
+        # Set the initial state of the panel
+        self.stack.setCurrentWidget(self.placeholder_label)
 
     def bind_viewmodel(self, viewmodel):
         """Connects this panel's widgets and slots to the ViewModel."""

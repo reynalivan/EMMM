@@ -1,6 +1,23 @@
 # app/views/sections/objectlist_panel.py
-from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import pyqtSignal
+from typing import Dict
+
+from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtWidgets import QWidget, QStackedWidget, QListWidget
+
+from qfluentwidgets import (
+    FluentIcon,
+    SearchLineEdit,
+    DropDownPushButton,
+    SubtitleLabel,
+    PushButton,
+    VBoxLayout,
+    FlowLayout,
+    IndeterminateProgressBar,
+)
+
+from app.viewmodels.mod_list_vm import ModListViewModel
+from app.views.components.objectlist_widget import ObjectListItemWidget
+from app.views.components.common.shimmer_frame import ShimmerFrame
 
 # Import other necessary components...
 
@@ -8,18 +25,86 @@ from PyQt6.QtCore import pyqtSignal
 class ObjectListPanel(QWidget):
     """The UI panel that displays the list of object items (characters, weapons, etc.)."""
 
-    # PATCH: Custom signal to notify the main window that a new object should be set as active.
-    active_object_requested = pyqtSignal(object)
+    # Custom signal to notify the main window that a new object should be set as active.
+    item_selected = pyqtSignal(object)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, viewmodel: ModListViewModel, parent: QWidget | None = None):
         super().__init__(parent)
-        self.view_model = None
-        self._item_widgets = {}  # Maps item_id to its widget for quick access
+        self.view_model = viewmodel
 
-        # --- Initialize UI components ---
-        # self.grid_view = GridView(...)
-        # ... other UI components
-        pass
+        # Maps item_id to its widget for quick access
+        self._item_widgets: Dict[str, QWidget] = {}
+
+        self._init_ui()
+        self._connect_signals_to_viewmodel()
+
+    def _init_ui(self):
+        """Initializes all UI components for this panel using fluent layouts."""
+
+        # --- Toolbar ---
+        toolbar_layout = FlowLayout()  # Use fluent FlowLayout
+        toolbar_layout.setContentsMargins(10, 10, 10, 5)
+        toolbar_layout.setHorizontalSpacing(10)
+        # set minimumSize toolbar layout
+        self.search_bar = SearchLineEdit(self)
+        self.search_bar.setPlaceholderText("Search objects...")
+        toolbar_layout.addWidget(self.search_bar)
+
+        self.filter_button = DropDownPushButton(FluentIcon.FILTER, "Filter", self)
+        toolbar_layout.addWidget(self.filter_button)
+
+        # --- Bulk Action Toolbar (Initially Hidden) ---
+        self.bulk_action_widget = QWidget(self)
+        bulk_action_layout = FlowLayout(self.bulk_action_widget, isTight=True)
+        bulk_action_layout.setContentsMargins(10, 0, 10, 5)
+
+        self.selection_label = SubtitleLabel("0 selected")
+        self.select_all_button = PushButton("Select All")
+        self.clear_selection_button = PushButton("Clear Selection")
+        self.enable_selected_button = PushButton("Enable Selected")
+        self.disable_selected_button = PushButton("Disable Selected")
+
+        # --- Content Stack (for switching between states) ---
+        self.stack = QStackedWidget(self)
+
+        # 1. Main List Area
+        self.list_widget = QListWidget(self)
+        self.list_widget.setObjectName("ObjectListWidget")
+        self.list_widget.setUniformItemSizes(True)
+        self.list_widget.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.list_widget.setStyleSheet(
+            "QListWidget { border: none; background: transparent; padding-right: 5px; }"
+            "QListWidget::item { border-bottom: 1px solid rgba(255, 255, 255, 0.05); }"
+            "QListWidget::item:selected { background: rgba(255, 255, 255, 0.08); border-radius: 4px; }"
+        )
+
+        # 2. Empty/No Results Label
+        self.empty_label = SubtitleLabel("No objects found.", self)
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # 3. Shimmer Frame for Loading
+        self.shimmer_frame = ShimmerFrame(self)
+
+        self.stack.addWidget(self.list_widget)
+        self.stack.addWidget(self.empty_label)
+        self.stack.addWidget(self.shimmer_frame)
+
+        # --- Main Layout ---
+        main_layout = VBoxLayout(self)  # Use fluent VBoxLayout
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.addLayout(toolbar_layout)
+        main_layout.addWidget(self.bulk_action_widget)
+        main_layout.addWidget(self.stack, 1)
+
+    def _connect_signals_to_viewmodel(self):
+        # ViewModel -> View connections
+        self.view_model.items_updated.connect(self._on_items_updated)
+        # ... other vm -> view connections
+
+        # View -> ViewModel connections
+        # self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
+        # ... other view -> vm connections
 
     def bind_viewmodel(self, viewmodel):
         """Connects this panel's widgets and slots to the ViewModel."""
@@ -116,7 +201,7 @@ class ObjectListPanel(QWidget):
         Flow 2.3: Forwards the item selection event upwards to the main window
         by emitting this panel's own signal.
         """
-        self.active_object_requested.emit(item)
+        self.item_selected.emit(item)
         pass
 
     # --- UI EVENT HANDLERS (Forwarding to ViewModel) ---

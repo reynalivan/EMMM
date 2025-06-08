@@ -1,7 +1,20 @@
 # app/views/components/foldergrid_widget.py
+from PyQt6.QtCore import pyqtSignal, QSize, Qt
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import pyqtSignal
+from qfluentwidgets import (
+    CardWidget,
+    BodyLabel,
+    CaptionLabel,
+    FluentIcon,
+    IconWidget,
+    IndeterminateProgressRing,
+    SwitchButton,
+    FlowLayout,
+    CheckBox,
+    VBoxLayout,
+)
 from app.models.mod_item_model import FolderItem
+from app.services.thumbnail_service import ThumbnailService
 from app.viewmodels.mod_list_vm import ModListViewModel
 
 
@@ -18,7 +31,7 @@ class FolderGridItemWidget(QWidget):
         self,
         item: FolderItem,
         viewmodel: ModListViewModel,
-        thumbnail_service: object,
+        thumbnail_service: ThumbnailService,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -26,14 +39,87 @@ class FolderGridItemWidget(QWidget):
         self.view_model = viewmodel
         self.thumbnail_service = thumbnail_service
 
+        self._card_width = 190
+        self._image_height = 120
+        self._thumb_size = QSize(self._card_width, self._image_height)
+
         self._init_ui()
         self._connect_signals()
         self.set_data(item)
 
     def _init_ui(self):
         """Initializes the UI components of the widget."""
-        # Create labels, checkbox, switch, and icon widgets.
-        pass
+        self.setFixedSize(self._card_width, 180)
+
+        # REVISED: Menggunakan VBoxLayout dari qfluentwidgets
+        main_layout = VBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 8)
+        main_layout.setSpacing(0)
+
+        # --- 1. Top Area: Image Container + Overlays ---
+        # ... (bagian ini tidak berubah)
+        image_container = QWidget(self)
+        image_container.setFixedSize(self._thumb_size)
+
+        self.thumbnail_label = CaptionLabel(image_container)
+        self.thumbnail_label.setGeometry(
+            0, 0, self._thumb_size.width(), self._thumb_size.height()
+        )
+        self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumbnail_label.setObjectName("ThumbnailLabel")
+        self.thumbnail_label.setStyleSheet(
+            "#ThumbnailLabel { "
+            "  background-color: rgba(255, 255, 255, 0.04); "
+            "  border-top-left-radius: 8px; "
+            "  border-top-right-radius: 8px; "
+            "}"
+        )
+
+        self.processing_ring = IndeterminateProgressRing(image_container)
+        self.processing_ring.setFixedSize(40, 40)
+        ring_x = (self._thumb_size.width() - self.processing_ring.width()) // 2
+        ring_y = (self._thumb_size.height() - self.processing_ring.height()) // 2
+        self.processing_ring.move(ring_x, ring_y)
+        self.processing_ring.hide()
+
+        self.selection_checkbox = CheckBox(image_container)
+        self.selection_checkbox.move(8, 8)
+        self.selection_checkbox.hide()
+
+        # --- 2. Bottom Area: Info (Name and Status) ---
+        info_area = QWidget(self)
+        # REVISED: Menggunakan VBoxLayout dari qfluentwidgets
+        info_layout = VBoxLayout(info_area)
+        info_layout.setContentsMargins(12, 8, 12, 0)
+        info_layout.setSpacing(4)
+
+        self.name_label = BodyLabel()
+        self.name_label.setWordWrap(True)
+
+        # ... (sisa layout status tidak berubah)
+        status_layout = FlowLayout(isTight=True)
+        status_layout.setContentsMargins(0, 4, 0, 0)
+        status_layout.setHorizontalSpacing(6)
+
+        self.pin_icon = IconWidget(FluentIcon.PIN, self)
+        self.pin_icon.setToolTip("Pinned")
+        self.pin_icon.hide()
+
+        self.status_switch = SwitchButton(self)
+        self.status_switch.setOnText("On")
+        self.status_switch.setOffText("Off")
+        self.status_switch.setToolTip("Toggle mod status")
+
+        status_layout.addWidget(self.pin_icon)
+        status_layout.addWidget(self.status_switch)
+
+        info_layout.addWidget(self.name_label)
+        info_layout.addLayout(status_layout)
+        info_layout.addStretch(1)
+
+        # --- Assemble Main Layout ---
+        main_layout.addWidget(image_container)
+        main_layout.addWidget(info_area, 1)
 
     def _connect_signals(self):
         """Connects internal UI widget signals to their handler methods."""
