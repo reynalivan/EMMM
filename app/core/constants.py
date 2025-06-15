@@ -22,8 +22,9 @@ INFO_JSON_NAME: str = "info.json"  # For foldergrid items
 INI_BACKUP_EXTENSION: str = ".backup"
 
 # --- Thumbnail & Image Constants ---
-PREVIEW_IMAGE_BASE_NAME: str = "preview"
-OBJECT_THUMBNAIL_NAME: str = "thumb"
+OBJECT_THUMBNAIL_SUFFIX: str = "_thumb"
+OBJECT_THUMBNAIL_EXACT: set[str] = {"thumb", "folder"}  # Nama file tanpa ekstensi
+FOLDER_PREVIEW_PREFIX: str = "preview"
 SUPPORTED_IMAGE_EXTENSIONS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp")
 DEFAULT_ICONS: dict[str, str] = {
     "mod": "app/assets/images/default_mod_icon.png",

@@ -178,15 +178,21 @@ class ObjectListPanel(QWidget):
         """Forwards the item selection event upwards to the main window."""
         self.item_selected.emit(item_model)
 
-    def _on_item_needs_update(self, hydrated_item_data: dict):
+    def _on_item_needs_update(self, item_data: dict):
         """Flow 2.2 Stage 2: Finds and redraws a single widget for a targeted update."""
-        list_item = self._item_widgets.get(hydrated_item_data["id"])
-        if list_item:
-            widget = self.list_widget.itemWidget(list_item)
+        item_id = item_data.get("id") or ""
+        list_or_item_widget = self._item_widgets.get(item_id)
 
-            # REVISED: Error 2 diperbaiki dengan memeriksa tipe widget
-            if isinstance(widget, ObjectListItemWidget):
-                widget.set_data(hydrated_item_data)
+        if not list_or_item_widget:
+            return
+
+        if isinstance(list_or_item_widget, QListWidgetItem):
+            widget = self.list_widget.itemWidget(list_or_item_widget)
+        else:
+            widget = list_or_item_widget
+
+        if isinstance(widget, ObjectListItemWidget):
+            widget.set_data(item_data)
 
     def _on_item_processing_started(self, item_id: str):
         """Flow 3.1 & 4.2: Shows a processing state on a specific widget."""

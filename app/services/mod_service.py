@@ -19,12 +19,16 @@ from app.models.mod_item_model import (
 
 # Import constants for naming rules
 from app.core.constants import (
-    DISABLED_PREFIX_PATTERN,
+    PROPERTIES_JSON_NAME,
     INFO_JSON_NAME,
-    PIN_SUFFIX,
     CONTEXT_OBJECTLIST,
     CONTEXT_FOLDERGRID,
-    PROPERTIES_JSON_NAME,
+    OBJECT_THUMBNAIL_SUFFIX,
+    OBJECT_THUMBNAIL_EXACT,
+    FOLDER_PREVIEW_PREFIX,
+    SUPPORTED_IMAGE_EXTENSIONS,
+    PIN_SUFFIX,
+    DISABLED_PREFIX_PATTERN,
     DEFAULT_DISABLED_PREFIX,
 )
 from app.utils.logger_utils import logger
@@ -156,23 +160,53 @@ class ModService:
         if not skeleton_item.is_skeleton:
             return skeleton_item
 
-        logger.debug(
-            f"Hydrating item: {skeleton_item.actual_name} in context: {context}"
-        )
-
         try:
             # --- CONTEXT: OBJECTLIST (Character, Weapon, etc.) ---
-            if context == CONTEXT_OBJECTLIST:
+            if isinstance(skeleton_item, ObjectItem):
+                props_path = skeleton_item.folder_path / PROPERTIES_JSON_NAME
                 properties = {}
-                properties_path = skeleton_item.folder_path / PROPERTIES_JSON_NAME
-                try:
-                    with open(properties_path, "r", encoding="utf-8") as f:
-                        properties = json.load(f)
-                except (FileNotFoundError, json.JSONDecodeError) as e:
-                    logger.warning(
-                        f"Could not read {PROPERTIES_JSON_NAME} for '{skeleton_item.actual_name}': {e}"
-                    )
+                needs_json_update = False
 
+                if props_path.is_file():
+                    try:
+                        with open(props_path, "r", encoding="utf-8") as f:
+                            properties = json.load(f)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            f"{PROPERTIES_JSON_NAME} for '{skeleton_item.actual_name}' is corrupted. Overwriting."
+                        )
+                        needs_json_update = True
+                else:
+                    needs_json_update = True
+
+                # --- Reality Check (Suffix Logic) ---
+                found_thumb_path: Path | None = None
+                for file in skeleton_item.folder_path.iterdir():
+                    if (
+                        file.is_file()
+                        and file.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+                    ):
+                        file_stem = file.stem.lower()  # Nama file tanpa ekstensi
+                        if (
+                            file_stem.endswith(OBJECT_THUMBNAIL_SUFFIX)
+                            or file_stem in OBJECT_THUMBNAIL_EXACT
+                        ):
+                            found_thumb_path = file
+                            break  # Ambil yang pertama ditemukan
+
+                # --- Reconcile ---
+                json_thumb_str = properties.get("thumbnail_path", "")
+                if found_thumb_path and found_thumb_path.name != json_thumb_str:
+                    logger.info(
+                        f"Found physical thumbnail '{found_thumb_path.name}' for '{skeleton_item.actual_name}', updating JSON."
+                    )
+                    properties["thumbnail_path"] = found_thumb_path.name
+                    needs_json_update = True
+
+                if needs_json_update:
+                    self._write_json(props_path, properties)
+
+                # Get other metadata
                 metadata = (
                     self.database_service.get_metadata_for_object(
                         game_name, skeleton_item.actual_name
@@ -211,28 +245,53 @@ class ModService:
                 return dataclasses.replace(skeleton_item, **data_payload)
 
             # --- CONTEXT: FOLDERGRID (Final Mods or Navigable Folders) ---
-            elif context == CONTEXT_FOLDERGRID:
-                # Type Determination: Check for .ini files
-                has_ini = any(
+            elif isinstance(skeleton_item, FolderItem):
+                if not any(
                     p.suffix.lower() == ".ini"
                     for p in skeleton_item.folder_path.iterdir()
-                )
-
-                if not has_ini:
+                ):
                     return dataclasses.replace(
                         skeleton_item, is_navigable=True, is_skeleton=False
                     )
 
                 # It's a final mod, read info.json
-                info = {}
                 info_path = skeleton_item.folder_path / INFO_JSON_NAME
-                try:
-                    with open(info_path, "r", encoding="utf-8") as f:
-                        info = json.load(f)
-                except (FileNotFoundError, json.JSONDecodeError):
-                    logger.warning(
-                        f"info.json not found for mod '{skeleton_item.actual_name}'."
+                info = {}
+                needs_json_update = False
+
+                if info_path.is_file():
+                    try:
+                        with open(info_path, "r", encoding="utf-8") as f:
+                            info = json.load(f)
+                    except json.JSONDecodeError:
+                        needs_json_update = True
+                else:
+                    needs_json_update = True
+
+                # --- Reality Check (Prefix Logic) ---
+                found_images = sorted(
+                    [
+                        p
+                        for p in skeleton_item.folder_path.iterdir()
+                        if p.is_file()
+                        and p.stem.lower().startswith(FOLDER_PREVIEW_PREFIX)
+                        and p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+                    ]
+                )
+
+                # --- Reconcile ---
+                json_image_paths = {
+                    skeleton_item.folder_path / p for p in info.get("image_paths", [])
+                }
+                if set(found_images) != json_image_paths:
+                    logger.info(
+                        f"Physical image files for '{skeleton_item.actual_name}' do not match info.json. Syncing."
                     )
+                    info["image_paths"] = [p.name for p in found_images]
+                    needs_json_update = True
+
+                if needs_json_update:
+                    self._write_json(info_path, info)
 
                 image_paths = [
                     skeleton_item.folder_path / img
@@ -372,6 +431,22 @@ class ModService:
         # Central method for editing description, author, tags, preset_name, etc.
         # TODO: Implement actual update logic
         return {}
+
+    def _write_json(self, json_path: Path, data: dict):
+        """
+        A helper function to safely write a dictionary to a JSON file.
+        It uses an indent of 4 for human readability.
+        """
+        logger.debug(f"Writing updated data to {json_path}...")
+        try:
+            # Ensure the parent directory exists
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(json_path, "w", encoding="utf-8") as f:
+                # Use indent=4 to make the JSON file readable
+                json.dump(data, f, indent=4)
+        except (IOError, PermissionError) as e:
+            logger.error(f"Failed to write to JSON file {json_path}: {e}")
 
     def add_preview_image(self, item: object, image_data) -> dict:
         """Flow 5.2 Part C: Adds a new preview image to a mod."""

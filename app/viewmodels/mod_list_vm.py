@@ -1,5 +1,6 @@
 # App/viewmodels/mod list vm.py
 
+
 import dataclasses
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
@@ -92,6 +93,8 @@ class ModListViewModel(QObject):
         self.navigation_root: Path | None = None
         self._processing_ids = set()
 
+        self.thumbnail_service.thumbnail_generated.connect(self._on_thumbnail_generated)
+
     # ---Loading and Data Management ---
 
     def load_items(
@@ -176,7 +179,6 @@ class ModListViewModel(QObject):
         if not item or not item.is_skeleton or not self.current_game:
             return
 
-        logger.debug(f"Hydration requested for item ID: {item_id}")
         self._hydrating_ids.add(item_id)
 
         worker = Worker(
@@ -190,6 +192,11 @@ class ModListViewModel(QObject):
         thread_pool = QThreadPool.globalInstance()
         if thread_pool:
             thread_pool.start(worker)
+        else:
+            logger.critical(
+                f"Could not get QThreadPool instance for hydrating item {item_id}."
+            )
+            self._on_hydration_error((None, "Thread pool unavailable", ""), item_id)
 
     def update_item_in_list(self, updated_item):
         """Flow 5.1: Updates a single item in the master list and refreshes the view."""
@@ -247,6 +254,11 @@ class ModListViewModel(QObject):
         thread_pool = QThreadPool.globalInstance()
         if thread_pool:
             thread_pool.start(worker)
+        else:
+            logger.critical(
+                f"Could not get QThreadPool instance for toggling item {item_id}."
+            )
+            self._on_toggle_status_error(item_id, (None, "Thread pool unavailable", ""))
 
     def toggle_pin_status(self, item_id: str):
         """Flow 6.3: Handles pinning/unpinning a single item."""
@@ -400,10 +412,9 @@ class ModListViewModel(QObject):
         Updates the master list with the hydrated item and notifies the view.
         This method now correctly differentiates between ObjectItem and FolderItem.
         """
-        logger.debug(f"Hydration finished for item ID: {hydrated_item.id}")
         self._hydrating_ids.discard(hydrated_item.id)
 
-        # ---REVISED SECTION: Differentiate item type ---
+        # ---SECTION: Differentiate item type ---
 
         # 1. Create a base dictionary with common attributes
 
@@ -502,10 +513,12 @@ class ModListViewModel(QObject):
 
         # ---Success Path ---
         # Create an immutable new item object with updated data
+
         try:
             old_item = next(i for i in self.master_list if i.id == item_id)
 
             # Create DICT from new data to be passing to datoclasses.replace
+
             new_data_from_service = result["data"]
             update_payload = {
                 "folder_path": new_data_from_service["new_path"],
@@ -514,10 +527,12 @@ class ModListViewModel(QObject):
             new_item = dataclasses.replace(old_item, **update_payload)
 
             # Change the old item with the new one on the internal list
+
             master_idx = self.master_list.index(old_item)
             self.master_list[master_idx] = new_item
 
             # Also update the list that is displayed if the item is there
+
             if old_item in self.displayed_items:
                 display_idx = self.displayed_items.index(old_item)
                 self.displayed_items[display_idx] = new_item
@@ -525,6 +540,7 @@ class ModListViewModel(QObject):
             logger.info(f"Successfully toggled status for item: {new_item.actual_name}")
 
             # Send signals to UI for updates
+
             self.item_needs_update.emit(self._create_dict_from_item(new_item))
             self.item_processing_finished.emit(
                 item_id, True
@@ -532,6 +548,7 @@ class ModListViewModel(QObject):
 
             # If the context is an objectlist, tell the orchestrator (mainwindowviewmodel)
             # that an object item has been modified.
+
             if self.context == CONTEXT_OBJECTLIST:
                 self.active_object_modified.emit(new_item)
             elif self.context == CONTEXT_FOLDERGRID:
@@ -584,8 +601,8 @@ class ModListViewModel(QObject):
         self, item_id: str, source_path: Path | None, default_type: str
     ) -> QPixmap:
         """
-        A wrapper method that delegates the thumbnail request to the service.
-        This decouples the View from the ThumbnailService.
+        Flow 2.4, Step 2: A wrapper method that delegates the thumbnail request to the service.
+        This decouples the View from having to know about the ThumbnailService directly.
         """
         return self.thumbnail_service.get_thumbnail(
             item_id=item_id, source_path=source_path, default_type=default_type
@@ -596,3 +613,59 @@ class ModListViewModel(QObject):
         Generates an initial from the name for avatar display.
         """
         return self.system_utils.get_initial_name(name, length=2)
+
+    def _on_thumbnail_generated(self, item_id: str, cache_path: Path):
+        """
+        Receives a signal from ThumbnailService when a new thumbnail is ready on disk.
+        Updates the internal item model and triggers a targeted UI refresh.
+        """
+        logger.debug(
+            f"Received generated thumbnail for item '{item_id}' at '{cache_path}'"
+        )
+        try:
+            # 1. Find the appropriate item in Master_list
+
+            item_to_update = next(
+                item for item in self.master_list if item.id == item_id
+            )
+            if not item_to_update:
+                logger.warning(
+                    f"Item '{item_id}' no longer in list when its thumbnail was ready."
+                )
+                return
+
+            updated_item = item_to_update
+
+            # ---Revised Logic: Check Item Type Before Updating ---
+            # 2. Only update the model if it is Objectitem
+
+            if isinstance(item_to_update, ObjectItem):
+                # Update the thumbnail_path to point to the new cache file.
+                # This helps in case of a full refresh, it can load from cache directly.
+
+                updated_item = dataclasses.replace(
+                    item_to_update, thumbnail_path=cache_path
+                )
+
+                # Replace the old item with the new one in the internal state
+
+                master_idx = self.master_list.index(item_to_update)
+                self.master_list[master_idx] = updated_item
+
+                if item_to_update in self.displayed_items:
+                    display_idx = self.displayed_items.index(item_to_update)
+                    self.displayed_items[display_idx] = updated_item
+
+            # For FolderItem, we don't need to change the model. The fact that the
+            # thumbnail exists in the cache is enough. We just need to trigger a UI update.
+
+            # 4. Use the existing 'item_needs_update' signal to trigger UI refresh
+            #    targeted to just one widget.
+
+            view_data = self._create_dict_from_item(updated_item)
+            self.item_needs_update.emit(view_data)
+
+        except (StopIteration, ValueError):
+            logger.warning(
+                f"Item '{item_id}' not found in list when its thumbnail was ready. It may have been unloaded."
+            )

@@ -1,12 +1,13 @@
 # Main.py
 import sys
 from pathlib import Path
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import QThreadPool, Qt, QSize
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 from qfluentwidgets import SplashScreen, setTheme, Theme
 from app.utils.logger_utils import logger
 from app.core.constants import APP_ICON_PATH
+from app.utils.async_utils import Worker
 
 # Import core constants
 from app.core.constants import (
@@ -96,6 +97,16 @@ def main():
         thumbnail_service = ThumbnailService(
             cache_dir=cache_path, default_icons=DEFAULT_ICONS
         )
+
+        # --- Run cache cleanup in the background ---
+        logger.info("Queueing thumbnail disk cache cleanup task...")
+        cleanup_worker = Worker(thumbnail_service.cleanup_disk_cache)
+
+        thread_pool = QThreadPool.globalInstance()
+        if thread_pool:
+            thread_pool.start(cleanup_worker)
+        else:
+            logger.critical("Could not get QThreadPool instance to run cache cleanup.")
 
         # Instantiate utility classes (can be passed as dependencies if needed).
         system_utils = SystemUtils()

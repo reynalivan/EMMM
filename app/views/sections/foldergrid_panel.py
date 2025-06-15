@@ -6,6 +6,7 @@ from typing import Dict
 from app.utils.logger_utils import logger
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
+    QListWidgetItem,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -217,7 +218,6 @@ class FolderGridPanel(QWidget):
         logger.debug(f"Received {len(items_data)} items to display in foldergrid.")
 
         # Grid has been cleaned in _on_loading_started
-
         if not items_data:
             self.stack.setCurrentWidget(self.empty_label)
             return
@@ -226,21 +226,16 @@ class FolderGridPanel(QWidget):
 
         for item_data in items_data:
             # 1. Create the card widget
-
             widget = FolderGridItemWidget(
                 item_data=item_data,
                 viewmodel=self.view_model,
             )
 
             # 2. Connect its signals
-
             widget.item_selected.connect(self.item_selected)
 
             # Connect double click for navigation if the item is navigable
-
             if item_data.get("is_navigable"):
-                # REVISED: Fix the lambda arguments
-
                 folder_path = item_data.get("folder_path") or Path("")
                 widget.doubleClicked.connect(
                     lambda path=folder_path: self.view_model.load_items(
@@ -253,14 +248,23 @@ class FolderGridPanel(QWidget):
             self.grid_widget.add_widget(widget)
             self._item_widgets[item_data["id"]] = widget
 
-    def _on_item_needs_update(self, hydrated_item_data: dict):
+    def _on_item_needs_update(self, item_data: dict):
         """Flow 2.3 Stage 2: Finds and redraws a single widget with hydrated data."""
-        item_id = hydrated_item_data.get("id")
-        widget = self._item_widgets.get(item_id or "")
+        item_id = item_data.get("id") or ""
+        # _item_widgets bisa berisi QListWidgetItem atau QWidget langsung
+        # Bergantung pada implementasi panel Anda (QListWidget vs FlowLayout)
+        list_or_item_widget = self._item_widgets.get(item_id)
 
-        if widget and isinstance(widget, FolderGridItemWidget):
-            logger.debug(f"Targeted update for widget: {item_id}")
-            widget.set_data(hydrated_item_data)
+        if not list_or_item_widget:
+            return
+
+        # Tentukan widget sebenarnya
+        # Untuk ObjectListPanel (menggunakan QListWidget)
+        widget = list_or_item_widget
+
+        # Panggil set_data pada widget anak dengan data baru
+        if isinstance(widget, FolderGridItemWidget):
+            widget.set_data(item_data)
 
     def _on_item_processing_started(self, item_id: str):
         """Flow 3.1b & 4.2: Shows a processing state on a specific widget."""

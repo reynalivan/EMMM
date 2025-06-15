@@ -139,41 +139,30 @@ class FolderGridItemWidget(CardWidget):
         self.name_label.setText(self.item_data.get("actual_name", ""))
         self.pin_icon.setVisible(self.item_data.get("is_pinned", False))
 
-        # ---REVISED SECTION FOR STATUS ---
-
         self.status_switch.blockSignals(True)
-
-        # Now we only use Boolean 'is_enabled' from the data
-
         is_enabled = self.item_data.get("is_enabled", False)
         self.status_switch.setChecked(is_enabled)
         self.status_switch.blockSignals(False)
-        # ---END REVISED SECTION ---
 
         # ---Logic to show folder icon or mod thumbnail ---
-
         is_navigable = self.item_data.get("is_navigable")
         thumbnail_to_load = None
         default_icon_type = "mod"
 
-        if is_navigable is None:
+        if is_navigable is None or is_navigable is True:
             default_icon_type = "folder"
-        elif is_navigable is True:
-            default_icon_type = "folder"
-        else:
+        else:  # is_navigable is False, it's a final mod
             image_paths = self.item_data.get("preview_images", [])
             if image_paths:
                 thumbnail_to_load = image_paths[0]
 
         # ---Revised Section for Thumbnail ---
         # Call the method of viewmodel, not direct service
-
         pixmap = self.view_model.get_thumbnail(
             item_id=self.item_data.get("id", ""),
             source_path=thumbnail_to_load,
             default_type=default_icon_type,
         )
-        # ---END REVISED SECTION ---
 
         scaled_pixmap = pixmap.scaled(
             self._thumb_size,
