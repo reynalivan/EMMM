@@ -104,7 +104,6 @@ def main():
         # Services that depend on other services.
         mod_service = ModService(
             database_service=database_service,
-            system_utils=system_utils,
             image_utils=image_utils,
         )
 
@@ -125,6 +124,7 @@ def main():
         mod_service=mod_service,
         workflow_service=workflow_service,
         database_service=database_service,
+        thumbnail_service=thumbnail_service,
         system_utils=system_utils,
     )
 
@@ -133,6 +133,7 @@ def main():
         mod_service=mod_service,
         workflow_service=workflow_service,
         database_service=database_service,
+        thumbnail_service=thumbnail_service,
         system_utils=system_utils,
     )
     preview_panel_vm = PreviewPanelViewModel(

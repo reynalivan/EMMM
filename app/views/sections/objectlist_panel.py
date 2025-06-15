@@ -2,12 +2,19 @@
 from typing import Dict
 
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtWidgets import QWidget, QStackedWidget, QListWidget
+from PyQt6.QtWidgets import (
+    QListWidgetItem,
+    QSizePolicy,
+    QWidget,
+    QStackedWidget,
+    QListWidget,
+    QVBoxLayout,
+)
 
 from qfluentwidgets import (
     FluentIcon,
     SearchLineEdit,
-    DropDownPushButton,
+    DropDownToolButton,
     SubtitleLabel,
     PushButton,
     VBoxLayout,
@@ -18,6 +25,8 @@ from qfluentwidgets import (
 from app.viewmodels.mod_list_vm import ModListViewModel
 from app.views.components.objectlist_widget import ObjectListItemWidget
 from app.views.components.common.shimmer_frame import ShimmerFrame
+from app.services.thumbnail_service import ThumbnailService
+from pathlib import Path
 
 # Import other necessary components...
 
@@ -32,26 +41,26 @@ class ObjectListPanel(QWidget):
         super().__init__(parent)
         self.view_model = viewmodel
 
-        # Maps item_id to its widget for quick access
-        self._item_widgets: Dict[str, QWidget] = {}
+        self._item_widgets: Dict[str, QListWidgetItem] = {}
 
         self._init_ui()
-        self._connect_signals_to_viewmodel()
+        self._connect_signals()
 
     def _init_ui(self):
         """Initializes all UI components for this panel using fluent layouts."""
 
         # --- Toolbar ---
         toolbar_layout = FlowLayout()  # Use fluent FlowLayout
-        toolbar_layout.setContentsMargins(10, 10, 10, 5)
-        toolbar_layout.setHorizontalSpacing(10)
+        toolbar_layout.setContentsMargins(14, 1, 14, 1)
+        toolbar_layout.setHorizontalSpacing(6)
         # set minimumSize toolbar layout
         self.search_bar = SearchLineEdit(self)
         self.search_bar.setPlaceholderText("Search objects...")
         toolbar_layout.addWidget(self.search_bar)
 
-        self.filter_button = DropDownPushButton(FluentIcon.FILTER, "Filter", self)
-        toolbar_layout.addWidget(self.filter_button)
+        self.filter_btn = DropDownToolButton(FluentIcon.FILTER, self)
+        self.filter_btn.setToolTip("Filter")
+        toolbar_layout.addWidget(self.filter_btn)
 
         # --- Bulk Action Toolbar (Initially Hidden) ---
         self.bulk_action_widget = QWidget(self)
@@ -90,14 +99,15 @@ class ObjectListPanel(QWidget):
         self.stack.addWidget(self.shimmer_frame)
 
         # --- Main Layout ---
-        main_layout = VBoxLayout(self)  # Use fluent VBoxLayout
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        main_layout = QVBoxLayout(self)  # Use fluent VBoxLayout
+        main_layout.setContentsMargins(0, 10, 0, 5)
+        main_layout.setSpacing(6)
         main_layout.addLayout(toolbar_layout)
         main_layout.addWidget(self.bulk_action_widget)
         main_layout.addWidget(self.stack, 1)
 
-    def _connect_signals_to_viewmodel(self):
+    def _connect_signals(self):
+        """Connects this panel's widgets and slots to the ViewModel."""
         # ViewModel -> View connections
         self.view_model.items_updated.connect(self._on_items_updated)
         # ... other vm -> view connections
@@ -105,10 +115,6 @@ class ObjectListPanel(QWidget):
         # View -> ViewModel connections
         # self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
         # ... other view -> vm connections
-
-    def bind_viewmodel(self, viewmodel):
-        """Connects this panel's widgets and slots to the ViewModel."""
-        self.view_model = viewmodel
 
         # --- Connect ViewModel signals to this panel's slots ---
         self.view_model.loading_started.connect(self._on_loading_started)
@@ -128,45 +134,59 @@ class ObjectListPanel(QWidget):
         # --- Connect UI widget actions to ViewModel slots ---
         # self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
         # self.create_button.clicked.connect(self._on_create_object_requested)
-        pass
 
     # --- SLOTS (Responding to ViewModel Signals) ---
 
     def _on_loading_started(self):
         """Flow 2.2: Clears the view and shows the loading shimmer."""
-        # self._item_widgets.clear()
-        # Clear widgets from layout...
-        # self.shimmer_frame.start_shimmer()
-        pass
+        self.list_widget.clear()
+        self._item_widgets.clear()
+        self.stack.setCurrentWidget(self.shimmer_frame)
 
     def _on_loading_finished(self):
         """Flow 2.2: Hides the loading shimmer."""
         # self.shimmer_frame.stop_shimmer()
         pass
 
-    def _on_items_updated(self, items: list):
-        """Flow 2.2 & 5.1: Repopulates the entire grid view with new items."""
-        # 1. Clear the view and self._item_widgets map.
+    def _on_items_updated(self, items_data: list[dict]):
+        """Repopulates the list view with new data dictionaries."""
+        self.list_widget.clear()
+        self._item_widgets.clear()
 
-        # 2. For each item, create a new ObjectListItemWidget.
-        # for item in items:
-        #     widget = ObjectListItemWidget(item, self.view_model, ...)
-        #
-        #     # PATCH IMPLEMENTATION: Connect the child's signal to this panel's slot.
-        #     widget.item_selected.connect(self._on_list_item_selected)
-        #
-        #     # 3. Add the widget to the layout and the internal map.
-        #     self._item_widgets[item.id] = widget
-        #     self.grid_layout.addWidget(widget)
+        if not items_data:
+            self.stack.setCurrentWidget(self.empty_label)
+            return
 
-        # 4. Handle the case where 'items' is empty by showing a "no results" message.
-        pass
+        self.stack.setCurrentWidget(self.list_widget)
 
-    def _on_item_needs_update(self, item: object):
-        """Flow 2.2 & 3.1: Finds and redraws a single widget for a targeted update."""
-        # widget = self._item_widgets.get(item.id)
-        # if widget: widget.set_data(item)
-        pass
+        for item_data in items_data:
+            list_item = QListWidgetItem(self.list_widget)
+            # Pass item_data (dict) ke constructor widget
+            item_widget = ObjectListItemWidget(
+                item_data=item_data,
+                viewmodel=self.view_model,
+            )
+            item_widget.item_selected.connect(self._on_list_item_clicked)
+
+            list_item.setSizeHint(item_widget.sizeHint())
+            self.list_widget.addItem(list_item)
+            self.list_widget.setItemWidget(list_item, item_widget)
+
+            self._item_widgets[item_data["id"]] = list_item
+
+    def _on_list_item_clicked(self, item_model: object):
+        """Forwards the item selection event upwards to the main window."""
+        self.item_selected.emit(item_model)
+
+    def _on_item_needs_update(self, hydrated_item_data: dict):
+        """Flow 2.2 Stage 2: Finds and redraws a single widget for a targeted update."""
+        list_item = self._item_widgets.get(hydrated_item_data["id"])
+        if list_item:
+            widget = self.list_widget.itemWidget(list_item)
+
+            # REVISED: Error 2 diperbaiki dengan memeriksa tipe widget
+            if isinstance(widget, ObjectListItemWidget):
+                widget.set_data(hydrated_item_data)
 
     def _on_item_processing_started(self, item_id: str):
         """Flow 3.1 & 4.2: Shows a processing state on a specific widget."""

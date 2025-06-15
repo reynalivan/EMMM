@@ -97,3 +97,11 @@ class BreadcrumbWidget(QWidget):
         if 0 <= index < len(self._segment_paths):
             path_to_navigate = self._segment_paths[index]
             self.navigation_requested.emit(path_to_navigate)
+
+    def clear(self):
+        """Clears all segments from the breadcrumb."""
+        self.breadcrumb.blockSignals(True)
+        self.breadcrumb.clear()
+        self._segment_paths.clear()
+        self.root_path = None
+        self.breadcrumb.blockSignals(False)

@@ -6,10 +6,14 @@ from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QTimer
 
 
 class WorkerSignals(QObject):
-    """Defines the signals available from a running worker thread."""
-
-    # Note: A worker's target function can connect to these signals
-    # by accepting a 'signals' keyword argument.
+    """
+    Defines the signals available from a running worker thread.
+    Supported signals are:
+    - finished: No data
+    - error: tuple (exctype, value, traceback.format_exc())
+    - result: object data returned from processing
+    - progress: int percentage
+    """
 
     finished = pyqtSignal()
     error = pyqtSignal(tuple)  # exctype, value, traceback
@@ -27,10 +31,6 @@ class Worker(QRunnable):
         self.args = args
         self.kwargs = kwargs
         self.signals = WorkerSignals()
-
-        # --- Add the signals object to the function's keyword arguments ---
-        # This allows the target function to emit progress signals.
-        self.kwargs["signals"] = self.signals
 
     def run(self):
         """Execute the worker's task."""

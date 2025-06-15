@@ -1,4 +1,5 @@
-# app/views/components/foldergrid_widget.py
+# App/views/components/foldergrid widget.py
+
 from PyQt6.QtCore import pyqtSignal, QSize, Qt
 from PyQt6.QtWidgets import QWidget
 from qfluentwidgets import (
@@ -13,31 +14,32 @@ from qfluentwidgets import (
     CheckBox,
     VBoxLayout,
 )
-from app.models.mod_item_model import FolderItem
-from app.services.thumbnail_service import ThumbnailService
 from app.viewmodels.mod_list_vm import ModListViewModel
 
 
-class FolderGridItemWidget(QWidget):
+class FolderGridItemWidget(CardWidget):
     """
     A self-contained widget for a single item in the foldergrid. It can represent
     either a navigable folder or a final mod item.
     """
 
     # Custom signal to notify the main panel of a selection click
+
     item_selected = pyqtSignal(object)  # Emits the item model
+    doubleClicked = pyqtSignal()  # Emits when the item is double-clicked
+    status_toggled = pyqtSignal(bool)  # Emits the item model when status is toggled
+    bulk_selection_changed = pyqtSignal(bool)
+    paste_requested = pyqtSignal()
 
     def __init__(
         self,
-        item: FolderItem,
+        item_data: dict,
         viewmodel: ModListViewModel,
-        thumbnail_service: ThumbnailService,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
-        self.item = item
+        self.item_data = item_data
         self.view_model = viewmodel
-        self.thumbnail_service = thumbnail_service
 
         self._card_width = 190
         self._image_height = 120
@@ -45,19 +47,19 @@ class FolderGridItemWidget(QWidget):
 
         self._init_ui()
         self._connect_signals()
-        self.set_data(item)
+        self.set_data(self.item_data)
 
     def _init_ui(self):
         """Initializes the UI components of the widget."""
         self.setFixedSize(self._card_width, 180)
 
-        # REVISED: Menggunakan VBoxLayout dari qfluentwidgets
+        # Revised: Using Vboxlayout from QFluentWidgets
+
         main_layout = VBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 8)
         main_layout.setSpacing(0)
 
-        # --- 1. Top Area: Image Container + Overlays ---
-        # ... (bagian ini tidak berubah)
+        # ---1. Top Area: Image Container + Overlays ---
         image_container = QWidget(self)
         image_container.setFixedSize(self._thumb_size)
 
@@ -86,9 +88,11 @@ class FolderGridItemWidget(QWidget):
         self.selection_checkbox.move(8, 8)
         self.selection_checkbox.hide()
 
-        # --- 2. Bottom Area: Info (Name and Status) ---
+        # ---2. Bottom Area: Info (Name and Status) ---
+
         info_area = QWidget(self)
-        # REVISED: Menggunakan VBoxLayout dari qfluentwidgets
+        # Revised: Using Vboxlayout from QFluentWidgets
+
         info_layout = VBoxLayout(info_area)
         info_layout.setContentsMargins(12, 8, 12, 0)
         info_layout.setSpacing(4)
@@ -96,7 +100,8 @@ class FolderGridItemWidget(QWidget):
         self.name_label = BodyLabel()
         self.name_label.setWordWrap(True)
 
-        # ... (sisa layout status tidak berubah)
+        # ... (the remaining status layout has not changed)
+
         status_layout = FlowLayout(isTight=True)
         status_layout.setContentsMargins(0, 4, 0, 0)
         status_layout.setHorizontalSpacing(6)
@@ -117,82 +122,122 @@ class FolderGridItemWidget(QWidget):
         info_layout.addLayout(status_layout)
         info_layout.addStretch(1)
 
-        # --- Assemble Main Layout ---
+        # ---Assemble Main Layout ---
+
         main_layout.addWidget(image_container)
         main_layout.addWidget(info_area, 1)
 
     def _connect_signals(self):
         """Connects internal UI widget signals to their handler methods."""
         # Connect user actions to methods that will call the ViewModel.
-        # e.g., self.status_switch.toggled.connect(self._on_status_toggled)
-        pass
+        self.status_switch.checkedChanged.connect(self._on_status_toggled)
 
-    def set_data(self, item: FolderItem):
+    def set_data(self, item_data: dict):
         """Flow 2.3 & 3.1b: Updates the widget's display with new data."""
-        self.item = item
-        # Initially, this is called with skeleton data.
-        # After hydration, it's called again with the full data.
+        self.item_data = item_data
 
-        # Logic to update UI elements like name, status, etc.
+        self.name_label.setText(self.item_data.get("actual_name", ""))
+        self.pin_icon.setVisible(self.item_data.get("is_pinned", False))
 
-        # Determine which icon/thumbnail to show.
-        if item.is_navigable:
-            # Show a generic folder icon if it's a navigation folder.
-            # pixmap = self.thumbnail_service.get_thumbnail(None, None, 'folder')
-            pass
+        # ---REVISED SECTION FOR STATUS ---
+
+        self.status_switch.blockSignals(True)
+
+        # Now we only use Boolean 'is_enabled' from the data
+
+        is_enabled = self.item_data.get("is_enabled", False)
+        self.status_switch.setChecked(is_enabled)
+        self.status_switch.blockSignals(False)
+        # ---END REVISED SECTION ---
+
+        # ---Logic to show folder icon or mod thumbnail ---
+
+        is_navigable = self.item_data.get("is_navigable")
+        thumbnail_to_load = None
+        default_icon_type = "mod"
+
+        if is_navigable is None:
+            default_icon_type = "folder"
+        elif is_navigable is True:
+            default_icon_type = "folder"
         else:
-            # Request the mod's thumbnail if it's a mod item.
-            # pixmap = self.thumbnail_service.get_thumbnail(item.id, item.preview_images[0] if item.preview_images else None, 'mod')
-            pass
+            image_paths = self.item_data.get("preview_images", [])
+            if image_paths:
+                thumbnail_to_load = image_paths[0]
 
-        # self.thumbnail_label.setPixmap(pixmap)
-        pass
+        # ---Revised Section for Thumbnail ---
+        # Call the method of viewmodel, not direct service
+
+        pixmap = self.view_model.get_thumbnail(
+            item_id=self.item_data.get("id", ""),
+            source_path=thumbnail_to_load,
+            default_type=default_icon_type,
+        )
+        # ---END REVISED SECTION ---
+
+        scaled_pixmap = pixmap.scaled(
+            self._thumb_size,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.thumbnail_label.setPixmap(scaled_pixmap)
 
     def show_processing_state(self, is_processing: bool, text: str = "Processing..."):
         """Flow 3.1b, 4.2: Shows a visual indicator that the item is being processed."""
         # Disables controls and can show an overlay with text on the widget.
-        pass
+        self.setEnabled(not is_processing)
+        if is_processing:
+            self.processing_ring.show()
+        else:
+            self.processing_ring.hide()
 
-    # --- Qt Event Handlers ---
+    # ---Qt Event Handlers ---
 
     def contextMenuEvent(self, event):
         """Flow 4.2, 4.3, 6.3: Creates and shows a context menu on right-click."""
         # Logic to create a menu with "Enable/Disable", "Pin", "Rename", "Delete" actions.
         # Actions are connected directly to ViewModel methods.
+
         pass
 
     def mousePressEvent(self, event):
-        """Flow 5.2: Notifies the main view that this item was selected for preview."""
+        """Flow 5.2: Notifies the main view that this item was item_selected for preview."""
         # Do not emit if it's a navigation folder, as that's handled by double-click.
-        if not self.item.is_navigable:
-            self.item_selected.emit(self.item)
+
+        if not self.item_data.get("is_navigable"):
+            self.item_selected.emit(self.item_data)
         super().mousePressEvent(event)
         pass
 
     def mouseDoubleClickEvent(self, event):
         """Flow 2.3: Handles navigation into a subfolder."""
-        if self.item.is_navigable:
-            self.view_model.load_items(self.item.folder_path)
+        if self.item_data.get("is_navigable"):
+            self.doubleClicked.emit()
         super().mouseDoubleClickEvent(event)
         pass
 
     def showEvent(self, event):
-        """Flow 2.3: Triggers lazy-hydration when the widget becomes visible."""
-        if self.item.is_skeleton:
-            self.view_model.request_item_hydration(self.item.id)
+        """Flow 2.3 Stage 2 Trigger: Triggers lazy-hydration when the widget becomes visible."""
         super().showEvent(event)
-        pass
+        # If the item is a skeleton, request its full data
 
-    # --- Private Slots (Handling UI events) ---
+        if self.item_data.get("is_skeleton", False):
+            item_id = self.item_data.get("id")
+            if item_id:
+                self.view_model.request_item_hydration(item_id)
+
+    # ---Private Slots (Handling UI events) ---
 
     def _on_status_toggled(self):
         """Flow 3.1b: Forwards the status toggle action to the ViewModel."""
-        self.view_model.toggle_item_status(self.item.id)
-        pass
+        item_id = self.item_data.get("id")
+        if item_id:
+            self.view_model.toggle_item_status(item_id)
 
     def _on_selection_changed(self):
         """Flow 3.2: Forwards the selection change to the ViewModel."""
-        # self.view_model.set_item_selected(
+        # self.view_model.set_item_item_selected(
         #    self.item.id, self.selection_checkbox.isChecked()
         # )
+
         pass

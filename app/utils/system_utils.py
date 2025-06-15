@@ -21,3 +21,11 @@ class SystemUtils:
         # This will use the 'send2trash' library for a safe, cross-platform delete.
         # This function will handle its own exceptions and return a success/error dict.
         pass
+
+    @staticmethod
+    def get_initial_name(name: str, length: int = 2) -> str:
+        """Flow 4.2.A: Returns the first 'length' characters of a name."""
+        # This is used to generate initials for items without thumbnails.
+        if not name:
+            return "No Image"
+        return name[:length].upper()

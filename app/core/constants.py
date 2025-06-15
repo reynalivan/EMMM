@@ -38,3 +38,6 @@ CONTEXT_FOLDERGRID: str = "foldergrid"
 
 # --- .ini File Parsing Constants ---
 INI_CONSTANTS_SECTION: str = "Constants"
+
+# --- XXMI Launcher Detection ---
+KNOWN_XXMI_FOLDERS = {"GIMI", "SRMI", "WWMI"}

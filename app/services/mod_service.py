@@ -1,32 +1,342 @@
 # app/services/mod_service.py
+import os
+import json
+import hashlib
+import dataclasses
 from pathlib import Path
+from typing import Tuple
+
+# Import models
+from app.models.mod_item_model import (
+    BaseModItem,
+    ObjectItem,
+    FolderItem,
+    ModType,
+    ModStatus,
+    CharacterObjectItem,
+    GenericObjectItem,
+)
+
+# Import constants for naming rules
+from app.core.constants import (
+    DISABLED_PREFIX_PATTERN,
+    INFO_JSON_NAME,
+    PIN_SUFFIX,
+    CONTEXT_OBJECTLIST,
+    CONTEXT_FOLDERGRID,
+    PROPERTIES_JSON_NAME,
+    DEFAULT_DISABLED_PREFIX,
+)
+from app.utils.logger_utils import logger
+
+# Import other services for dependency injection
+from .database_service import DatabaseService
+from app.utils.image_utils import ImageUtils
 
 
 class ModService:
     """Handles all atomic file system and JSON operations for a single mod item."""
 
-    def __init__(self, database_service, system_utils, image_utils):
+    def __init__(
+        self,
+        database_service: DatabaseService,
+        image_utils: ImageUtils,
+    ):
         # --- Injected Services & Utilities ---
         self.database_service = database_service
-        self.system_utils = system_utils
         self.image_utils = image_utils
 
     # --- Loading & Hydration ---
-    def get_item_skeletons(self, path: Path, context: str) -> dict:
-        """Flow 2.2 & 2.3: Scans a directory to create skeleton models quickly."""
-        # TODO: Implement actual logic
-        return {}
+    def _parse_folder_name(self, folder_name: str) -> Tuple[str, ModStatus, bool]:
+        """
+        A robust helper to parse status and pin state from a folder name.
+        Returns a tuple of (actual_name, status, is_pinned).
+        """
+        # Use regex for robust prefix matching (e.g., 'DISABLED ', 'disabled_')
+        match = DISABLED_PREFIX_PATTERN.match(folder_name)
+        if match:
+            status = ModStatus.DISABLED
+            # Remove the matched prefix part from the name
+            clean_name = folder_name[match.end() :]
+        else:
+            status = ModStatus.ENABLED
+            clean_name = folder_name
 
-    def hydrate_item(self, skeleton_item: object, context: str) -> object:
-        """Flow 2.2 & 2.3: Enriches a skeleton model with data from JSON files."""
-        pass
+        # Check and remove pin suffix
+        is_pinned = clean_name.lower().endswith(PIN_SUFFIX)
+        if is_pinned:
+            clean_name = clean_name[: -len(PIN_SUFFIX)]
+
+        return clean_name.strip(), status, is_pinned
+
+    def get_item_skeletons(self, path: Path, context: str) -> dict:
+        """
+        Flow 2.2: Scans a directory to create skeleton models quickly and robustly.
+        """
+        logger.info(f"Scanning for skeletons in '{path}' with context '{context}'")
+        skeletons = []
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    if not entry.is_dir():
+                        continue
+
+                    # 1. Parse name, status, and pin state using the helper
+                    actual_name, status, is_pinned = self._parse_folder_name(entry.name)
+                    item_path = Path(entry.path)
+
+                    # 2. Generate a stable, unique ID using relative path and SHA1
+                    relative_path = item_path.relative_to(path)
+                    item_id = hashlib.sha1(
+                        relative_path.as_posix().encode("utf-8")
+                    ).hexdigest()
+
+                    # 3. Create the appropriate skeleton model based on context
+                    skeleton: BaseModItem | None = None
+                    if context == CONTEXT_OBJECTLIST:
+                        object_type = ModType.OTHER
+                        # Peek into properties.json just to get the type
+                        try:
+                            props_path = item_path / PROPERTIES_JSON_NAME
+                            if props_path.is_file():
+                                with open(props_path, "r", encoding="utf-8") as f:
+                                    object_type = ModType(
+                                        json.load(f).get("object_type", "Other")
+                                    )
+                        except (json.JSONDecodeError, KeyError, ValueError) as e:
+                            logger.warning(
+                                f"Could not parse object_type for '{actual_name}': {e}. Defaulting to 'Other'."
+                            )
+
+                        # Instantiate the correct skeleton class based on type
+                        skeleton_class = (
+                            CharacterObjectItem
+                            if object_type == ModType.CHARACTER
+                            else GenericObjectItem
+                        )
+                        skeleton = skeleton_class(
+                            id=item_id,
+                            actual_name=actual_name,
+                            folder_path=item_path,
+                            status=status,
+                            is_pinned=is_pinned,
+                            object_type=object_type,
+                        )
+
+                    elif context == CONTEXT_FOLDERGRID:
+                        skeleton = FolderItem(
+                            id=item_id,
+                            actual_name=actual_name,
+                            folder_path=item_path,
+                            status=status,
+                            is_pinned=is_pinned,
+                        )
+
+                    if skeleton:
+                        skeletons.append(skeleton)
+
+            return {"success": True, "items": skeletons, "error": None}
+
+        except FileNotFoundError:
+            msg = f"Invalid path specified for skeleton scan: {path}"
+            logger.error(msg)
+            return {"success": False, "items": [], "error": msg}
+        except PermissionError:
+            msg = f"Permission denied while scanning: {path}"
+            logger.error(msg)
+            return {"success": False, "items": [], "error": msg}
+
+    def hydrate_item(
+        self, skeleton_item: BaseModItem, game_name: str, context: str
+    ) -> BaseModItem:
+        """
+        Flow 2.2 & 2.3: Hydrates a single skeleton item with detailed data.
+        This version is robust and handles all item types correctly.
+        """
+        if not skeleton_item.is_skeleton:
+            return skeleton_item
+
+        logger.debug(
+            f"Hydrating item: {skeleton_item.actual_name} in context: {context}"
+        )
+
+        try:
+            # --- CONTEXT: OBJECTLIST (Character, Weapon, etc.) ---
+            if context == CONTEXT_OBJECTLIST:
+                properties = {}
+                properties_path = skeleton_item.folder_path / PROPERTIES_JSON_NAME
+                try:
+                    with open(properties_path, "r", encoding="utf-8") as f:
+                        properties = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError) as e:
+                    logger.warning(
+                        f"Could not read {PROPERTIES_JSON_NAME} for '{skeleton_item.actual_name}': {e}"
+                    )
+
+                metadata = (
+                    self.database_service.get_metadata_for_object(
+                        game_name, skeleton_item.actual_name
+                    )
+                    or {}
+                )
+
+                data_payload = {
+                    "tags": properties.get("tags", []),
+                    "thumbnail_path": (
+                        skeleton_item.folder_path / p
+                        if (p := properties.get("thumbnail_path"))
+                        else None
+                    ),
+                    "is_skeleton": False,
+                }
+
+                # Add attributes specific to Character or Generic types
+                if isinstance(skeleton_item, CharacterObjectItem):
+                    data_payload.update(
+                        {
+                            "gender": metadata.get("gender"),
+                            "rarity": metadata.get("rarity"),
+                            "element": metadata.get("element"),
+                            "weapon": metadata.get("weapon"),
+                            "region": metadata.get("region"),
+                        }
+                    )
+                elif isinstance(skeleton_item, GenericObjectItem):
+                    data_payload.update(
+                        {
+                            "subtype": metadata.get("subtype"),
+                        }
+                    )
+
+                return dataclasses.replace(skeleton_item, **data_payload)
+
+            # --- CONTEXT: FOLDERGRID (Final Mods or Navigable Folders) ---
+            elif context == CONTEXT_FOLDERGRID:
+                # Type Determination: Check for .ini files
+                has_ini = any(
+                    p.suffix.lower() == ".ini"
+                    for p in skeleton_item.folder_path.iterdir()
+                )
+
+                if not has_ini:
+                    return dataclasses.replace(
+                        skeleton_item, is_navigable=True, is_skeleton=False
+                    )
+
+                # It's a final mod, read info.json
+                info = {}
+                info_path = skeleton_item.folder_path / INFO_JSON_NAME
+                try:
+                    with open(info_path, "r", encoding="utf-8") as f:
+                        info = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    logger.warning(
+                        f"info.json not found for mod '{skeleton_item.actual_name}'."
+                    )
+
+                image_paths = [
+                    skeleton_item.folder_path / img
+                    for img in info.get("image_paths", [])
+                ]
+
+                return dataclasses.replace(
+                    skeleton_item,
+                    author=info.get("author"),
+                    description=info.get("description", ""),
+                    tags=info.get("tags", []),
+                    preview_images=image_paths,
+                    is_safe=info.get("is_safe", False),
+                    preset_name=info.get("preset_name"),
+                    is_navigable=False,
+                    is_skeleton=False,
+                )
+
+        except PermissionError:
+            logger.error(
+                f"Permission denied while hydrating: {skeleton_item.folder_path}"
+            )
+
+        # Fallback if something goes wrong
+        logger.warning(
+            f"Hydration failed for '{skeleton_item.actual_name}'. Returning skeleton."
+        )
+        return skeleton_item
 
     # --- Core Item Actions ---
-    def toggle_status(self, item: object, target_status: object = None) -> dict:
-        """Flow 3.1 & 3.2: Enables/disables a mod by renaming its folder."""
-        # target_status is used for bulk actions to avoid toggling.
-        # TODO: Implement actual toggle logic
-        return {}
+    def toggle_status(
+        self, item: BaseModItem, target_status: ModStatus | None = None
+    ) -> dict:
+        """
+        Flow 3.1: Enables/disables a mod by renaming its folder.
+        This is a core file system operation.
+
+        Parameters
+        ----------
+        item : BaseModItem
+            The mod item object to be toggled.
+        target_status : ModStatus | None, optional
+            If provided, forces the status to ENABLED or DISABLED (for bulk actions).
+            If None, the status is inverted (for single toggles).
+
+        Returns
+        -------
+        dict
+            A dictionary indicating success or failure.
+            On success: {"success": True, "data": {"new_path": Path, "new_status": ModStatus}}
+            On failure: {"success": False, "error": "Error message"}
+        """
+        try:
+            # 1. Determine the new status
+            if target_status is not None:
+                # This path is for bulk actions. If status is already correct, do nothing.
+                if item.status == target_status:
+                    return {
+                        "success": True,
+                        "data": {
+                            "new_path": item.folder_path,
+                            "new_status": item.status,
+                        },
+                    }
+                new_status = target_status
+            else:
+                # This path is for single toggles. Invert the current status.
+                new_status = (
+                    ModStatus.DISABLED
+                    if item.status == ModStatus.ENABLED
+                    else ModStatus.ENABLED
+                )
+
+            # 2. Construct the new folder name
+            prefix = DEFAULT_DISABLED_PREFIX if new_status == ModStatus.DISABLED else ""
+            suffix = PIN_SUFFIX if item.is_pinned else ""
+            new_name = f"{prefix}{item.actual_name}{suffix}"
+
+            # Use pathlib's .with_name() for a safe way to get the new path
+            new_path = item.folder_path.with_name(new_name)
+
+            logger.info(f"Renaming '{item.folder_path.name}' to '{new_path.name}'")
+
+            # 3. Perform the rename operation
+            os.rename(item.folder_path, new_path)
+
+            # 4. Return success with the new data
+            return {
+                "success": True,
+                "data": {"new_path": new_path, "new_status": new_status},
+            }
+
+        except FileExistsError:
+            error_msg = f"Folder name conflict: '{new_path.name}' already exists."
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+        except PermissionError:
+            error_msg = "Permission denied. The folder or its contents may be in use by another program."
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during rename: {e}"
+            logger.critical(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}
 
     def toggle_pin_status(self, item: object) -> dict:
         """Flow 6.3: Pins/unpins a mod by renaming its folder with a suffix."""
