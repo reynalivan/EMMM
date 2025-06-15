@@ -41,8 +41,8 @@ class FolderGridItemWidget(CardWidget):
         self.item_data = item_data
         self.view_model = viewmodel
 
-        self._card_width = 190
-        self._image_height = 120
+        self._card_width = 148
+        self._image_height = 185
         self._thumb_size = QSize(self._card_width, self._image_height)
 
         self._init_ui()
@@ -51,7 +51,7 @@ class FolderGridItemWidget(CardWidget):
 
     def _init_ui(self):
         """Initializes the UI components of the widget."""
-        self.setFixedSize(self._card_width, 180)
+        self.setFixedSize(self._card_width, self._image_height + 86)
 
         # Revised: Using Vboxlayout from QFluentWidgets
 
@@ -91,7 +91,6 @@ class FolderGridItemWidget(CardWidget):
         # ---2. Bottom Area: Info (Name and Status) ---
 
         info_area = QWidget(self)
-        # Revised: Using Vboxlayout from QFluentWidgets
 
         info_layout = VBoxLayout(info_area)
         info_layout.setContentsMargins(12, 8, 12, 0)
@@ -120,10 +119,10 @@ class FolderGridItemWidget(CardWidget):
 
         info_layout.addWidget(self.name_label)
         info_layout.addLayout(status_layout)
+        info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         info_layout.addStretch(1)
 
         # ---Assemble Main Layout ---
-
         main_layout.addWidget(image_container)
         main_layout.addWidget(info_area, 1)
 
