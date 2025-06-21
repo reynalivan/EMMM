@@ -44,7 +44,7 @@ class ThumbnailSliderWidget(QWidget):
         self.setAcceptDrops(True)
 
         self._init_ui()
-        # self._connect_signals() # To be implemented later
+        self._connect_signals()
 
     def _init_ui(self):
         """Initializes the UI components of the widget."""
@@ -55,8 +55,8 @@ class ThumbnailSliderWidget(QWidget):
         self.stack = QStackedWidget(self)
 
         # --- 1. Main View with FlipView and Controls ---
-        main_content_widget = QWidget()
-        content_layout = QVBoxLayout(main_content_widget)
+        self.main_content_widget = QWidget()
+        content_layout = QVBoxLayout(self.main_content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(8)
 
@@ -65,16 +65,16 @@ class ThumbnailSliderWidget(QWidget):
         self.flip_view.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-
+        # set image object fit to ensure images are resized properly
+        self.flip_view.setObjectName("thumbnailSlider")
+        self.flip_view.setFixedWidth(240)
+        self.flip_view.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.index_label = CaptionLabel("0 / 0")
         # Control bar for actions
         control_bar_layout = QHBoxLayout()
         control_bar_layout.setContentsMargins(5, 0, 5, 0)
-
-        self.index_label = CaptionLabel("0 / 0")
-
-        # Spacer to push buttons to the right
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        control_bar_layout.setSpacing(5)
+        control_bar_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self.add_button = ToolButton(FluentIcon.ADD, self)
         self.add_button.setToolTip("Add image from file...")
@@ -88,14 +88,13 @@ class ThumbnailSliderWidget(QWidget):
         self.clear_all_button = ToolButton(FluentIcon.REMOVE, self)
         self.clear_all_button.setToolTip("Remove all images")
 
-        control_bar_layout.addWidget(self.index_label)
-        control_bar_layout.addWidget(spacer)
         control_bar_layout.addWidget(self.add_button)
         control_bar_layout.addWidget(self.paste_button)
         control_bar_layout.addWidget(self.remove_button)
         control_bar_layout.addWidget(self.clear_all_button)
 
         content_layout.addWidget(self.flip_view, 1)
+        content_layout.addWidget(self.index_label)
         content_layout.addLayout(control_bar_layout)
 
         # --- 2. Empty State View ---
@@ -106,7 +105,7 @@ class ThumbnailSliderWidget(QWidget):
         self.empty_label.setStyleSheet("color: grey;")
 
         # --- Assemble Stack ---
-        self.stack.addWidget(main_content_widget)
+        self.stack.addWidget(self.main_content_widget)
         self.stack.addWidget(self.empty_label)
 
         main_layout.addWidget(self.stack)
@@ -117,10 +116,30 @@ class ThumbnailSliderWidget(QWidget):
     # --- Methods to be implemented later ---
 
     def _connect_signals(self):
-        pass
+        self.flip_view.currentIndexChanged.connect(self._update_index_label)
 
     def set_image_paths(self, image_paths: list[Path]):
-        pass
+        """Menerima daftar path gambar dan menampilkannya di FlipView."""
+        self._image_paths = image_paths or []
+
+        # Hapus gambar lama sebelum menambahkan yang baru
+        self.flip_view.clear()
+
+        if not self._image_paths:
+            self.stack.setCurrentWidget(self.empty_label)
+            return
+
+        self.stack.setCurrentWidget(self.main_content_widget)
+
+        # Tambahkan gambar-gambar baru ke FlipView
+        self.flip_view.addImages([str(p) for p in self._image_paths])
+        self._update_index_label()
+
+    def _update_index_label(self):
+        """Memperbarui label '1 / 5'."""
+        total = len(self._image_paths)
+        current = self.flip_view.currentIndex() + 1 if total > 0 else 0
+        self.index_label.setText(f"{current} / {total}")
 
     def dropEvent(self, event):
         pass

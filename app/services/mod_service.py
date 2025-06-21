@@ -426,11 +426,44 @@ class ModService:
         return {}
 
     # --- JSON & Metadata Updates ---
-    def update_item_properties(self, item: object, data_to_update: dict) -> dict:
-        """Flow 5.2, 6.2.A: Updates key-value pairs in an item's JSON file."""
-        # Central method for editing description, author, tags, preset_name, etc.
-        # TODO: Implement actual update logic
-        return {}
+    def update_item_properties(self, item: FolderItem, data_to_update: dict) -> dict:
+        """
+        Flow 5.2, 6.2.A: Updates key-value pairs in an item's JSON file.
+        This is a generic method for editing description, author, tags, etc.
+        """
+        if not isinstance(item, FolderItem):
+            return {"success": False, "error": "Invalid item type for property update."}
+
+        info_path = item.folder_path / INFO_JSON_NAME
+        info = {}
+
+        # Read existing data first
+        if info_path.is_file():
+            try:
+                with open(info_path, "r", encoding="utf-8") as f:
+                    info = json.load(f)
+            except json.JSONDecodeError:
+                logger.warning(
+                    f"Corrupted {INFO_JSON_NAME} for '{item.actual_name}'. It will be overwritten."
+                )
+
+        # Update the dictionary in memory with new data
+        info.update(data_to_update)
+
+        # Write the updated dictionary back to the file
+        try:
+            self._write_json(info_path, info)
+
+            # Create a new immutable model with the updated data
+            new_item = dataclasses.replace(item, **data_to_update)
+
+            logger.info(f"Successfully updated properties for '{item.actual_name}'")
+            return {"success": True, "data": new_item}
+
+        except Exception as e:
+            error_msg = f"Failed to save properties for '{item.actual_name}': {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}
 
     def _write_json(self, json_path: Path, data: dict):
         """

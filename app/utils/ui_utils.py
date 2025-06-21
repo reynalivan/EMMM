@@ -1,7 +1,7 @@
 # app/utils/ui_utils.py
 from PyQt6.QtWidgets import QWidget, QFrame, QMessageBox
 
-from qfluentwidgets import InfoBar, InfoBarPosition
+from qfluentwidgets import InfoBar, InfoBarPosition, Dialog
 
 
 class UiUtils:
@@ -14,6 +14,39 @@ class UiUtils:
         """Creates a standardized confirmation dialog (e.g., for deletes or overwrites)."""
         # Returns True if the user clicks the affirmative button (Yes/OK), otherwise False.
         return True  # Placeholder for actual dialog logic
+
+    # ADD THIS NEW STATIC METHOD
+    @staticmethod
+    def show_confirm_dialog(
+        parent: QWidget, title: str, content: str, yes_text: str, no_text: str
+    ) -> bool:
+        """
+        Creates and shows a fluent confirmation dialog with Yes/No buttons.
+
+        Parameters
+        ----------
+        parent : QWidget
+            The parent widget for the dialog.
+        title : str
+            The title of the dialog window.
+        content : str
+            The main message/question for the user.
+
+        Returns
+        -------
+        bool
+            True if the user clicked Yes/OK, False otherwise.
+        """
+        dialog = Dialog(title, content, parent)
+        dialog.yesButton.setText(yes_text or "Confirm")
+        dialog.cancelButton.setText(no_text or "Cancel")
+
+        # Tombol Yes/OK akan membuat exec() mengembalikan True
+        # Tombol No/Cancel/menutup window akan membuat exec() mengembalikan False
+        if dialog.exec():
+            return True
+        else:
+            return False
 
     @staticmethod
     def show_toast(

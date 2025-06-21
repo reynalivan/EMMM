@@ -1,6 +1,7 @@
 # App/views/components/foldergrid widget.py
 
 from PyQt6.QtCore import pyqtSignal, QSize, Qt
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QWidget
 from qfluentwidgets import (
     CardWidget,
@@ -9,6 +10,7 @@ from qfluentwidgets import (
     FluentIcon,
     IconWidget,
     IndeterminateProgressRing,
+    RoundMenu,
     SwitchButton,
     FlowLayout,
     CheckBox,
@@ -110,8 +112,8 @@ class FolderGridItemWidget(CardWidget):
         self.pin_icon.hide()
 
         self.status_switch = SwitchButton(self)
-        self.status_switch.setOnText("On")
-        self.status_switch.setOffText("Off")
+        self.status_switch.setOnText("Enabled")
+        self.status_switch.setOffText("Disabled")
         self.status_switch.setToolTip("Toggle mod status")
 
         status_layout.addWidget(self.pin_icon)
@@ -182,11 +184,32 @@ class FolderGridItemWidget(CardWidget):
     # ---Qt Event Handlers ---
 
     def contextMenuEvent(self, event):
-        """Flow 4.2, 4.3, 6.3: Creates and shows a context menu on right-click."""
-        # Logic to create a menu with "Enable/Disable", "Pin", "Rename", "Delete" actions.
-        # Actions are connected directly to ViewModel methods.
+        """Creates and shows a context menu on right-click."""
+        menu = RoundMenu(parent=self)
 
-        pass
+        # Aksi di sini bisa berbeda, karena kita sudah punya SwitchButton
+        # Tapi "Open in Explorer" sangat relevan
+        open_folder_action = QAction(
+            FluentIcon.FOLDER.icon(), "Open in File Explorer", self
+        )
+        open_folder_action.triggered.connect(
+            lambda: self.view_model.open_in_explorer(self.item_data.get("id") or "")
+        )
+        menu.addAction(open_folder_action)
+
+        menu.addSeparator()
+
+        pin_action_text = "Unpin" if self.item_data.get("is_pinned") else "Pin"
+        pin_action = QAction(FluentIcon.PIN.icon(), pin_action_text, self)
+        menu.addAction(pin_action)
+
+        rename_action = QAction(FluentIcon.EDIT.icon(), "Rename...", self)
+        menu.addAction(rename_action)
+
+        delete_action = QAction(FluentIcon.DELETE.icon(), "Delete", self)
+        menu.addAction(delete_action)
+
+        menu.exec(event.globalPos())
 
     def mousePressEvent(self, event):
         """Flow 5.2: Notifies the main view that this item was item_selected for preview."""

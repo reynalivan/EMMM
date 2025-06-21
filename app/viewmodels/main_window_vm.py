@@ -248,6 +248,11 @@ class MainWindowViewModel(QObject):
             self._on_foldergrid_item_modified
         )
 
+        # Flow 2.3 Trigger B: An item in the object list was selected
+        self.preview_panel_vm.item_metadata_saved.connect(
+            self.foldergrid_vm.update_item_in_list
+        )
+
     def _on_active_object_modified(self, new_object_item: ObjectItem):
         """
         Handles the domino effect when an active object is modified (e.g., toggled).
@@ -358,12 +363,15 @@ class MainWindowViewModel(QObject):
         """
         # Check if the preview panel is displaying something and if the IDs match
         if (
-            self.preview_panel_vm.current_item
-            and self.preview_panel_vm.current_item.id == modified_item.id
+            self.preview_panel_vm.current_item_model
+            and self.preview_panel_vm.current_item_model.id == modified_item.id
         ):
 
             logger.info(
                 f"Currently previewed item '{modified_item.actual_name}' was modified. Updating preview."
             )
             # If it matches, forward the updated model object to preview_panel_vm
+            logger.info(
+                f"Currently previewed item '{modified_item.actual_name}' was modified. Updating preview."
+            )
             self.preview_panel_vm.update_view_for_item(modified_item)

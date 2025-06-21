@@ -1,10 +1,19 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QWidget, QSplitter, QHBoxLayout, QVBoxLayout, QFrame
+from PyQt6.QtWidgets import (
+    QSizePolicy,
+    QWidget,
+    QSplitter,
+    QHBoxLayout,
+    QVBoxLayout,
+    QFrame,
+)
+from app.utils import ui_utils
 from app.utils.logger_utils import logger
 from qfluentwidgets import (
     FluentWindow,
     InfoBar,
     InfoBarPosition,
+    NavigationItemPosition,
     TitleLabel,
     ComboBox,
     SwitchButton,
@@ -14,6 +23,8 @@ from qfluentwidgets import (
 
 # Import ViewModels
 
+from app.utils.ui_utils import UiUtils
+from app.viewmodels import preview_panel_vm
 from app.viewmodels.main_window_vm import MainWindowViewModel
 from app.viewmodels.settings_vm import SettingsViewModel
 
@@ -51,106 +62,113 @@ class MainWindow(FluentWindow):
         # Flow 1.1: Trigger the initial data loading sequence after setup.
         self.main_window_vm.start_initial_load()
 
-    def _init_ui(self):
-        """Initializes the main UI layout, toolbars, and panels."""
+    def _init_ui(self) -> None:
+        """Build window layout – responsive header + non-overlapping panels."""
 
-        # ---Window Settings ---
+        # ---------- window ----------
         self.setWindowTitle("Mods Manager")
-        self.setMinimumSize(1324, 760)
+        self.resize(1440, 760)  # let min-sizes below handle tight cases
+        self.setMinimumSize(960, 600)
 
-        # ---Create Panels ---
-        # As per the new architecture, MainWindow creates the panels and injects the child VMs.
-        self.object_list_panel = ObjectListPanel(
-            viewmodel=self.main_window_vm.objectlist_vm,
-        )
-        self.folder_grid_panel = FolderGridPanel(
-            viewmodel=self.main_window_vm.foldergrid_vm
-        )
-        self.preview_panel = PreviewPanel(
-            viewmodel=self.main_window_vm.preview_panel_vm,
-        )
+        # ---------- create panels ----------
+        self.object_list_panel = ObjectListPanel(self.main_window_vm.objectlist_vm)
+        self.folder_grid_panel = FolderGridPanel(self.main_window_vm.foldergrid_vm)
+        self.preview_panel = PreviewPanel(self.main_window_vm.preview_panel_vm)
 
-        # Apply size constraints from the old code
-        self.object_list_panel.setMaximumWidth(380)
+        # give panels flexible policies – let splitter decide
+        for p in (self.object_list_panel, self.folder_grid_panel, self.preview_panel):
+            p.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        # reasonable minimum widths so they can still shrink on very small window
         self.object_list_panel.setMinimumWidth(284)
-        self.preview_panel.setMaximumWidth(380)
+        self.object_list_panel.setMaximumWidth(284)
         self.preview_panel.setMinimumWidth(276)
 
-        # ---Header /Toolbar ---
+        # ---------- header (responsive) ----------
         self.header_widget = QWidget(self)
-        header_layout = QHBoxLayout(self.header_widget)
-        header_layout.setContentsMargins(10, 5, 10, 5)
-        header_layout.setSpacing(10)
+        hl = QHBoxLayout(self.header_widget)
+        hl.setContentsMargins(12, 6, 12, 6)
+        hl.setSpacing(0)
 
-        # Left side of header
+        # left group
+        left = QHBoxLayout()
+        left.setSpacing(10)
+
         self.title_label = TitleLabel("EMM Manager")
         self.gamelist_combo = ComboBox()
         self.gamelist_combo.setPlaceholderText("Select Game")
-        self.gamelist_combo.setMinimumWidth(180)
-        self.gamelist_combo.setEnabled(False)
+        self.gamelist_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
 
-        self.safe_mode_switch = SwitchButton(text="Safe Mode")
+        self.safe_mode_switch = SwitchButton()
         self.safe_mode_switch.setOnText("Safe Mode")
         self.safe_mode_switch.setOffText("Safe Mode")
 
-        header_layout.addWidget(self.title_label)
-        header_layout.addSpacing(20)
-        header_layout.addWidget(self.gamelist_combo)
-        header_layout.addWidget(self.safe_mode_switch)
-        header_layout.addStretch(1)  # Push subsequent widgets to the right
+        left.addWidget(self.title_label)
+        left.addSpacing(20)
+        left.addWidget(self.gamelist_combo)
+        left.addWidget(self.safe_mode_switch)
 
-        # Right side of header (Action Buttons)
-        self.refresh_button = PushButton("Refresh")
-        self.refresh_button.setIcon(FluentIcon.SYNC)
+        # right group
+        right = QHBoxLayout()
+        right.setSpacing(6)
 
-        self.settings_button = PushButton("Settings")
-        self.settings_button.setIcon(FluentIcon.SETTING)
+        self.refresh_button = PushButton(FluentIcon.SYNC, "Refresh")
+        self.settings_button = PushButton(FluentIcon.SETTING, "Settings")
+        self.play_button = PushButton(FluentIcon.PLAY, "Play")
+        self.play_button.setEnabled(False)
 
-        self.play_button = PushButton("Play")
-        self.play_button.setIcon(FluentIcon.PLAY)
-        self.play_button.setEnabled(False)  # Disabled until a game is active
+        for btn in (self.refresh_button, self.settings_button, self.play_button):
+            btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+            btn.setMinimumWidth(96)  # label still readable, but shrinks if needed
 
-        header_layout.addWidget(self.refresh_button)
-        header_layout.addWidget(self.settings_button)
-        header_layout.addWidget(self.play_button)
+        right.addWidget(self.refresh_button)
+        right.addWidget(self.settings_button)
+        right.addWidget(self.play_button)
 
-        # ---Main Content Area (Resizable Panels) ---
+        # assemble header
+        hl.addLayout(left)
+        hl.addStretch(1)
+        hl.addLayout(right)
+
+        # ---------- splitter ----------
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.addWidget(self.object_list_panel)
-        self.splitter.addWidget(self.folder_grid_panel)
-        self.splitter.addWidget(self.preview_panel)
+        self.splitter.setHandleWidth(4)
+        self.splitter.setChildrenCollapsible(False)  # prevent accidental overlap
 
-        # Set initial proportions for the panels
-        self.splitter.setStretchFactor(0, 1)  # Object List
-        self.splitter.setStretchFactor(1, 4)  # Folder Grid
-        self.splitter.setStretchFactor(2, 1)  # Preview Panel
+        self.splitter.addWidget(self.object_list_panel)  # idx 0
+        self.splitter.addWidget(self.folder_grid_panel)  # idx 1
+        self.splitter.addWidget(self.preview_panel)  # idx 2
 
-        # ---Combine Header and Splitter into the main layout ---
-        central_widget = QWidget()
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        main_layout.addWidget(self.header_widget)
+        self.splitter.setStretchFactor(0, 2)  # list
+        self.splitter.setStretchFactor(1, 4)  # grid (main work area)
+        self.splitter.setStretchFactor(2, 3)  # preview
 
-        # Add a separator line
+        # ---------- main layout ----------
+        central = QWidget()
+        vbox = QVBoxLayout(central)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
+        vbox.addWidget(self.header_widget)
+
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
+        line.setStyleSheet("border-top:1px solid rgba(255,255,255,0.1);")
+        vbox.addWidget(line)
 
-        # A subtle line color for dark theme
-        line.setStyleSheet("border-top: 1px solid rgba(255, 255, 255, 0.1);")
+        vbox.addWidget(self.splitter, 1)  # occupy remaining space
 
-        main_layout.addWidget(line)
-        main_layout.addWidget(
-            self.splitter, 1
-        )  # The '1' makes the splitter take all available space
-
-        # Set the central widget for the FluentWindow
-        central_widget.setObjectName("mainCentralWidget")
-        self.addSubInterface(central_widget, FluentIcon.APPLICATION, self.windowTitle())
-
-        # Navigate to the created interface
-        self.navigationInterface.setCurrentItem(central_widget.objectName())
+        # ---------- navigation (FluentWindow) ----------
+        central.setObjectName("mainCentralWidget")
+        self.addSubInterface(
+            central,
+            FluentIcon.APPLICATION,
+            self.windowTitle(),
+            NavigationItemPosition.TOP,
+        )
+        self.navigationInterface.setCurrentItem(central.objectName())
 
     def _bind_view_models(self):
         """Connects signals and slots between this main view and its viewmodels."""
@@ -176,6 +194,9 @@ class MainWindow(FluentWindow):
         # When the item in the panel is clicked, immediately update preview_panel_vm
         self.folder_grid_panel.item_selected.connect(
             self.main_window_vm.preview_panel_vm.set_current_item
+        )
+        self.main_window_vm.preview_panel_vm.unsaved_changes_prompt_requested.connect(
+            self._on_preview_unsaved_changes
         )
 
     def _on_toast_requested(
@@ -244,21 +265,17 @@ class MainWindow(FluentWindow):
         logger.info("Settings dialog requested.")
 
         # 1. Check if the main_window_vm has a valid config.
-
         if self.main_window_vm.config is None:
             logger.warning("No config available to load into SettingsDialog.")
             return
 
         # 2. Create the dialog instance, passing the ViewModel
-
         dialog = SettingsDialog(viewmodel=self.settings_vm, parent=self)
 
         # 3. Load the current config into the dialog's ViewModel
-
         self.settings_vm.load_current_config(self.main_window_vm.config)
 
         # 4. Execute the dialog and check the result
-
         if dialog.exec():
             # This block runs only if the user clicks "Save" AND
             # the save operation in the ViewModel is successful.
@@ -268,8 +285,22 @@ class MainWindow(FluentWindow):
 
         pass
 
-    def closeEvent(self, event):
-        # ... This logic remains the same ...
+    def _on_preview_unsaved_changes(self, context: dict):
+        """
+        Flow 5.2 Part A: Prompts the user to confirm discarding unsaved changes.
+        """
+        title = "Unsaved Changes"
+        content = "You have unsaved changes. Discard them and continue?"
+        yes_text = "Yes, Discard"
+        cancel_text = "Cancel"
 
+        if UiUtils.show_confirm_dialog(self, title, content, yes_text, cancel_text):
+            next_item_data = context.get("next_item_data")
+            self.main_window_vm.preview_panel_vm.discard_changes_and_proceed(
+                next_item_data
+            )
+            return
+
+    def closeEvent(self, event):
         super().closeEvent(event)
         pass

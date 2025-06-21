@@ -70,9 +70,7 @@ class ModListViewModel(QObject):
     ):
         super().__init__()
         # ---Injected Services ---
-
         self.context = context  # 'objectlist' or 'foldergrid'
-
         self.mod_service = mod_service
         self.workflow_service = workflow_service
         self.database_service = database_service
@@ -80,7 +78,6 @@ class ModListViewModel(QObject):
         self.system_utils = system_utils
 
         # ---Internal State ---
-
         self.master_list = []
         self.displayed_items = []
         self.selected_item_ids = set()
@@ -200,7 +197,35 @@ class ModListViewModel(QObject):
 
     def update_item_in_list(self, updated_item):
         """Flow 5.1: Updates a single item in the master list and refreshes the view."""
-        pass
+        if not updated_item:
+            return
+
+        logger.info(
+            f"Receiving external update for item '{updated_item.actual_name}' in context '{self.context}'"
+        )
+        try:
+            # Change items on Master List
+            master_idx = next(
+                i
+                for i, item in enumerate(self.master_list)
+                if item.id == updated_item.id
+            )
+            self.master_list[master_idx] = updated_item
+
+            # Change also on the displayed list
+            display_idx = next(
+                i
+                for i, item in enumerate(self.displayed_items)
+                if item.id == updated_item.id
+            )
+            self.displayed_items[display_idx] = updated_item
+
+            # Ask UI to update a specific widget
+            self.item_needs_update.emit(self._create_dict_from_item(updated_item))
+        except StopIteration:
+            logger.warning(
+                f"Item {updated_item.id} to update was not found in the list."
+            )
 
     # ---Filtering and Searching ---
 
@@ -273,8 +298,27 @@ class ModListViewModel(QObject):
         pass
 
     def open_in_explorer(self, item_id: str):
-        """Flow 4.3: Opens the item's folder in the system file explorer."""
-        pass
+        """
+        Flow 4.3: Finds the item by its ID and requests SystemUtils
+        to open its folder path in the system's file explorer.
+        """
+        logger.info(f"Request received to open item '{item_id}' in explorer.")
+
+        # 1. Find the item model in the master list using its ID.
+        item = next((i for i in self.master_list if i.id == item_id), None)
+
+        if not item:
+            logger.error(
+                f"Cannot open in explorer: Item with id '{item_id}' not found."
+            )
+            self.toast_requested.emit("Could not find the selected item.", "error")
+            return
+
+        # 2. Get the folder path from the item model.
+        path_to_open = item.folder_path
+
+        # 3. Delegate the action to the utility class.
+        self.system_utils.open_path_in_explorer(path_to_open)
 
     # ---Selection Management ---
 

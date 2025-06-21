@@ -167,14 +167,11 @@ class ObjectListItemWidget(QWidget):
         menu = RoundMenu(parent=self)
 
         # ---Enable/dynamic disable/disable action ---
-
         is_enabled = self.item_data.get("is_enabled", False)
         action_text = "Disable" if is_enabled else "Enable"
-        action_icon = FluentIcon.CANCEL if is_enabled else FluentIcon.ACCEPT
+        action_icon = FluentIcon.REMOVE_FROM if is_enabled else FluentIcon.ACCEPT
 
         toggle_action = QAction(action_icon.icon(), action_text, self)
-        # Connect this action directly to the method in the viewmodel
-
         toggle_action.triggered.connect(
             lambda: self.view_model.toggle_item_status(
                 self.item_data.get("id") or "false"
@@ -184,7 +181,14 @@ class ObjectListItemWidget(QWidget):
 
         menu.addSeparator()
 
-        # ---Other actions (can be implemented later) ---
+        # Open in File Explorer action
+        open_folder_action = QAction(
+            FluentIcon.FOLDER.icon(), "Open in File Explorer", self
+        )
+        open_folder_action.triggered.connect(
+            lambda: self.view_model.open_in_explorer(self.item_data.get("id") or "")
+        )
+        menu.addAction(open_folder_action)
 
         pin_action_text = "Unpin" if self.item_data.get("is_pinned") else "Pin"
         pin_action = QAction(FluentIcon.PIN.icon(), pin_action_text, self)
@@ -236,21 +240,21 @@ class ObjectListItemWidget(QWidget):
     # ---Event Handlers for Hover Logic ---
 
     def enterEvent(self, event):
-        """Dipanggil saat kursor mouse masuk ke area widget."""
+        """Called when the mouse cursor entered the widget area."""
         super().enterEvent(event)
         self._is_hovering = True
         self._update_checkbox_visibility()
 
     def leaveEvent(self, event):
-        """Dipanggil saat kursor mouse meninggalkan area widget."""
+        """Called when the mouse cursor left the widget area."""
         super().leaveEvent(event)
         self._is_hovering = False
         self._update_checkbox_visibility()
 
     def _update_checkbox_visibility(self):
         """
-        Logika utama untuk menampilkan/menyembunyikan checkbox.
-        Checkbox akan tampil jika di-hover ATAU jika sudah dicentang.
+        The main logic to display/hide the checkbox.
+        Checkbox will appear if hovers or if it has been checked.
         """
         if self._is_hovering or self.selection_checkbox.isChecked():
             self.selection_checkbox.show()

@@ -148,7 +148,11 @@ def main():
         system_utils=system_utils,
     )
     preview_panel_vm = PreviewPanelViewModel(
-        mod_service=mod_service, ini_parsing_service=ini_parsing_service
+        mod_service=mod_service,
+        ini_parsing_service=ini_parsing_service,
+        thumbnail_service=thumbnail_service,
+        foldergrid_vm=foldergrid_vm,
+        sys_utils=system_utils,
     )
     settings_vm = SettingsViewModel(
         config_service=config_service,

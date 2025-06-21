@@ -189,7 +189,6 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         # self.delete_preset_button.clicked.connect(self._on_delete_preset)
 
         # Connect Save and Cancel buttons
-
         self.save_button.clicked.connect(self._on_save)
         self.cancel_button.clicked.connect(self.reject)
 
@@ -206,18 +205,11 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         context = params.get("context", {})
 
         # Using dialogue from QFluentwidgets as in your reference
-
-        w = Dialog(title, text, self)
-
-        # W.ADD Cancel Button () # If you want an explicit cancel button
-
-        if w.exec():
+        if UiUtils.show_confirm_dialog(self, title, text, "Yes", "No"):
             # Users press "yes" or "ok"
-
             self.view_model.on_confirmation_result(True, context)
         else:
             # The user presses "no", "cancel", or closes dialogue
-
             self.view_model.on_confirmation_result(False, context)
 
     def _on_toast_requested(self, message: str, level: str):

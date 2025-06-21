@@ -1,6 +1,14 @@
 # app/views/sections/preview_panel.py
-from PyQt6.QtCore import Qt
+from pathlib import Path
+from this import s
+from typing import List
+from PyQt6.QtCore import QSignalBlocker, Qt
+from collections import defaultdict
+from app.services.ini_parsing_service import KeyBinding
+from app.views.components.common.ini_file_group_widget import IniFileGroupWidget
+from app.views.components.common.keybinding_widget import KeyBindingWidget
 from PyQt6.QtWidgets import (
+    QScrollArea,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -10,8 +18,9 @@ from PyQt6.QtWidgets import (
 
 from qfluentwidgets import (
     CaptionLabel,
-    ScrollArea,
-    TitleLabel,
+    SingleDirectionScrollArea,
+    LineEdit,
+    StrongBodyLabel,
     SubtitleLabel,
     BodyLabel,
     TextEdit,
@@ -19,7 +28,9 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     FluentIcon,
-    VBoxLayout as FluentVBoxLayout,  # Use fluent layout
+    VBoxLayout,
+    GroupHeaderCardWidget,
+    ExpandGroupSettingCard,
 )
 
 # Import ViewModels and Services for type hinting and dependency injection
@@ -30,6 +41,7 @@ from app.services.thumbnail_service import ThumbnailService
 from app.views.components.thumbnail_widget import ThumbnailSliderWidget
 
 # from app.views.components.keybinding_widget import KeyBindingWidget # To be created later
+PANEL_MARGIN = (12, 12, 12, 12)  # uniform inner padding
 
 
 class PreviewPanel(QWidget):
@@ -42,151 +54,261 @@ class PreviewPanel(QWidget):
     ):
         super().__init__(parent)
         self.view_model = viewmodel
-        self._keybinding_widgets = []  # To hold created KeyBindingWidget instances
 
+        self._ini_group_widgets = []
         self._init_ui()
-        # self._bind_view_models() # To be implemented later
-        pass
+        self._bind_view_models()
 
     def _init_ui(self):
-        """Initializes all UI components for the preview panel."""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        self.setStyleSheet("QLineEdit,QTextEdit,QComboBox,QSpinBox{min-width:0;}")
 
-        # Stack to switch between content view and empty view
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(0)
+
+        # Stack: empty view / scrolling view
         self.stack = QStackedWidget(self)
-        main_layout.addWidget(self.stack)
+        root.addWidget(self.stack)
 
-        # --- 1. Main Content View (inside a ScrollArea) ---
-        self.scroll_area = ScrollArea(self)
+        # ── scrolling area (vertical-only) ───────────────────────────────────────
+        self.scroll_area = SingleDirectionScrollArea(
+            orient=Qt.Orientation.Vertical
+        )  # ← fluent class
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(self.scroll_area.Shape.NoFrame)
-        self.scroll_area.setStyleSheet(
-            "ScrollArea { background: transparent; border: none; }"
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
 
-        content_widget = QWidget()
-        content_layout = FluentVBoxLayout(content_widget)  # Use fluent layout
-        content_layout.setContentsMargins(15, 15, 15, 15)
-        content_layout.setSpacing(12)
+        # main content widget
+        view = QWidget()
+        view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        vbox = QVBoxLayout(view)
+        vbox.setContentsMargins(*PANEL_MARGIN)
+        vbox.setSpacing(16)
 
-        self.scroll_area.setWidget(content_widget)
-
-        # -- Header: Title and Status Switch --
-        header_layout = QHBoxLayout()
-        self.title_label = TitleLabel("No Mod Selected")
+        # ── header ───────────────────────────────────────────────────────────────
+        header = QVBoxLayout()
+        header.setSpacing(4)
+        self.title_label = SubtitleLabel("No Mod Selected")
         self.title_label.setWordWrap(True)
-        self.status_switch = SwitchButton()  # Status switch for the selected mod
-        header_layout.addWidget(self.title_label, 1)
-        header_layout.addWidget(self.status_switch)
-        content_layout.addLayout(header_layout)
+        self.status_switch = SwitchButton()
+        self.status_switch.setOnText("Enabled")
+        self.status_switch.setOffText("Disabled")
+        header.addWidget(self.title_label)
+        header.addWidget(self.status_switch)
+        vbox.addLayout(header)
 
-        # -- Thumbnail Slider --
+        # ── thumbnail ────────────────────────────────────────────────────────────
+        vbox.addWidget(StrongBodyLabel("Preview Images"))
         self.thumbnail_slider = ThumbnailSliderWidget(self.view_model)
-        self.thumbnail_slider.setMinimumHeight(200)  # Give it a minimum height
-        content_layout.addWidget(self.thumbnail_slider)
+        self.thumbnail_slider.setMinimumHeight(178)
+        self.thumbnail_slider.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        vbox.addWidget(self.thumbnail_slider)
 
-        # -- Description Section --
-        content_layout.addWidget(SubtitleLabel("Description"))
+        # ── description ─────────────────────────────────────────────────────────
+        vbox.addWidget(StrongBodyLabel("Description"))
         self.description_editor = TextEdit()
         self.description_editor.setPlaceholderText("No description available.")
-        self.description_editor.setObjectName("DescriptionEditor")
-        self.description_editor.setMinimumHeight(80)
-        self.save_description_button = PushButton("Save Description")
-        self.save_description_button.setIcon(FluentIcon.SAVE)
-        self.save_description_button.hide()  # Show only when description is changed
-        content_layout.addWidget(self.description_editor)
-        content_layout.addWidget(
-            self.save_description_button, 0, Qt.AlignmentFlag.AlignRight
+        self.description_editor.setMaximumHeight(80)
+        vbox.addWidget(self.description_editor)
+        self.save_description_button = PushButton(FluentIcon.SAVE, "Save Description")
+        self.save_description_button.hide()
+        vbox.addWidget(self.save_description_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        # ── config ───────────────────────────────────────────────────────────────
+        vbox.addWidget(StrongBodyLabel("Mod Configuration"))
+        cfg_wrap = QWidget()
+        cfg_wrap.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
+        self.ini_config_layout = QVBoxLayout(cfg_wrap)
+        self.ini_config_layout.setContentsMargins(0, 0, 0, 0)
+        self.ini_config_layout.setSpacing(10)
+        vbox.addWidget(cfg_wrap)
 
-        # -- Mod Config (.ini) Section --
-        content_layout.addWidget(SubtitleLabel("Mod Configuration"))
-        # This layout will be populated dynamically with KeyBindingWidgets
-        config_container = QWidget()
-        self.ini_config_layout = FluentVBoxLayout(config_container)
-        self.ini_config_layout.setSpacing(8)
-
-        # A container for the dynamically added widgets
-        config_container.setLayout(content_layout)
-
-        self.save_config_button = PrimaryPushButton("Save Configuration")
-        self.save_config_button.setIcon(FluentIcon.SAVE)
-        self.save_config_button.hide()  # Show only when config is changed
-
-        content_layout.addWidget(config_container)
-        content_layout.addWidget(
-            self.save_config_button, 0, Qt.AlignmentFlag.AlignRight
+        self.save_config_button = PrimaryPushButton(
+            FluentIcon.SAVE, "Save Configuration"
         )
+        self.save_config_button.hide()
+        vbox.addWidget(self.save_config_button, 0, Qt.AlignmentFlag.AlignLeft)
 
-        content_layout.addStretch(1)  # Push all content to the top
+        vbox.addStretch(1)
 
-        # --- 2. Empty State View ---
-        self.empty_view = BodyLabel("Select a mod to see its details", self)
+        # commit scrolling view
+        self.scroll_area.setWidget(view)
+
+        # ── stack pages ──────────────────────────────────────────────────────────
+        self.empty_view = BodyLabel(
+            "Select a mod from the grid to see its details",
+        )
         self.empty_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # --- Assemble Stack ---
-        self.stack.addWidget(self.scroll_area)
         self.stack.addWidget(self.empty_view)
-
-        # Start by showing the empty view
+        self.stack.addWidget(self.scroll_area)
         self.stack.setCurrentWidget(self.empty_view)
 
-    def bind_viewmodel(self, viewmodel):
+    def _bind_view_models(self):
         """Connects this panel's widgets and slots to the ViewModel."""
-        self.view_model = viewmodel
-
-        # --- Connect ViewModel signals to this panel's slots ---
+        # VM -> View
         self.view_model.item_loaded.connect(self._on_item_loaded)
         self.view_model.ini_config_ready.connect(self._on_ini_config_ready)
-        # self.view_model.is_dirty_changed.connect(self.save_all_button.setEnabled)
+        self.view_model.is_description_dirty_changed.connect(
+            self.save_description_button.setVisible
+        )
+        self.view_model.ini_dirty_state_changed.connect(
+            self.save_config_button.setVisible
+        )
+        self.view_model.save_description_state.connect(
+            self._on_save_description_state_changed
+        )
+        self.view_model.save_config_state.connect(self._on_save_config_state_changed)
 
-        # --- Connect UI widget actions to ViewModel slots ---
-        # Note: The status switch is special, it triggers an action on foldergrid_vm.
-        # This connection is handled by MainWindow orchestrating the VMs.
-
-        # self.description_editor.textChanged.connect(
-        #    lambda: self.view_model.on_description_changed(self.description_editor.toPlainText())
-        # )
-        # self.save_all_button.clicked.connect(self.view_model.save_all_changes)
+        # View -> VM
+        self.description_editor.textChanged.connect(self._on_description_text_changed)
+        self.save_description_button.clicked.connect(self.view_model.save_description)
+        self.save_config_button.clicked.connect(self.view_model.save_ini_config)
 
         # The ThumbnailSliderWidget will handle its own internal bindings for add/remove,
         # calling the appropriate methods on the view_model.
         # e.g., self.thumbnail_slider.add_requested.connect(self.view_model.add_new_thumbnail)
-        pass
 
     # --- SLOTS (Responding to ViewModel Signals) ---
 
-    def _on_item_loaded(self, item: object):
-        """Flow 5.2 Part A: Populates the entire panel with data from a new item."""
-        if not item:
-            # Logic to clear the panel and show a "No item selected" message.
+    def _on_item_loaded(self, item_data: dict | None) -> None:
+        """Refresh whole panel with selected‐item data."""
+        if not item_data:
+            self.clear_panel()
             return
 
-        # 1. Update simple widgets
-        # self.title_label.setText(item.actual_name)
-        # self.status_switch.setChecked(item.status == ModStatus.ENABLED)
-        # self.description_editor.setText(item.description)
+        # ── show main content ────────────────────────────────────────────────────
+        self.stack.setCurrentWidget(self.scroll_area)
 
-        # 2. Pass image paths to the thumbnail slider
-        # self.thumbnail_slider.set_image_paths(item.preview_images)
+        # ── reset transient state ───────────────────────────────────────────────
+        self._clear_ini_layout()
+        self.save_description_button.hide()
+        self.save_config_button.hide()
 
-        # 3. Clear old .ini config widgets
-        # while self.ini_config_layout.count():
-        #     child = self.ini_config_layout.takeAt(0)
-        #     if child.widget():
-        #         child.widget().deleteLater()
-        pass
+        # ── title ───────────────────────────────────────────────────────────────
+        full_title = item_data.get("actual_name", "N/A")
+        self.title_label.setToolTip(full_title)  # show full on hover
+        self.title_label.setText(
+            full_title[:20] + "…"  # ellipsis if >20
+            if len(full_title) > 20
+            else full_title
+        )
 
-    def _on_ini_config_ready(self, keybindings: list):
-        """Flow 5.2 Part D: Populates the Mods Config area with KeyBindingWidgets."""
-        # For each keybinding data object in the list, create a KeyBindingWidget,
-        # connect its 'valueChanged' signal to self.view_model.on_keybinding_edited,
-        # and add the widget to self.ini_config_layout.
-        pass
+        # ── enable/disable switch (block signal to avoid feedback loop) ─────────
+        with QSignalBlocker(self.status_switch):
+            self.status_switch.setChecked(item_data.get("is_enabled", False))
+
+        # ── thumbnails ──────────────────────────────────────────────────────────
+        self.thumbnail_slider.set_image_paths(item_data.get("preview_images", []))
+
+        # ── description ─────────────────────────────────────────────────────────
+        desc = item_data.get("description", "")
+        self.description_editor.setText(desc)
+        self.save_description_button.hide()
+
+    def _on_ini_config_ready(self, keybindings: list[KeyBinding]) -> None:
+        """Populate ini-config panel dengan group per‐file, no overlap."""
+        self._clear_ini_layout()
+        self._ini_group_widgets.clear()
+
+        # ── empty state
+        if not keybindings:
+            lbl = CaptionLabel("No editable keybindings found in this mod.")
+            lbl.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+            self.ini_config_layout.addWidget(lbl)
+            self._ini_group_widgets.append(lbl)
+            self.ini_config_layout.addStretch(1)
+            return
+
+        # ── grouping & sorting
+        by_file: dict[Path, list[KeyBinding]] = defaultdict(list)
+        for kb in keybindings:
+            by_file[kb.source_file].append(kb)
+
+        root_path: Path | None = getattr(
+            self.view_model.current_item_model, "folder_path", None
+        )
+
+        files_sorted = sorted(
+            by_file, key=lambda p: (root_path and p.parent != root_path, str(p).lower())
+        )
+
+        # ── build UI
+        for ini_path in files_sorted:
+            # label relative ke root jika possible
+            label = (
+                str(ini_path.relative_to(root_path))
+                if root_path and root_path in ini_path.parents
+                else ini_path.name
+            )
+
+            group = IniFileGroupWidget(label, ini_path, self)
+            group.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+            group.open_file_requested.connect(self.view_model.open_ini_file)
+
+            for kb in by_file[ini_path]:
+                widget = KeyBindingWidget(kb, parent=group)
+                widget.value_changed.connect(self.view_model.on_keybinding_edited)
+                group.add_binding_widget(widget)
+
+            self.ini_config_layout.addWidget(group)
+            self._ini_group_widgets.append(group)
+            self.ini_config_layout.addSpacing(12)  # simple visual gap
+
+        self.ini_config_layout.addStretch(1)
+        self.ini_config_layout.activate()
+
+    def _clear_ini_layout(self):
+        """Helper to remove all old keybinding widgets and cards."""
+        while self.ini_config_layout.count():
+            item = self.ini_config_layout.takeAt(0)
+            if item is None:
+                continue
+
+            # widget langsung
+            if w := item.widget():
+                w.deleteLater()
+                continue
+
+            # sub-layout rekursif
+            if lay := item.layout():
+                while lay.count():
+                    sub_item = lay.takeAt(0)
+                    widget = sub_item.widget() if sub_item else None
+                    if widget is not None:
+                        widget.deleteLater()
+                continue
+
+            # spacerItem – cukup di-drop (GC yang urus)
+            # item.spacerItem() is not None untuk spacer; nothing else needed
+
+        self._ini_group_widgets.clear()
+        self.ini_config_layout.update()
+
+    def _on_description_text_changed(self):
+        """Memberitahu ViewModel setiap kali teks di editor berubah."""
+        self.view_model.on_description_changed(self.description_editor.toPlainText())
+
+    # ADD THIS SLOT
+    def _on_save_description_state_changed(self, text: str, is_enabled: bool):
+        """Mengubah teks dan status tombol simpan."""
+        self.save_description_button.setText(text)
+        self.save_description_button.setEnabled(is_enabled)
+
+    # ADD THIS NEW SLOT
+    def _on_save_config_state_changed(self, text: str, is_enabled: bool):
+        """Mengubah teks dan status tombol simpan konfigurasi."""
+        self.save_config_button.setText(text)
+        self.save_config_button.setEnabled(is_enabled)
 
     def clear_panel(self):
         """Clears all displayed data from the panel."""
-        # Used when no item is selected, e.g., after deleting the active object.
-        # self._on_item_loaded(None)
-        pass
+        self.stack.setCurrentWidget(self.empty_view)
