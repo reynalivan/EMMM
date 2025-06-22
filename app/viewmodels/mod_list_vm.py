@@ -546,66 +546,58 @@ class ModListViewModel(QObject):
         logger.error(f"Failed to hydrate item {item_id}: {value}\n{tb}")
 
     def _on_toggle_status_finished(self, item_id: str, result: dict):
-        """Handles the result of a single item status toggle operation."""
-        self._processing_ids.discard(item_id)  # Delete from the process list
+        """
+        Handles the result of a single item status toggle operation.
+        This version correctly handles the full model object returned by the service.
+        """
+        self._processing_ids.discard(item_id)
 
         if not result.get("success"):
-            error_msg = result.get("error", "An unknown error occurred.")
-            self.toast_requested.emit(error_msg, "error")
-            self.item_processing_finished.emit(
-                item_id, False
-            )  # Send the finished signal (fail)
-
+            self.toast_requested.emit(result.get("error", "Unknown error"), "error")
+            self.item_processing_finished.emit(item_id, False)
             return
 
-        # ---Success Path ---
-        # Create an immutable new item object with updated data
-
         try:
-            old_item = next(i for i in self.master_list if i.id == item_id)
+            # 1. The 'data' from the service is now the complete, updated model object.
+            #    No need to build it here.
+            new_item = result.get("data")
+            if not new_item:
+                raise ValueError("Service succeeded but returned no data object.")
 
-            # Create DICT from new data to be passing to datoclasses.replace
+            # 2. Find the index of the old item to replace it.
+            master_idx = next(
+                i for i, item in enumerate(self.master_list) if item.id == item_id
+            )
 
-            new_data_from_service = result["data"]
-            update_payload = {
-                "folder_path": new_data_from_service["new_path"],
-                "status": new_data_from_service["new_status"],
-            }
-            new_item = dataclasses.replace(old_item, **update_payload)
-
-            # Change the old item with the new one on the internal list
-
-            master_idx = self.master_list.index(old_item)
+            # 3. Replace the old item with the new one in both internal lists.
             self.master_list[master_idx] = new_item
 
-            # Also update the list that is displayed if the item is there
-
-            if old_item in self.displayed_items:
-                display_idx = self.displayed_items.index(old_item)
+            try:
+                display_idx = next(
+                    i
+                    for i, item in enumerate(self.displayed_items)
+                    if item.id == item_id
+                )
                 self.displayed_items[display_idx] = new_item
+            except StopIteration:
+                # Item was not in the displayed list (due to filters), which is fine.
+                pass
 
             logger.info(f"Successfully toggled status for item: {new_item.actual_name}")
 
-            # Send signals to UI for updates
-
+            # 4. Emit signals to UI for updates (the rest of the logic is the same).
             self.item_needs_update.emit(self._create_dict_from_item(new_item))
-            self.item_processing_finished.emit(
-                item_id, True
-            )  # Send the finished signal (success)
+            self.item_processing_finished.emit(item_id, True)
 
-            # If the context is an objectlist, tell the orchestrator (mainwindowviewmodel)
-            # that an object item has been modified.
-
+            # Emit context-specific signals for domino effects.
             if self.context == CONTEXT_OBJECTLIST:
                 self.active_object_modified.emit(new_item)
             elif self.context == CONTEXT_FOLDERGRID:
                 self.foldergrid_item_modified.emit(new_item)
 
-        except (StopIteration, KeyError) as e:
+        except (StopIteration, KeyError, ValueError) as e:
             logger.error(f"Error updating item state after toggle: {e}", exc_info=True)
             self.item_processing_finished.emit(item_id, False)
-
-    # ADD THIS NEW SLOT
 
     def _on_toggle_status_error(self, item_id: str, error_info: tuple):
         """Handles unexpected worker errors during toggle."""

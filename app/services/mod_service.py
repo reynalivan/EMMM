@@ -353,13 +353,7 @@ class ModService:
             if target_status is not None:
                 # This path is for bulk actions. If status is already correct, do nothing.
                 if item.status == target_status:
-                    return {
-                        "success": True,
-                        "data": {
-                            "new_path": item.folder_path,
-                            "new_status": item.status,
-                        },
-                    }
+                    return {"success": True, "data": item}
                 new_status = target_status
             else:
                 # This path is for single toggles. Invert the current status.
@@ -373,20 +367,18 @@ class ModService:
             prefix = DEFAULT_DISABLED_PREFIX if new_status == ModStatus.DISABLED else ""
             suffix = PIN_SUFFIX if item.is_pinned else ""
             new_name = f"{prefix}{item.actual_name}{suffix}"
-
-            # Use pathlib's .with_name() for a safe way to get the new path
             new_path = item.folder_path.with_name(new_name)
-
             logger.info(f"Renaming '{item.folder_path.name}' to '{new_path.name}'")
 
             # 3. Perform the rename operation
             os.rename(item.folder_path, new_path)
 
-            # 4. Return success with the new data
-            return {
-                "success": True,
-                "data": {"new_path": new_path, "new_status": new_status},
-            }
+            # 4. --- Create a new model object with the changes ---
+            data_to_update = {"folder_path": new_path, "status": new_status}
+            new_item = dataclasses.replace(item, **data_to_update)
+
+            # 5. Return success with the new data
+            return {"success": True, "data": new_item}
 
         except FileExistsError:
             error_msg = f"Folder name conflict: '{new_path.name}' already exists."
