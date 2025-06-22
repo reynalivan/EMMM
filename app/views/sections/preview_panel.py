@@ -168,6 +168,9 @@ class PreviewPanel(QWidget):
         self.description_editor.textChanged.connect(self._on_description_text_changed)
         self.save_description_button.clicked.connect(self.view_model.save_description)
         self.save_config_button.clicked.connect(self.view_model.save_ini_config)
+        self.status_switch.checkedChanged.connect(
+            self.view_model.toggle_current_item_status
+        )
 
         # The ThumbnailSliderWidget will handle its own internal bindings for add/remove,
         # calling the appropriate methods on the view_model.
@@ -177,8 +180,9 @@ class PreviewPanel(QWidget):
 
     def _on_item_loaded(self, item_data: dict | None) -> None:
         """Refresh whole panel with selected‐item data."""
+        self.clear_panel()
+
         if not item_data:
-            self.clear_panel()
             return
 
         # ── show main content ────────────────────────────────────────────────────
@@ -312,3 +316,5 @@ class PreviewPanel(QWidget):
     def clear_panel(self):
         """Clears all displayed data from the panel."""
         self.stack.setCurrentWidget(self.empty_view)
+        if self.thumbnail_slider:
+            self.thumbnail_slider.set_image_paths([])

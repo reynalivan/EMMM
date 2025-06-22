@@ -289,3 +289,26 @@ class ThumbnailService(QObject):
             logger.error(
                 f"An unexpected error occurred during cache cleanup: {e}", exc_info=True
             )
+
+    def invalidate_cache(self, item_id: str, path: Path | None = None):
+        """
+        Invalidates the cache for a specific item by removing it from both L1 and L2 caches.
+        """
+        if not item_id:
+            return
+
+        # Remove from L1 cache
+        if item_id in self.memory_cache:
+            logger.debug(f"Invalidating L1 cache for item '{item_id}'")
+            del self.memory_cache[item_id]
+
+        # Remove from L2 cache (disk)
+        if path is None:
+            path = self.cache_dir / f"{item_id}.jpg"
+
+        if path.exists():
+            try:
+                path.unlink()
+                logger.debug(f"Invalidated L2 cache for item '{item_id}'")
+            except OSError as e:
+                logger.error(f"Failed to remove cache file {path}: {e}")

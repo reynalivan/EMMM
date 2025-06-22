@@ -27,11 +27,12 @@ OBJECT_THUMBNAIL_EXACT: set[str] = {"thumb", "folder"}  # Nama file tanpa eksten
 FOLDER_PREVIEW_PREFIX: str = "preview"
 SUPPORTED_IMAGE_EXTENSIONS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp")
 DEFAULT_ICONS: dict[str, str] = {
-    "mod": "app/assets/images/default_mod_icon.png",
-    "folder": "app/assets/images/default_folder_icon.png",
-    "object": "app/assets/images/default_object_icon.png",
+    "object": "app/assets/images/default_object.jpg",
+    # Used for navigable folders in the foldergrid
+    "folder": "app/assets/images/folder.jpg",
+    # Used for final mods in the foldergrid that have no preview image
+    "mod_placeholder": "app/assets/images/mod_placeholder.jpg",
 }
-
 # --- UI & Interaction Constants ---
 DEBOUNCE_DELAY_MS: int = 300
 CONTEXT_OBJECTLIST: str = "objectlist"

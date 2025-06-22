@@ -1,7 +1,7 @@
 # App/views/components/foldergrid widget.py
 
-from PyQt6.QtCore import pyqtSignal, QSize, Qt
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import QSignalBlocker, pyqtSignal, QSize, Qt
+from PyQt6.QtGui import QAction, QMouseEvent
 from PyQt6.QtWidgets import QWidget
 from qfluentwidgets import (
     CardWidget,
@@ -16,6 +16,7 @@ from qfluentwidgets import (
     CheckBox,
     VBoxLayout,
 )
+from app.utils.logger_utils import logger
 from app.viewmodels.mod_list_vm import ModListViewModel
 
 
@@ -137,40 +138,56 @@ class FolderGridItemWidget(CardWidget):
         """Flow 2.3 & 3.1b: Updates the widget's display with new data."""
         self.item_data = item_data
 
-        self.name_label.setText(self.item_data.get("actual_name", ""))
+        # --- Update basic UI elements ---
+        self.name_label.setText(self.item_data.get("actual_name", "N/A"))
         self.pin_icon.setVisible(self.item_data.get("is_pinned", False))
 
-        self.status_switch.blockSignals(True)
-        is_enabled = self.item_data.get("is_enabled", False)
-        self.status_switch.setChecked(is_enabled)
-        self.status_switch.blockSignals(False)
+        with QSignalBlocker(self.status_switch):
+            is_enabled = self.item_data.get("is_enabled", False)
+            self.status_switch.setChecked(is_enabled)
 
-        # ---Logic to show folder icon or mod thumbnail ---
-        is_navigable = self.item_data.get("is_navigable")
-        thumbnail_to_load = None
-        default_icon_type = "mod"
+        # --- Logic to determine icon/thumbnail based on navigability ---
+        is_navigable = item_data.get("is_navigable")
+        source_path_to_load = None
+        default_icon_key = ""
 
-        if is_navigable is None or is_navigable is True:
-            default_icon_type = "folder"
-        else:  # is_navigable is False, it's a final mod
-            image_paths = self.item_data.get("preview_images", [])
-            if image_paths:
-                thumbnail_to_load = image_paths[0]
+        if is_navigable is True:
+            # It's a confirmed navigable folder. Use the folder icon.
+            default_icon_key = "folder"
+            # Double-clicking should navigate into it.
+            self.setMouseTracking(True)
+        elif is_navigable is False:
+            # It's a confirmed final mod. Try to find its thumbnail.
+            default_icon_key = "mod_placeholder"  # Fallback if no image is found
+            preview_images = item_data.get("preview_images", [])
+            if preview_images:
+                source_path_to_load = preview_images[0]
+            # Double-clicking should not navigate.
+            self.setMouseTracking(False)
+        else:  # is_navigable is None (still a skeleton)
+            # Assume it's a folder until proven otherwise by hydration.
+            default_icon_key = "folder"
+            self.setMouseTracking(True)
 
-        # ---Revised Section for Thumbnail ---
-        # Call the method of viewmodel, not direct service
+        # --- Call ViewModel to get the final pixmap ---
+        # The ViewModel will delegate this to the ThumbnailService
         pixmap = self.view_model.get_thumbnail(
             item_id=self.item_data.get("id", ""),
-            source_path=thumbnail_to_load,
-            default_type=default_icon_type,
+            source_path=source_path_to_load,
+            default_type=default_icon_key,
         )
 
-        scaled_pixmap = pixmap.scaled(
-            self._thumb_size,
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.thumbnail_label.setPixmap(scaled_pixmap)
+        # --- Scale and set the pixmap ---
+        if pixmap and not pixmap.isNull():
+            scaled_pixmap = pixmap.scaled(
+                self._thumb_size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.thumbnail_label.setPixmap(scaled_pixmap)
+        else:
+            # Handle case where even the default pixmap failed to load
+            self.thumbnail_label.setText("?")  # Or clear it
 
     def show_processing_state(self, is_processing: bool, text: str = "Processing..."):
         """Flow 3.1b, 4.2: Shows a visual indicator that the item is being processed."""
@@ -220,12 +237,34 @@ class FolderGridItemWidget(CardWidget):
         super().mousePressEvent(event)
         pass
 
-    def mouseDoubleClickEvent(self, event):
-        """Flow 2.3: Handles navigation into a subfolder."""
-        if self.item_data.get("is_navigable"):
-            self.doubleClicked.emit()
-        super().mouseDoubleClickEvent(event)
-        pass
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
+        """
+        Handles the double-click event to enable folder navigation.
+        """
+        # Only emit the signal if the item is explicitly marked as navigable
+        if self.item_data.get("is_navigable") is True:
+            logger.debug(
+                f"Navigable item '{self.item_data.get('actual_name')}' double-clicked. Calling load_items."
+            )
+
+            path_to_load = self.item_data.get("folder_path")
+            if not path_to_load:
+                logger.error("Double-clicked item has no folder_path.")
+                return
+
+            # Directly call the method on the ViewModel it already holds
+            self.view_model.load_items(
+                path=path_to_load,
+                game=self.view_model.current_game,
+                is_new_root=False,
+            )
+            event.accept()
+        else:
+            # If not navigable, just pass the event to the parent class
+            logger.debug(
+                f"Item {self.item_data.get('id')} double-clicked but not navigable."
+            )
+            super().mouseDoubleClickEvent(event)
 
     def showEvent(self, event):
         """Flow 2.3 Stage 2 Trigger: Triggers lazy-hydration when the widget becomes visible."""

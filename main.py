@@ -116,6 +116,7 @@ def main():
         mod_service = ModService(
             database_service=database_service,
             image_utils=image_utils,
+            system_utils=system_utils,
         )
 
         workflow_service = WorkflowService(
@@ -153,6 +154,7 @@ def main():
         thumbnail_service=thumbnail_service,
         foldergrid_vm=foldergrid_vm,
         sys_utils=system_utils,
+        image_utils=image_utils,
     )
     settings_vm = SettingsViewModel(
         config_service=config_service,

@@ -1,5 +1,4 @@
 # App/viewmodels/preview panel vm.py
-
 import asyncio
 import copy
 from pathlib import Path
@@ -13,6 +12,8 @@ from app.utils import SystemUtils
 from app.viewmodels.mod_list_vm import ModListViewModel
 from app.utils.async_utils import Worker
 from app.utils.logger_utils import logger
+from app.utils.image_utils import ImageUtils
+from app.services.thumbnail_service import ThumbnailService
 
 
 class PreviewPanelViewModel(QObject):
@@ -30,12 +31,14 @@ class PreviewPanelViewModel(QObject):
     unsaved_changes_prompt_requested = pyqtSignal(dict)
     ini_dirty_state_changed = pyqtSignal(bool)
     save_config_state = pyqtSignal(str, bool)
+    thumbnail_operation_in_progress = pyqtSignal(bool)
 
     def __init__(
         self,
         mod_service,
         ini_parsing_service,
         thumbnail_service,
+        image_utils,
         foldergrid_vm,
         sys_utils,
     ):
@@ -45,6 +48,8 @@ class PreviewPanelViewModel(QObject):
         self.sys_utils: SystemUtils = sys_utils
         self.mod_service: ModService = mod_service
         self.ini_parsing_service: IniParsingService = ini_parsing_service
+        self.image_utils: ImageUtils = image_utils
+        self.thumbnail_service: ThumbnailService = thumbnail_service
         # ---Internal State ---
         self.current_item_model: FolderItem | None = None
         self.is_description_dirty = False
@@ -113,7 +118,15 @@ class PreviewPanelViewModel(QObject):
             return
 
         # ── push basic data to UI immediately ────────────────────────────────
-        self.item_loaded.emit(self._create_dict_from_item(self.current_item_model))
+        if isinstance(self.current_item_model, FolderItem):
+            if isinstance(self.current_item_model, FolderItem):
+                self.item_loaded.emit(
+                    self._create_dict_from_item(self.current_item_model)
+                )
+            else:
+                self.item_loaded.emit(None)
+        else:
+            self.item_loaded.emit(None)
 
         # ── start async parsing (thread-pool) ─────────────────────────────────
         logger.info("Async ini-parsing for '%s'", self.current_item_model.actual_name)
@@ -186,13 +199,152 @@ class PreviewPanelViewModel(QObject):
 
     def add_new_thumbnail(self, image_data):
         """Flow 5.2 Part C: Starts the async process to add a new thumbnail."""
-        pass
+        if not self.current_item_model:
+            self.toast_requested.emit("No mod selected.", "warning")
+            return
+        if not image_data:
+            self.toast_requested.emit("No image data to add.", "warning")
+            return
 
-    def remove_thumbnail(self, image_path: object):
-        """Flow 5.2 Part C: Starts the async process to remove a thumbnail."""
-        pass
+        logger.info(
+            f"Starting to add thumbnail for '{self.current_item_model.actual_name}'"
+        )
+        self.thumbnail_operation_in_progress.emit(True)
+
+        worker = Worker(
+            self.mod_service.add_preview_image, self.current_item_model, image_data
+        )
+        worker.signals.result.connect(self._on_new_thumbnail_operation_finished)
+        worker.signals.error.connect(self._on_thumbnail_operation_error)
+        thread_pool = QThreadPool.globalInstance()
+        if thread_pool is not None:
+            thread_pool.start(worker)
+        else:
+            logger.error(
+                "QThreadPool.globalInstance() returned None. Cannot start worker."
+            )
+
+    def _handle_thumbnail_operation_result(self, result: dict):
+        """
+        A generic helper that processes the result from any thumbnail operation.
+        This keeps the result-handling logic DRY.
+        """
+        self.thumbnail_operation_in_progress.emit(False)
+
+        if not result.get("success"):
+            error_msg = result.get("error", "An unknown error occurred.")
+            self.toast_requested.emit(error_msg, "error")
+            return
+
+        new_item_model = result.get("data")
+        if not new_item_model:
+            logger.error("Thumbnail operation succeeded but returned no data.")
+            return
+
+        # Invalidate cache for any deleted images
+        deleted_paths = result.get("deleted_paths", [])
+        if deleted_paths:
+            logger.info(
+                f"Invalidating cache for {len(deleted_paths)} deleted thumbnails."
+            )
+            for path in deleted_paths:
+                self.thumbnail_service.invalidate_cache(new_item_model.id, path)
+
+        # Update state and refresh UI
+        self.current_item_model = new_item_model
+        self.toast_requested.emit("Thumbnails updated successfully.", "success")
+        if self.current_item_model:
+            self.item_loaded.emit(self._create_dict_from_item(self.current_item_model))
+        self.item_metadata_saved.emit(self.current_item_model)
+
+    def remove_thumbnail(self, image_path: Path):
+        """Starts the async process to remove a single thumbnail."""
+        if not self.current_item_model:
+            self.toast_requested.emit("No mod selected.", "warning")
+            return
+
+        self._start_thumbnail_operation(
+            self.mod_service.remove_preview_image,  # Pass function reference
+            self._on_thumbnail_operation_complete,  # Pass result slot reference
+            self.current_item_model,  # Pass arguments for the function
+            image_path,
+        )
+
+    def remove_all_thumbnails(self):
+        """Starts the async process to remove all thumbnails for the current mod."""
+        if not self.current_item_model:
+            self.toast_requested.emit("No mod selected.", "warning")
+            return
+
+        self._start_thumbnail_operation(
+            self.mod_service.remove_all_preview_images,  # Pass function reference
+            self._on_thumbnail_operation_complete,  # Pass result slot reference
+            self.current_item_model,  # Pass argument for the function
+        )
+
+    def _start_thumbnail_operation(self, service_function, result_slot, *args):
+        """
+        A generic helper to start any thumbnail-related background task.
+        This ensures the function reference (not its result) is passed to the Worker.
+        """
+        self.thumbnail_operation_in_progress.emit(True)
+
+        # Pass the function and its arguments separately to the worker
+        worker = Worker(service_function, *args)
+        worker.signals.result.connect(result_slot)
+        worker.signals.error.connect(self._on_thumbnail_operation_error)
+
+        thread_pool = QThreadPool.globalInstance()
+        if thread_pool:
+            thread_pool.start(worker)
+        else:
+            logger.error("QThreadPool.globalInstance() is None. Cannot start worker.")
+            self.thumbnail_operation_in_progress.emit(False)
 
     # ---Public Slots (for UI Edit Tracking) ---
+
+    # In app/viewmodels/preview_panel_vm.py, replace the thumbnail-related slots
+    def _on_new_thumbnail_operation_finished(self, result: dict):
+        """
+        Handles the result from any thumbnail operation (add, remove, remove_all).
+        """
+        self.thumbnail_operation_in_progress.emit(False)  # Hide loading indicator
+
+        if not result.get("success"):
+            error_msg = result.get("error", "An unknown error occurred.")
+            self.toast_requested.emit(error_msg, "error")
+            return
+
+        # On success, get the new updated model from the result
+        new_item_model = result.get("data")
+        if not new_item_model:
+            logger.error("Thumbnail operation succeeded but returned no data.")
+            return
+
+        # 1. Update this ViewModel's own state
+        self.current_item_model = new_item_model
+
+        # 2. Refresh the PreviewPanel UI itself
+        self.toast_requested.emit("Thumbnails updated successfully.", "success")
+        if isinstance(self.current_item_model, FolderItem):
+            self.item_loaded.emit(self._create_dict_from_item(self.current_item_model))
+        else:
+            self.item_loaded.emit(None)
+
+        # 3. START THE DOMINO EFFECT: Notify other parts of the app
+        self.item_metadata_saved.emit(self.current_item_model)
+
+    # Add this new slot for handling unexpected worker errors
+    def _on_thumbnail_operation_error(self, error_info: tuple):
+        """Handles unexpected errors from the thumbnail worker thread."""
+        self.thumbnail_operation_in_progress.emit(False)
+        logger.error(
+            f"A critical error occurred in the thumbnail worker: {error_info[1]}",
+            exc_info=error_info,
+        )
+        self.toast_requested.emit(
+            "An unexpected error occurred while managing thumbnails.", "error"
+        )
 
     def on_description_changed(self, text: str):
         """Flow 5.2 Part B: Tracks live edits in the description text area."""
@@ -321,6 +473,69 @@ class PreviewPanelViewModel(QObject):
         # Send a signal that metadata item has changed (for sync with foldergrid)
         self.item_metadata_saved.emit(self.current_item_model)
 
+    def toggle_current_item_status(self, is_enabled: bool):
+        """
+        Starts the background process to toggle the enable/disable status
+        of the currently displayed mod.
+        """
+        if not self.current_item_model:
+            self.toast_requested.emit("No mod selected to toggle.", "warning")
+            return
+
+        logger.info(
+            f"Toggling status for '{self.current_item_model.actual_name}' to {is_enabled}"
+        )
+
+        # Determine the target status for the service function
+        target_status = ModStatus.ENABLED if is_enabled else ModStatus.DISABLED
+
+        # Reuse the generic worker starter to run ModService.toggle_status
+        # Note: You might need to adapt your _start_thumbnail_operation helper or
+        # create a new one for generic operations. For clarity, we'll write it out here.
+        worker = Worker(
+            self.mod_service.toggle_status, self.current_item_model, target_status
+        )
+        worker.signals.result.connect(self._on_status_toggle_finished)
+        worker.signals.error.connect(
+            self._on_thumbnail_operation_error
+        )  # Can reuse the generic error handler
+
+        thread_pool = QThreadPool.globalInstance()
+        if thread_pool:
+            thread_pool.start(worker)
+
+    # --- Add this new private slot ---
+    def _on_status_toggle_finished(self, result: dict):
+        """
+        Handles the result of the toggle operation and triggers the domino effect.
+        """
+        if not result.get("success"):
+            error_msg = result.get("error", "Failed to toggle status.")
+            self.toast_requested.emit(error_msg, "error")
+
+            # Revert the switch in the UI if the operation failed
+            if self.current_item_model:
+                self.item_loaded.emit(
+                    self._create_dict_from_item(self.current_item_model)
+                )
+            return
+
+        new_item_model = result.get("data")
+        if not new_item_model:
+            logger.error("Toggle operation succeeded but returned no data.")
+            return
+
+        # Update this ViewModel's own state
+        self.current_item_model = new_item_model
+
+        # Refresh the PreviewPanel UI itself to ensure consistency
+        if self.current_item_model:
+            self.item_loaded.emit(self._create_dict_from_item(self.current_item_model))
+
+        # START THE DOMINO EFFECT to update the foldergrid
+        self.toast_requested.emit("Status updated successfully.", "success")
+        self.item_metadata_saved.emit(self.current_item_model)
+
     def _reset_dirty_state(self):
         self.is_description_dirty = False
         self._unsaved_description = None
@@ -349,9 +564,61 @@ class PreviewPanelViewModel(QObject):
         """Handles the result of the thumbnail addition operation."""
         pass
 
-    def _on_thumbnail_removed(self, result: dict):
-        """Handles the result of the thumbnail removal operation."""
-        pass
+    def _on_thumbnail_operation_complete(self, result: dict):
+        """
+        Handles the result from ANY thumbnail operation.
+        Processes the result, invalidates cache, and triggers all necessary UI updates.
+        """
+        self.thumbnail_operation_in_progress.emit(False)
+
+        if not result.get("success"):
+            error_msg = result.get("error", "An unknown error occurred.")
+            self.toast_requested.emit(error_msg, "error")
+            return
+
+        new_item_model = result.get("data")
+        if not new_item_model:
+            logger.error("Thumbnail operation succeeded but returned no data.")
+            return
+
+        # Invalidate cache for any deleted images
+        deleted_paths = result.get("deleted_paths", [])
+        if deleted_paths:
+            logger.info(
+                f"Invalidating cache for {len(deleted_paths)} deleted thumbnails."
+            )
+            for path in deleted_paths:
+                self.thumbnail_service.invalidate_cache(
+                    new_item_model.id, path
+                )  # Invalidate cache for any deleted images
+        deleted_paths = result.get("deleted_paths", [])
+        if deleted_paths:
+            logger.info(
+                f"Invalidating cache for {len(deleted_paths)} deleted thumbnails."
+            )
+            for path in deleted_paths:
+                self.thumbnail_service.invalidate_cache(new_item_model.id, path)
+
+        # Update state and refresh UI
+        self.current_item_model = new_item_model
+        self.toast_requested.emit("Thumbnails updated successfully.", "success")
+        if isinstance(self.current_item_model, FolderItem):
+            self.item_loaded.emit(self._create_dict_from_item(self.current_item_model))
+        else:
+            self.item_loaded.emit(None)
+        self.item_metadata_saved.emit(self.current_item_model)
+
+    def paste_thumbnail_from_clipboard(self):
+        """
+        Gets an image from the clipboard via ImageUtils and initiates the add thumbnail process.
+        """
+        # The ViewModel calls the utility layer to get the data
+        image_data = self.image_utils.get_image_from_clipboard()
+
+        if image_data:
+            self.add_new_thumbnail(image_data)
+        else:
+            self.toast_requested.emit("No image found in the clipboard.", "warning")
 
     def clear_panel(self):
         "" "Clean the preview panel." ""

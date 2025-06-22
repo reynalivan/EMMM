@@ -253,6 +253,26 @@ class MainWindowViewModel(QObject):
             self.foldergrid_vm.update_item_in_list
         )
 
+        self.objectlist_vm.toast_requested.connect(self._on_toast_requested)
+        self.foldergrid_vm.toast_requested.connect(self._on_toast_requested)
+        self.preview_panel_vm.toast_requested.connect(self._on_toast_requested)
+
+    def _on_toast_requested(self, message: str, level: str = "info"):
+        """
+        Creates and shows a non-blocking InfoBar (toast) notification
+        at the top-right of the window.
+        """
+        # Convert string level to ToastLevel enum if necessary
+        if isinstance(level, str):
+            try:
+                toast_level = ToastLevel[level.upper()]
+            except KeyError:
+                toast_level = ToastLevel.INFO
+        else:
+            toast_level = level
+        # Emit the toast notification
+        self.toast_requested.emit(message, toast_level)
+
     def _on_active_object_modified(self, new_object_item: ObjectItem):
         """
         Handles the domino effect when an active object is modified (e.g., toggled).

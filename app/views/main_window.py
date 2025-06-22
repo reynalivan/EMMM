@@ -176,6 +176,7 @@ class MainWindow(FluentWindow):
         self.main_window_vm.game_list_updated.connect(self._on_game_list_updated)
         self.main_window_vm.active_game_changed.connect(self._on_active_game_changed)
         self.main_window_vm.toast_requested.connect(self._on_toast_requested)
+
         self.main_window_vm.settings_dialog_requested.connect(
             self._on_settings_dialog_requested
         )
@@ -199,10 +200,48 @@ class MainWindow(FluentWindow):
             self._on_preview_unsaved_changes
         )
 
-    def _on_toast_requested(
-        self, message: str, position: InfoBarPosition = InfoBarPosition.TOP
-    ):
-        pass
+    def _on_toast_requested(self, message: str, level: str = "info"):
+        """
+        Creates and shows a non-blocking InfoBar (toast) notification
+        at the top-right of the window.
+        """
+        # Determine the title and InfoBar creation method based on the level
+        if level == "success":
+            title = "Success"
+            InfoBar.success(
+                title=title,
+                content=message,
+                duration=2000,
+                parent=self,
+                position=InfoBarPosition.BOTTOM_RIGHT,  # Add this line
+            )
+        elif level == "warning":
+            title = "Warning"
+            InfoBar.warning(
+                title=title,
+                content=message,
+                duration=3000,
+                parent=self,
+                position=InfoBarPosition.BOTTOM_RIGHT,  # Add this line
+            )
+        elif level == "error":
+            title = "Error"
+            InfoBar.error(
+                title=title,
+                content=message,
+                duration=4000,
+                parent=self,
+                position=InfoBarPosition.BOTTOM_RIGHT,  # Add this line
+            )
+        else:  # Default to "info"
+            title = "Info"
+            InfoBar.info(
+                title=title,
+                content=message,
+                duration=2000,
+                parent=self,
+                position=InfoBarPosition.BOTTOM_RIGHT,  # Add this line
+            )
 
     def _on_game_selection_changed(self, index: int):
         """

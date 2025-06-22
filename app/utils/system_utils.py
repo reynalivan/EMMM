@@ -3,7 +3,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-
+from send2trash import send2trash
 from app.utils.logger_utils import logger
 from app.core.signals import global_signals
 
@@ -38,10 +38,22 @@ class SystemUtils:
 
     @staticmethod
     def move_to_recycle_bin(path: Path):
-        """Flow 4.2.B: Safely moves a file or folder to the system's recycle bin."""
-        # This will use the 'send2trash' library for a safe, cross-platform delete.
-        # This function will handle its own exceptions and return a success/error dict.
-        pass
+        """
+        Flow 4.2.B: Safely moves a file or folder to the system's recycle bin.
+        Returns True on success, False on failure.
+        """
+        if not path.exists():
+            # No need to log an error here, the caller should handle it.
+            return False
+        try:
+            send2trash(str(path))
+            return True
+        except Exception as e:
+            # The caller should log this error with more context.
+            print(
+                f"Error moving {path} to recycle bin: {e}"
+            )  # Use logger in production
+            return False
 
     @staticmethod
     def get_initial_name(name: str, length: int = 2) -> str:

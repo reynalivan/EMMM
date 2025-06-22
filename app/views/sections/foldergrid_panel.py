@@ -172,7 +172,9 @@ class FolderGridPanel(QWidget):
 
         # ---Connect UI widget actions to ViewModel slots ---
 
-        self.breadcrumb_widget.navigation_requested.connect(self.view_model.load_items)
+        self.breadcrumb_widget.navigation_requested.connect(
+            self._on_breadcrumb_navigation
+        )
         # self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
         # self.create_button.clicked.connect(self._on_create_mod_requested)
         # self.randomize_button.clicked.connect(self.view_model.initiate_randomize)
@@ -193,29 +195,28 @@ class FolderGridPanel(QWidget):
 
     def _on_path_changed(self, new_path: Path | None):
         """Flow 2.3: Updates the breadcrumb widget with the new navigation path."""
-        if new_path:
-            # Set root path on breadcrumb if not there
-
-            if not self.breadcrumb_widget.root_path:
-                self.breadcrumb_widget.set_root_path(new_path)
-
-            self.breadcrumb_widget.update_path(new_path)
+        if new_path and new_path.is_dir():
+            # The new breadcrumb widget handles all root path and update logic internally.
+            # We just need to give it the current path.
+            self.breadcrumb_widget.set_current_path(new_path)
             self.breadcrumb_widget.setVisible(True)
         else:
-            # If Path None, hide breadcrumb
-
+            # If path is None or invalid, clear and hide the breadcrumb.
             self.breadcrumb_widget.clear()
             self.breadcrumb_widget.setVisible(False)
-            self.breadcrumb_widget.root_path = None
 
+            # The rest of your logic to show a placeholder is correct
             self.grid_widget.clear_items()
-        self.stack.setCurrentWidget(self.placeholder_label)
+            self.stack.setCurrentWidget(self.placeholder_label)
 
     def _on_items_updated(self, items_data: list[dict]):
         """
         Flow 2.3: Repopulates the entire grid view with new skeleton items.
         """
         logger.debug(f"Received {len(items_data)} items to display in foldergrid.")
+
+        self.grid_widget.clear_items()
+        self._item_widgets.clear()
 
         # Grid has been cleaned in _on_loading_started
         if not items_data:
@@ -233,17 +234,6 @@ class FolderGridPanel(QWidget):
 
             # 2. Connect its signals
             widget.item_selected.connect(self.item_selected)
-
-            # Connect double click for navigation if the item is navigable
-            if item_data.get("is_navigable"):
-                folder_path = item_data.get("folder_path") or Path("")
-                widget.doubleClicked.connect(
-                    lambda path=folder_path: self.view_model.load_items(
-                        path=path,
-                        game=self.view_model.current_game,
-                        is_new_root=False,
-                    )
-                )
 
             self.grid_widget.add_widget(widget)
             self._item_widgets[item_data["id"]] = widget
@@ -277,6 +267,30 @@ class FolderGridPanel(QWidget):
         widget = self._item_widgets.get(item_id)
         if isinstance(widget, FolderGridItemWidget):
             widget.show_processing_state(False)
+
+    # In app/views/sections/foldergrid_panel.py
+
+    def _on_breadcrumb_navigation(self, path: Path):
+        """
+        Handles the navigation request from the breadcrumb widget.
+        This slot ensures all necessary arguments are passed to the ViewModel.
+        """
+        logger.info(f"Breadcrumb navigation requested for path: {path}")
+
+        # Get the current game context from the ViewModel
+        current_game = self.view_model.current_game
+        if not current_game:
+            logger.error(
+                "Cannot navigate via breadcrumb without an active game context."
+            )
+            return
+
+        # Call the ViewModel's load_items method with all arguments complete
+        self.view_model.load_items(
+            path=path,
+            game=current_game,
+            is_new_root=False,  # Breadcrumb navigation is always within the current root
+        )
 
     def _on_selection_changed(self, has_selection: bool):
         """Flow 3.2: Enables or disables bulk action buttons based on selection."""

@@ -395,26 +395,29 @@ class ModListViewModel(QObject):
 
     def apply_filters_and_search(self):
         """Filters, sorts, and converts the master list to dicts for the view."""
-        # For now, there is no filter logic, so we consider all items to pass
-
+        # In a future step, actual filtering logic will go here.
+        # For now, it just takes the entire master_list.
         filtered_items = self.master_list
 
-        # Revised: Improve sorting logic for status
-
+        # The sorting logic you have is excellent and should be kept.
         sorted_list = sorted(
             filtered_items,
             key=lambda item: (
-                not item.is_pinned,  # 1. Pinned (False) comes before Not Pinned (True)
-                item.status
-                != ModStatus.ENABLED,  # 2. Enabled (False) comes before Disabled (True)
-                item.actual_name.lower(),  # 3. Sort alphabetically by name
+                not item.is_pinned,
+                item.status != ModStatus.ENABLED,
+                item.actual_name.lower(),
             ),
         )
         self.displayed_items = sorted_list
 
-        # Conversion to dict and emit signal
-
+        # --- FIX: Ensure we always emit the complete, correctly formatted data ---
+        # The view should not need to know about model objects, only data dictionaries.
+        # This helper function needs to be implemented in your ViewModel.
         view_data = [self._create_dict_from_item(item) for item in self.displayed_items]
+
+        logger.info(
+            f"Applying filters and emitting {len(view_data)} items to the view."
+        )
         self.items_updated.emit(view_data)
 
     # ---Private Slots for Async Results ---
