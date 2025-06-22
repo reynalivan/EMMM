@@ -20,6 +20,7 @@ from qfluentwidgets import (
     VBoxLayout,
     FlowLayout,
     IndeterminateProgressBar,
+    themeColor,
 )
 
 from app.viewmodels.mod_list_vm import ModListViewModel
@@ -81,10 +82,11 @@ class ObjectListPanel(QWidget):
         self.list_widget.setObjectName("ObjectListWidget")
         self.list_widget.setUniformItemSizes(True)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        border_color = themeColor().name()
         self.list_widget.setStyleSheet(
             "QListWidget { border: none; background: transparent; padding-right: 5px; }"
             "QListWidget::item { border-bottom: 1px solid rgba(255, 255, 255, 0.05); }"
-            "QListWidget::item:selected { background: rgba(255, 255, 255, 0.08); border-radius: 4px; }"
+            f"""QListWidget::item:selected {{ background: rgba(255, 255, 255, 0.08); border-left: 4px solid {border_color}; }}"""
         )
 
         # 2. Empty/No Results Label
@@ -130,6 +132,9 @@ class ObjectListPanel(QWidget):
         self.view_model.selection_changed.connect(self._on_selection_changed)
         self.view_model.bulk_operation_started.connect(self._on_bulk_action_started)
         self.view_model.bulk_operation_finished.connect(self._on_bulk_action_completed)
+        self.view_model.active_selection_changed.connect(
+            self._on_active_selection_changed
+        )
 
         # --- Connect UI widget actions to ViewModel slots ---
         # self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
@@ -148,7 +153,7 @@ class ObjectListPanel(QWidget):
         # self.shimmer_frame.stop_shimmer()
         pass
 
-    def _on_items_updated(self, items_data: list[dict]):
+    def _on_items_updated(self, items_data: dict):
         """Repopulates the list view with new data dictionaries."""
         self.list_widget.clear()
         self._item_widgets.clear()
@@ -174,9 +179,14 @@ class ObjectListPanel(QWidget):
 
             self._item_widgets[item_data["id"]] = list_item
 
-    def _on_list_item_clicked(self, item_model: object):
+    def _on_list_item_clicked(self, item_data: dict):
         """Forwards the item selection event upwards to the main window."""
-        self.item_selected.emit(item_model)
+        # 1. FIX: Tell the ViewModel which item is now the active one so it can be remembered.
+        item_id = item_data.get("id")
+        self.view_model.set_active_selection(item_id)
+
+        # 2. Forward the selection to the main window to update the foldergrid.
+        self.item_selected.emit(item_data)
 
     def _on_item_needs_update(self, item_data: dict):
         """Flow 2.2 Stage 2: Finds and redraws a single widget for a targeted update."""
@@ -193,6 +203,25 @@ class ObjectListPanel(QWidget):
 
         if isinstance(widget, ObjectListItemWidget):
             widget.set_data(item_data)
+
+    def _on_active_selection_changed(self, selected_item_id: str | None):
+        """
+        Responds to selection changes from the ViewModel, applying the
+        selection to the correct QListWidgetItem.
+        """
+        if not selected_item_id:
+            self.list_widget.clearSelection()
+            return
+
+        # Find the QListWidgetItem associated with the given ID
+        list_item_to_select = self._item_widgets.get(selected_item_id)
+
+        if list_item_to_select:
+            # Programmatically set the current item in the QListWidget
+            self.list_widget.setCurrentItem(list_item_to_select)
+        else:
+            # If the item is not found (e.g., filtered out), clear selection
+            self.list_widget.clearSelection()
 
     def _on_item_processing_started(self, item_id: str):
         """Flow 3.1 & 4.2: Shows a processing state on a specific widget."""

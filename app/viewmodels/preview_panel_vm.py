@@ -165,6 +165,13 @@ class PreviewPanelViewModel(QObject):
         )
         self.save_description_state.emit("Saving...", False)
 
+        # check if path exists
+        if not self.current_item_model.folder_path.exists():
+            self.toast_requested.emit(
+                "Cannot save description: folder path does not exist.", "error"
+            )
+            return False
+
         worker = Worker(
             self.mod_service.update_item_properties,
             self.current_item_model,
@@ -204,6 +211,13 @@ class PreviewPanelViewModel(QObject):
             return
         if not image_data:
             self.toast_requested.emit("No image data to add.", "warning")
+            return
+
+        # check if path exists
+        if not self.current_item_model.folder_path.exists():
+            self.toast_requested.emit(
+                "Cannot add thumbnail: folder path does not exist.", "error"
+            )
             return
 
         logger.info(
@@ -540,7 +554,16 @@ class PreviewPanelViewModel(QObject):
         self.is_description_dirty = False
         self._unsaved_description = None
         self.is_description_dirty_changed.emit(False)
-        self.save_description_state.emit("Save Description", True)
+        self.save_description_state.emit(
+            "Save Description", True
+        )  # Reset button text and state
+
+        self.is_ini_dirty = False
+        self._unsaved_ini_changes = {}
+        self.ini_dirty_state_changed.emit(False)
+        self.save_config_state.emit(
+            "Save Configuration", True
+        )  # Reset button text and state
 
     def _on_ini_saved(self, result: dict):
         """Handles the result of the .ini configuration save operation."""
@@ -622,6 +645,15 @@ class PreviewPanelViewModel(QObject):
 
     def clear_panel(self):
         "" "Clean the preview panel." ""
-        self.current_item_data = None
-        self.is_description_dirty = False
+        logger.info("Clearing Preview Panel.")
+        if self.current_item_model is None:
+            return  # Already cleared, do nothing.
+        # Reset all internal state
+        self.current_item_model = None
+        self.editable_keybindings = []
+
+        # Reset dirty flags to hide save buttons
+        self._reset_dirty_state()
+
+        # Emit signal with None to tell the View to show its null state page
         self.item_loaded.emit(None)

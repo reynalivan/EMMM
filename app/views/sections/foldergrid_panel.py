@@ -171,7 +171,9 @@ class FolderGridPanel(QWidget):
         self.view_model.bulk_operation_finished.connect(self._on_bulk_action_completed)
 
         # ---Connect UI widget actions to ViewModel slots ---
-
+        self.view_model.active_selection_changed.connect(
+            self._on_active_selection_changed
+        )
         self.breadcrumb_widget.navigation_requested.connect(
             self._on_breadcrumb_navigation
         )
@@ -233,6 +235,7 @@ class FolderGridPanel(QWidget):
             )
 
             # 2. Connect its signals
+            widget.item_selected.connect(self._on_grid_item_selected)
             widget.item_selected.connect(self.item_selected)
 
             self.grid_widget.add_widget(widget)
@@ -291,6 +294,28 @@ class FolderGridPanel(QWidget):
             game=current_game,
             is_new_root=False,  # Breadcrumb navigation is always within the current root
         )
+
+    def _on_active_selection_changed(self, selected_item_id: str | None):
+        """Applies a visual 'selected' state to the correct widget."""
+        for item_id, widget in self._item_widgets.items():
+            # You need to implement a 'set_selected' method on your widget
+            # For example, it could change the border color or background.
+            is_selected = item_id == selected_item_id
+
+            if isinstance(widget, FolderGridItemWidget):
+                widget.set_selected(is_selected)
+
+    def _on_grid_item_selected(self, item_data: dict):
+        """
+        Handles when a grid item is single-clicked.
+        Forwards selection to the main window AND tells the ViewModel about the new active selection.
+        """
+        # 1. Tell the ViewModel which item is now the active one
+        item_id = item_data.get("id")
+        self.view_model.set_active_selection(item_id)
+
+        # 2. Forward the selection to the main window to update the preview panel
+        self.item_selected.emit(item_data)
 
     def _on_selection_changed(self, has_selection: bool):
         """Flow 3.2: Enables or disables bulk action buttons based on selection."""

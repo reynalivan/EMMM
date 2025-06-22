@@ -1,5 +1,6 @@
 # App/viewmodels/main window vm.py
 
+from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 from typing import Optional, List, Dict
 
@@ -58,8 +59,8 @@ class MainWindowViewModel(QObject):
         preview_panel_vm: PreviewPanelViewModel,
     ):
         super().__init__()
-        # ---Injected Services & ViewModels ---
 
+        # ---Injected Services & ViewModels ---
         self.config_service = config_service
         self.workflow_service = workflow_service
         self.objectlist_vm = objectlist_vm
@@ -67,11 +68,10 @@ class MainWindowViewModel(QObject):
         self.preview_panel_vm = preview_panel_vm
 
         # ---Internal State ---
-
         self.config: Optional[AppConfig] = None
         self.active_game: Optional[Game] = None
         self.active_object: Optional[ObjectItem] = None
-
+        self._pending_foldergrid_path_to_refresh: Path | None = None
         self._connect_child_vm_signals()
 
     # ---Initialization ---
@@ -166,7 +166,8 @@ class MainWindowViewModel(QObject):
         """
         if not object_item_data:
             self.active_object = None
-            self.foldergrid_vm.unload_items()
+            if self.foldergrid_vm:
+                self.foldergrid_vm.unload_items()
             return
 
         item_id = object_item_data.get("id")
@@ -224,10 +225,22 @@ class MainWindowViewModel(QObject):
     def request_main_refresh(self):
         """Handles the main refresh button action, reloading the active view."""
         if self.active_game:
+            # Store the path we want to recover after the objectlist is refreshed
+            if self.active_object and self.foldergrid_vm.current_path:
+                self._pending_foldergrid_path_to_refresh = (
+                    self.foldergrid_vm.current_path
+                )
+            else:
+                self._pending_foldergrid_path_to_refresh = None
+
+            # 1. Always refresh the top-level object list
             logger.info(f"Refreshing object list for '{self.active_game.name}'")
             self.objectlist_vm.load_items(
-                path=self.active_game.path, game=self.active_game
+                path=self.active_game.path,
+                game=self.active_game,
+                is_new_root=True,  # Treat refresh as setting a new root
             )
+
         else:
             logger.warning("Refresh requested, but no active game.")
             self.toast_requested.emit("No active game to refresh.", "info")
@@ -252,10 +265,16 @@ class MainWindowViewModel(QObject):
         self.preview_panel_vm.item_metadata_saved.connect(
             self.foldergrid_vm.update_item_in_list
         )
-
+        self.objectlist_vm.load_completed.connect(self._on_objectlist_refresh_complete)
         self.objectlist_vm.toast_requested.connect(self._on_toast_requested)
         self.foldergrid_vm.toast_requested.connect(self._on_toast_requested)
         self.preview_panel_vm.toast_requested.connect(self._on_toast_requested)
+        self.foldergrid_vm.active_selection_changed.connect(
+            self._on_foldergrid_selection_changed
+        )
+        self.foldergrid_vm.selection_invalidated.connect(
+            self.preview_panel_vm.clear_panel
+        )
 
     def _on_toast_requested(self, message: str, level: str = "info"):
         """
@@ -395,3 +414,61 @@ class MainWindowViewModel(QObject):
                 f"Currently previewed item '{modified_item.actual_name}' was modified. Updating preview."
             )
             self.preview_panel_vm.update_view_for_item(modified_item)
+
+    def _on_objectlist_refresh_complete(self, success: bool):
+        """
+        Handles the refresh chain. After the objectlist is refreshed,
+        it intelligently decides whether to restore the foldergrid's sub-path
+        or clear its selection.
+        """
+        path_to_recover = self._pending_foldergrid_path_to_refresh
+        self._pending_foldergrid_path_to_refresh = (
+            None  # Clear pending state immediately
+        )
+
+        if not success:
+            return
+
+        if not path_to_recover:
+            # Nothing to recover, we are done.
+            return
+
+        # After objectlist refresh, self.active_object is now up-to-date.
+        # Check if the path to recover is still valid and belongs to the active object.
+        is_path_still_valid = False
+        if self.active_object and path_to_recover.is_dir():
+            try:
+                # This check ensures the path is still a child of the (potentially renamed) active object
+                path_to_recover.relative_to(self.active_object.folder_path)
+                is_path_still_valid = True
+            except ValueError:
+                is_path_still_valid = False
+
+        if is_path_still_valid:
+            # If path is valid, restore the foldergrid view to that path.
+            logger.info(
+                f"Step 2: Restoring and refreshing folder grid view for '{path_to_recover}'"
+            )
+            self.foldergrid_vm.load_items(
+                path=path_to_recover, game=self.active_game, is_new_root=False
+            )
+        else:
+            # --- FIX: If path is NOT valid, explicitly clear the foldergrid selection ---
+            # This will trigger the domino effect to clear the PreviewPanel.
+            logger.warning(
+                f"Could not restore path '{path_to_recover}', it's no longer valid. Clearing selection."
+            )
+            self.foldergrid_vm.set_active_selection(None)
+
+    def _on_foldergrid_selection_changed(self, selected_item_id: str | None):
+        """
+        Handles when the active selection in the foldergrid is cleared.
+        """
+        # If the selection is cleared (ID is None), command the preview panel to clear itself.
+        # We don't need to handle the case where an item IS selected, because that's
+        # already handled by the item_selected -> set_current_item flow.
+        if selected_item_id is None:
+            logger.info(
+                "Foldergrid selection cleared, commanding preview panel to clear."
+            )
+            self.preview_panel_vm.clear_panel()

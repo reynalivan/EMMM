@@ -15,6 +15,7 @@ from qfluentwidgets import (
     FlowLayout,
     CheckBox,
     VBoxLayout,
+    themeColor,
 )
 from app.utils.logger_utils import logger
 from app.viewmodels.mod_list_vm import ModListViewModel
@@ -43,6 +44,8 @@ class FolderGridItemWidget(CardWidget):
         super().__init__(parent)
         self.item_data = item_data
         self.view_model = viewmodel
+
+        self._is_selected = False
 
         self._card_width = 148
         self._image_height = 185
@@ -188,6 +191,31 @@ class FolderGridItemWidget(CardWidget):
         else:
             # Handle case where even the default pixmap failed to load
             self.thumbnail_label.setText("?")  # Or clear it
+
+    def set_selected(self, is_selected: bool):
+        """
+        Sets the visual state of the widget to selected or unselected.
+        """
+        # Avoid redundant stylesheet changes if the state is already correct
+        if self._is_selected == is_selected:
+            return
+
+        self._is_selected = is_selected
+
+        if is_selected:
+            # Apply a border using the application's current theme color
+            border_color = themeColor().name()
+            self.setStyleSheet(
+                f"""
+                CardWidget {{
+                    border-top: 4px solid {border_color};
+                    background: rgba(255, 255, 255, 0.08);
+                }}
+            """
+            )
+        else:
+            # Revert to the default stylesheet (or a default border)
+            self.setStyleSheet("")
 
     def show_processing_state(self, is_processing: bool, text: str = "Processing..."):
         """Flow 3.1b, 4.2: Shows a visual indicator that the item is being processed."""

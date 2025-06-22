@@ -349,6 +349,12 @@ class ModService:
             On failure: {"success": False, "error": "Error message"}
         """
         try:
+            # check if path exists
+
+            if not item.folder_path.exists():
+                logger.warning(f"Folder path '{item.folder_path}' does not exist.")
+                return {"success": False, "error": "Folder path does not exist."}
+
             # 1. Determine the new status
             if target_status is not None:
                 # This path is for bulk actions. If status is already correct, do nothing.

@@ -42,6 +42,8 @@ class ModListViewModel(QObject):
     toast_requested = pyqtSignal(
         str, str
     )  # message, level ('info', 'error', 'success')
+    active_selection_changed = pyqtSignal(str)
+    selection_invalidated = pyqtSignal()
 
     # ---Signals for Panel-Specific UI ---
 
@@ -58,6 +60,7 @@ class ModListViewModel(QObject):
     active_object_modified = pyqtSignal(object)
     active_object_deleted = pyqtSignal()
     foldergrid_item_modified = pyqtSignal(object)
+    load_completed = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -89,6 +92,7 @@ class ModListViewModel(QObject):
         self.current_game: Game | None = None
         self.navigation_root: Path | None = None
         self._processing_ids = set()
+        self.last_selected_item_id: str | None = None
 
         self.thumbnail_service.thumbnail_generated.connect(self._on_thumbnail_generated)
 
@@ -437,12 +441,54 @@ class ModListViewModel(QObject):
         if not result["success"]:
             self.toast_requested.emit(f"Error: {result['error']}", "error")
             self.items_updated.emit([])  # Ensure view is empty
-
+            self.load_completed.emit(False)
             return
 
         logger.info(f"Successfully loaded {len(result['items'])} skeletons.")
         self.master_list = result["items"]
         self.apply_filters_and_search()
+        self.load_completed.emit(True)
+
+        # --- FIX: Add logic to restore selection after loading is complete ---
+        if self.last_selected_item_id:
+            # Check if the previously selected item still exists in the new list
+            found_item = next(
+                (
+                    item
+                    for item in self.master_list
+                    if item.id == self.last_selected_item_id
+                ),
+                None,
+            )
+
+            if found_item:
+                # If it exists, re-emit the signal to apply the selection style in the UI.
+                logger.info(
+                    f"Restoring selection for item ID: {self.last_selected_item_id}"
+                )
+                self.active_selection_changed.emit(self.last_selected_item_id)
+            else:
+                # --- FIX: The previously selected item no longer exists ---
+                logger.warning(
+                    f"Previously selected item '{self.last_selected_item_id}' not found after refresh. Invalidating selection."
+                )
+                # 1. Reset the state
+                self.last_selected_item_id = None
+
+                # 2. Emit the new, specific signal for this event
+                self.selection_invalidated.emit()
+
+    def set_active_selection(self, item_id: str | None):
+        """
+        Called by the View when an item is single-clicked.
+        This method updates the state and notifies the view.
+        """
+        if self.last_selected_item_id != item_id:
+            self.last_selected_item_id = item_id
+            logger.debug(
+                f"Active selection changed in context '{self.context}': {item_id}"
+            )
+            self.active_selection_changed.emit(item_id)
 
     def _on_skeletons_error(self, error_info: tuple):
         """Handles unexpected errors from the worker thread."""
