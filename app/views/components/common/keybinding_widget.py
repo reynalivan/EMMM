@@ -25,7 +25,7 @@ from qfluentwidgets import (
     FluentIcon,
 )
 
-from app.services.ini_parsing_service import KeyBinding, Assignment
+from app.services.Iniparsing_service import KeyBinding, Assignment
 
 # ---------- constants ----------
 ROW_MARGINS = (4, 0, 4, 0)

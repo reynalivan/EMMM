@@ -4,7 +4,7 @@ from this import s
 from typing import List
 from PyQt6.QtCore import QSignalBlocker, Qt
 from collections import defaultdict
-from app.services.ini_parsing_service import KeyBinding
+from app.services.Iniparsing_service import KeyBinding
 from app.views.components.common.ini_file_group_widget import IniFileGroupWidget
 from app.views.components.common.keybinding_widget import KeyBindingWidget
 from PyQt6.QtWidgets import (

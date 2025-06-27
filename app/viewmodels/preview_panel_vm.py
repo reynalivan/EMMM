@@ -6,14 +6,15 @@ from typing import Any, Dict
 from PyQt6.QtCore import QObject, QThreadPool, pyqtSignal
 from qfluentwidgets import MessageBox
 from app.models.mod_item_model import FolderItem, ModStatus
-from app.services.ini_parsing_service import IniParsingService, KeyBinding
+from app.services.Iniparsing_service import IniKeyParsingService, KeyBinding
 from app.services.mod_service import ModService
+from app.services.thumbnail_service import ThumbnailService
+
 from app.utils import SystemUtils
 from app.viewmodels.mod_list_vm import ModListViewModel
 from app.utils.async_utils import Worker
 from app.utils.logger_utils import logger
 from app.utils.image_utils import ImageUtils
-from app.services.thumbnail_service import ThumbnailService
 
 
 class PreviewPanelViewModel(QObject):
@@ -47,7 +48,7 @@ class PreviewPanelViewModel(QObject):
         self.foldergrid_vm: ModListViewModel = foldergrid_vm
         self.sys_utils: SystemUtils = sys_utils
         self.mod_service: ModService = mod_service
-        self.ini_parsing_service: IniParsingService = ini_parsing_service
+        self.ini_parsing_service: IniKeyParsingService = ini_parsing_service
         self.image_utils: ImageUtils = image_utils
         self.thumbnail_service: ThumbnailService = thumbnail_service
         # ---Internal State ---

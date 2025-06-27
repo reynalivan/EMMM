@@ -27,7 +27,7 @@ from app.services import (
     ConfigService,
     GameService,
     ModService,
-    IniParsingService,
+    IniKeyParsingService,
     ThumbnailService,
     DatabaseService,
     WorkflowService,
@@ -93,7 +93,7 @@ def main():
         config_service = ConfigService(config_path)
         game_service = GameService()
         database_service = DatabaseService(db_path)
-        ini_parsing_service = IniParsingService()
+        ini_key_parsing_service = IniKeyParsingService()
         thumbnail_service = ThumbnailService(
             cache_dir=cache_path, default_icons=DEFAULT_ICONS
         )
@@ -150,7 +150,7 @@ def main():
     )
     preview_panel_vm = PreviewPanelViewModel(
         mod_service=mod_service,
-        ini_parsing_service=ini_parsing_service,
+        ini_parsing_service=ini_key_parsing_service,
         thumbnail_service=thumbnail_service,
         foldergrid_vm=foldergrid_vm,
         sys_utils=system_utils,

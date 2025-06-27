@@ -50,7 +50,7 @@ class KeyBinding:
     assignments: List[Assignment] = field(default_factory=list)
 
 
-class IniParsingService:
+class IniKeyParsingService:
     """
     Parses, modifies, and writes 3DMigoto .ini files, specifically for keybindings.
     This version is significantly improved to handle 3DMigoto's script-like syntax.
