@@ -19,6 +19,7 @@ from qfluentwidgets import (
     SwitchButton,
     PushButton,
     FluentIcon,
+    NavigationInterface
 )
 
 # Import ViewModels
@@ -63,112 +64,108 @@ class MainWindow(FluentWindow):
         self.main_window_vm.start_initial_load()
 
     def _init_ui(self) -> None:
-        """Build window layout – responsive header + non-overlapping panels."""
-
-        # ---------- window ----------
-        self.setWindowTitle("Mods Manager")
-        self.resize(1440, 760)  # let min-sizes below handle tight cases
+        """
+        Builds the window layout using FluentWindow's managed navigation system.
+        This version correctly integrates a filter sidebar with the main content area.
+        """
+        # ---------- 1. Window Basic Setup ----------
+        self.setWindowTitle("EMM - Mods Manager")
+        self.resize(1440, 760)
         self.setMinimumSize(960, 600)
 
-        # ---------- create panels ----------
-        self.object_list_panel = ObjectListPanel(self.main_window_vm.objectlist_vm)
-        self.folder_grid_panel = FolderGridPanel(self.main_window_vm.foldergrid_vm)
-        self.preview_panel = PreviewPanel(self.main_window_vm.preview_panel_vm)
+        # ---------- 2. Create the Main Content Widget ----------
+        # This widget will contain everything EXCEPT the new sidebar:
+        # the header, splitter, and all three panels.
+        central_widget = QWidget()
+        content_v_layout = QVBoxLayout(central_widget)
+        content_v_layout.setContentsMargins(0, 0, 0, 0)
+        content_v_layout.setSpacing(0)
 
-        # give panels flexible policies – let splitter decide
-        for p in (self.object_list_panel, self.folder_grid_panel, self.preview_panel):
-            p.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        # reasonable minimum widths so they can still shrink on very small window
-        self.object_list_panel.setMinimumWidth(284)
-        self.object_list_panel.setMaximumWidth(284)
-        self.preview_panel.setMinimumWidth(276)
-
-        # ---------- header (responsive) ----------
-        self.header_widget = QWidget(self)
+        # ---------- 3. Build Header and Panels (sama seperti kode asli Anda) ----------
+        # Header
+        self.header_widget = QWidget()
         hl = QHBoxLayout(self.header_widget)
         hl.setContentsMargins(12, 6, 12, 6)
-        hl.setSpacing(0)
-
-        # left group
+        hl.setSpacing(10)
+        # ... (semua kode untuk membuat gamelist_combo, buttons, dll. tetap sama)
+        # Left Group
         left = QHBoxLayout()
         left.setSpacing(10)
-
-        self.title_label = TitleLabel("EMM Manager")
         self.gamelist_combo = ComboBox()
         self.gamelist_combo.setPlaceholderText("Select Game")
-        self.gamelist_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-
-        self.safe_mode_switch = SwitchButton()
-        self.safe_mode_switch.setOnText("Safe Mode")
-        self.safe_mode_switch.setOffText("Safe Mode")
-
-        left.addWidget(self.title_label)
-        left.addSpacing(20)
+        self.gamelist_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.safe_mode_switch = SwitchButton("Safe Mode")
         left.addWidget(self.gamelist_combo)
         left.addWidget(self.safe_mode_switch)
-
-        # right group
+        left.addStretch(1)
+        # Right Group
         right = QHBoxLayout()
         right.setSpacing(6)
-
         self.refresh_button = PushButton(FluentIcon.SYNC, "Refresh")
         self.settings_button = PushButton(FluentIcon.SETTING, "Settings")
         self.play_button = PushButton(FluentIcon.PLAY, "Play")
         self.play_button.setEnabled(False)
-
-        for btn in (self.refresh_button, self.settings_button, self.play_button):
-            btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-            btn.setMinimumWidth(96)  # label still readable, but shrinks if needed
-
         right.addWidget(self.refresh_button)
         right.addWidget(self.settings_button)
         right.addWidget(self.play_button)
-
-        # assemble header
         hl.addLayout(left)
-        hl.addStretch(1)
         hl.addLayout(right)
 
-        # ---------- splitter ----------
+        # Panels
+        self.object_list_panel = ObjectListPanel(self.main_window_vm.objectlist_vm)
+        self.folder_grid_panel = FolderGridPanel(self.main_window_vm.foldergrid_vm)
+        self.preview_panel = PreviewPanel(self.main_window_vm.preview_panel_vm)
+        self.object_list_panel.setMinimumWidth(284)
+        self.object_list_panel.setMaximumWidth(400)
+        self.preview_panel.setMinimumWidth(276)
+
+        # Splitter
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(4)
-        self.splitter.setChildrenCollapsible(False)  # prevent accidental overlap
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(self.object_list_panel)
+        self.splitter.addWidget(self.folder_grid_panel)
+        self.splitter.addWidget(self.preview_panel)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([300, 600, 300])
 
-        self.splitter.addWidget(self.object_list_panel)  # idx 0
-        self.splitter.addWidget(self.folder_grid_panel)  # idx 1
-        self.splitter.addWidget(self.preview_panel)  # idx 2
-
-        self.splitter.setStretchFactor(0, 2)  # list
-        self.splitter.setStretchFactor(1, 4)  # grid (main work area)
-        self.splitter.setStretchFactor(2, 3)  # preview
-
-        # ---------- main layout ----------
-        central = QWidget()
-        vbox = QVBoxLayout(central)
-        vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.setSpacing(0)
-        vbox.addWidget(self.header_widget)
-
+        # Assemble the content widget
+        content_v_layout.addWidget(self.header_widget)
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
-        line.setStyleSheet("border-top:1px solid rgba(255,255,255,0.1);")
-        vbox.addWidget(line)
+        content_v_layout.addWidget(line)
+        content_v_layout.addWidget(self.splitter, 1)
 
-        vbox.addWidget(self.splitter, 1)  # occupy remaining space
+        # ---------- 4. Register Content and Add Sidebar Filters ----------
+        # This is the crucial part. We treat the entire content area as one "page"
+        # and then add our filter items to the same navigation panel.
 
-        # ---------- navigation (FluentWindow) ----------
-        central.setObjectName("mainCentralWidget")
-        self.addSubInterface(
-            central,
-            FluentIcon.APPLICATION,
-            self.windowTitle(),
-            NavigationItemPosition.TOP,
+        # Add the main content area as a "sub-interface". It doesn't need an icon
+        # because our filter items will control it. We give it a unique routeKey.
+        central_widget.setObjectName("main_content_view")
+        main_content_nav_item = self.addSubInterface(central_widget, FluentIcon.HOME, "Main Content")
+        main_content_nav_item.setVisible(False)
+
+        # Add a separator to the sidebar
+        self.navigationInterface.addSeparator()
+
+        # Add our filter items. These don't switch pages; they call the ViewModel.
+        self.navigationInterface.addItem(
+            routeKey='character_filter',  # Unique key for the navigation item
+            icon=FluentIcon.PEOPLE,
+            text='Character',
+            onClick=lambda: self.main_window_vm.on_category_selected('character')
         )
-        self.navigationInterface.setCurrentItem(central.objectName())
+        self.navigationInterface.addItem(
+            routeKey='other_filter',  # Unique key
+            icon=FluentIcon.APPLICATION,
+            text='Other',
+            onClick=lambda: self.main_window_vm.on_category_selected('other')
+        )
+
+        # Set the default selected item in the sidebar
+        self.navigationInterface.setCurrentItem('character_filter')
 
     def _bind_view_models(self):
         """Connects signals and slots between this main view and its viewmodels."""

@@ -6,7 +6,7 @@ from typing import Optional, List, Dict
 
 from app.utils.logger_utils import logger
 from app.utils.async_utils import Worker
-
+from app.models.mod_item_model import ModType
 # Import models and services for type hinting
 
 from app.models.config_model import AppConfig
@@ -472,3 +472,17 @@ class MainWindowViewModel(QObject):
                 "Foldergrid selection cleared, commanding preview panel to clear."
             )
             self.preview_panel_vm.clear_panel()
+
+    def on_category_selected(self, category_key: str):
+        """
+        Called by the MainWindow when a category navigation item is clicked.
+        Orchestrates the filtering of the object list.
+        """
+        # Convert the string key from the UI into a ModType enum
+        category = ModType.CHARACTER if category_key == 'character' else ModType.OTHER
+
+        # Delegate the actual filtering logic to the specialized ViewModel
+        self.objectlist_vm.set_category_filter(category)
+
+        # In Stage 3, this method will also be responsible for
+        # triggering the update of the detailed filter UI.

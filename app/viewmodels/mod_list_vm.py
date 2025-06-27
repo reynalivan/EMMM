@@ -8,6 +8,7 @@ from PyQt6.QtGui import QPixmap
 from app.models.game_model import Game
 from app.models.mod_item_model import (
     ModStatus,
+    ModType,
     BaseModItem,
     ObjectItem,
     CharacterObjectItem,
@@ -49,9 +50,9 @@ class ModListViewModel(QObject):
 
     path_changed = pyqtSignal(Path)
     selection_changed = pyqtSignal(bool)
+    available_filters_changed = pyqtSignal(dict)
 
     # ---Signals for Bulk Operations ---
-
     bulk_operation_started = pyqtSignal()
     bulk_operation_finished = pyqtSignal(list)  # list of failed items
 
@@ -93,6 +94,7 @@ class ModListViewModel(QObject):
         self.navigation_root: Path | None = None
         self._processing_ids = set()
         self.last_selected_item_id: str | None = None
+        self.active_category_filter: ModType = ModType.CHARACTER
 
         self.thumbnail_service.thumbnail_generated.connect(self._on_thumbnail_generated)
 
@@ -110,13 +112,11 @@ class ModListViewModel(QObject):
             return
 
         # 1. Race Condition Prevention
-
         self.current_load_token += 1
         token_for_this_load = self.current_load_token
         logger.info(f"Loading items for '{path}' with token {token_for_this_load}")
 
         # 2. Reset Internal State
-
         self.master_list = []
         self.displayed_items = []
         self.current_path = path
@@ -124,19 +124,13 @@ class ModListViewModel(QObject):
         if is_new_root:
             self.navigation_root = path
 
-        # 3. Emit Signals to Update UI State
-        # The View's _on_loading_started slot should handle clearing the old items
-        # and showing the shimmer effect. This is the single source of truth for "loading".
-
         self.loading_started.emit()
 
         # Update breadcrumb path after starting the loading state
-
         if self.context == "foldergrid":
             self.path_changed.emit(self.current_path)
 
         # 4. Start Background Task
-
         worker = Worker(self.mod_service.get_item_skeletons, path, self.context)
         worker.signals.result.connect(
             lambda result: self._on_skeletons_loaded(result, token_for_this_load)
@@ -235,7 +229,9 @@ class ModListViewModel(QObject):
 
     def set_filters(self, filters: dict):
         """Flow 5.1: Sets the active filters and triggers a view update."""
-        pass
+        logger.info(f"Received detailed filters: {filters}")
+        self.active_filters = filters
+        self.apply_filters_and_search()
 
     def on_search_query_changed(self, query: str):
         """Flow 5.1: Sets the search query and triggers a view update (debounced)."""
@@ -398,12 +394,41 @@ class ModListViewModel(QObject):
     # ---Private/Internal Logic ---
 
     def apply_filters_and_search(self):
-        """Filters, sorts, and converts the master list to dicts for the view."""
-        # In a future step, actual filtering logic will go here.
-        # For now, it just takes the entire master_list.
-        filtered_items = self.master_list
+        """
+        Filters and sorts the master list based on all active criteria,
+        then emits the result for the view to render.
+        """
+        source_list = self.master_list
 
-        # The sorting logic you have is excellent and should be kept.
+        # STAGE 1: Apply main category filter (Character vs Other) if in objectlist context
+        if self.context == "objectlist":
+            if self.active_category_filter == ModType.CHARACTER:
+                filtered_items = [
+                    item for item in source_list if isinstance(item, CharacterObjectItem)
+                ]
+            else:  # Assumes ModType.OTHER
+                filtered_items = [
+                    item for item in source_list if isinstance(item, GenericObjectItem)
+                ]
+        else:
+            # For foldergrid, no category filter is applied
+            filtered_items = source_list
+
+        # STAGE 2: Apply detailed filters from self.active_filters
+        if self.active_filters:
+            items_after_detail_filter = []
+            for item in filtered_items:
+                match = True
+                for key, value in self.active_filters.items():
+                    if not hasattr(item, key) or getattr(item, key) != value:
+                        match = False
+                        break
+                if match:
+                    items_after_detail_filter.append(item)
+            filtered_items = items_after_detail_filter
+
+
+        # STAGE 3: Sort the final list
         sorted_list = sorted(
             filtered_items,
             key=lambda item: (
@@ -414,11 +439,8 @@ class ModListViewModel(QObject):
         )
         self.displayed_items = sorted_list
 
-        # --- FIX: Ensure we always emit the complete, correctly formatted data ---
-        # The view should not need to know about model objects, only data dictionaries.
-        # This helper function needs to be implemented in your ViewModel.
+        # STAGE 4: Prepare and emit data for the view
         view_data = [self._create_dict_from_item(item) for item in self.displayed_items]
-
         logger.info(
             f"Applying filters and emitting {len(view_data)} items to the view."
         )
@@ -429,7 +451,6 @@ class ModListViewModel(QObject):
     def _on_skeletons_loaded(self, result: dict, received_token: int):
         """Handles the result from the skeleton loading worker."""
         # Race Condition Check: If this result is from an old request, ignore it.
-
         if received_token != self.current_load_token:
             logger.warning(
                 f"Ignoring stale skeleton load result with token {received_token}"
@@ -446,6 +467,7 @@ class ModListViewModel(QObject):
 
         logger.info(f"Successfully loaded {len(result['items'])} skeletons.")
         self.master_list = result["items"]
+        self._update_available_filters()
         self.apply_filters_and_search()
         self.load_completed.emit(True)
 
@@ -754,3 +776,41 @@ class ModListViewModel(QObject):
             logger.warning(
                 f"Item '{item_id}' not found in list when its thumbnail was ready. It may have been unloaded."
             )
+
+    def set_category_filter(self, category: ModType):
+        """
+        Sets the main category filter for the objectlist and re-applies all filters.
+        This is the entry point called from the main orchestrator (MainWindowViewModel).
+        """
+        # Only apply this logic for the objectlist context
+        if self.context != "objectlist" or self.active_category_filter == category:
+            return
+
+        logger.info(f"Setting category filter to '{category.value}'")
+        self.active_category_filter = category
+
+        # In Stage 3, we will add a signal here to rebuild the filter UI
+        self._update_available_filters()
+
+        # Trigger a full view update with the new category filter applied
+        self.apply_filters_and_search()
+
+    def _update_available_filters(self):
+        """Generates available filter options based on the active category and emits them."""
+        if self.context != "objectlist":
+            return
+        available_options = {}
+        if self.active_category_filter == ModType.CHARACTER:
+            logger.info("Generating filter options for 'Character' category.")
+            all_rarities = set(i.rarity for i in self.master_list if isinstance(i, CharacterObjectItem) and i.rarity)
+            all_elements = set(i.element for i in self.master_list if isinstance(i, CharacterObjectItem) and i.element)
+            if all_rarities:
+                available_options['Rarity'] = sorted(list(all_rarities), reverse=True)
+            if all_elements:
+                available_options['Element'] = sorted(list(all_elements))
+        else:
+            logger.info("Generating filter options for 'Other' category.")
+            all_subtypes = set(i.subtype for i in self.master_list if isinstance(i, GenericObjectItem) and i.subtype)
+            if all_subtypes:
+                available_options['Subtype'] = sorted(list(all_subtypes))
+        self.available_filters_changed.emit(available_options)

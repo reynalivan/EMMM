@@ -9,8 +9,9 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QListWidget,
     QVBoxLayout,
+    QHBoxLayout,
 )
-
+from PyQt6.QtGui import QAction
 from qfluentwidgets import (
     FluentIcon,
     SearchLineEdit,
@@ -20,9 +21,14 @@ from qfluentwidgets import (
     VBoxLayout,
     FlowLayout,
     IndeterminateProgressBar,
+    BodyLabel,
+    RoundMenu,
+    PrimaryPushButton,
+    ComboBox,
     themeColor,
 )
 
+from app.utils.logger_utils import logger
 from app.viewmodels.mod_list_vm import ModListViewModel
 from app.views.components.objectlist_widget import ObjectListItemWidget
 from app.views.components.common.shimmer_frame import ShimmerFrame
@@ -41,9 +47,10 @@ class ObjectListPanel(QWidget):
     def __init__(self, viewmodel: ModListViewModel, parent: QWidget | None = None):
         super().__init__(parent)
         self.view_model = viewmodel
-
         self._item_widgets: Dict[str, QListWidgetItem] = {}
 
+        self.filter_menu = None
+        self.filter_widgets = {}  # To store created filter ComboBoxes
         self._init_ui()
         self._connect_signals()
 
@@ -57,10 +64,13 @@ class ObjectListPanel(QWidget):
         # set minimumSize toolbar layout
         self.search_bar = SearchLineEdit(self)
         self.search_bar.setPlaceholderText("Search objects...")
-        toolbar_layout.addWidget(self.search_bar)
 
         self.filter_btn = DropDownToolButton(FluentIcon.FILTER, self)
         self.filter_btn.setToolTip("Filter")
+        self.filter_menu = RoundMenu(parent=self)
+        self.filter_btn.setMenu(self.filter_menu)
+
+        toolbar_layout.addWidget(self.search_bar)
         toolbar_layout.addWidget(self.filter_btn)
 
         # --- Bulk Action Toolbar (Initially Hidden) ---
@@ -135,6 +145,7 @@ class ObjectListPanel(QWidget):
         self.view_model.active_selection_changed.connect(
             self._on_active_selection_changed
         )
+        self.view_model.available_filters_changed.connect(self._on_available_filters_changed)
 
         # --- Connect UI widget actions to ViewModel slots ---
         # self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
@@ -265,3 +276,72 @@ class ObjectListPanel(QWidget):
         # Show a dialog with "Manual" and "Sync from DB" options.
         # Based on the choice, call the appropriate method on self.view_model.
         pass
+
+    def _clear_layout(self, layout):
+        """Helper function to remove all widgets from a layout."""
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _on_available_filters_changed(self, filter_options: dict):
+        """Clears and rebuilds the filter menu UI controls dynamically."""
+        self.filter_menu.clear()
+        self.filter_widgets.clear()
+
+        if not filter_options:
+            # Add a disabled action if there are no filters
+            action = QAction("No Filters Available", self)
+            action.setEnabled(False)
+            self.filter_menu.addAction(action)
+            return
+
+        # Create a container widget and layout for our controls
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Create filter controls dynamically
+        for name, options in filter_options.items():
+            layout.addWidget(BodyLabel(name))
+            combo = ComboBox()
+            combo.addItems(["All"] + options)
+            layout.addWidget(combo)
+            self.filter_widgets[name] = combo
+
+        # Add Apply and Reset buttons
+        layout.addSpacing(10)
+        button_layout = QHBoxLayout()
+        reset_button = PushButton("Reset")
+        apply_button = PrimaryPushButton("Apply")
+        button_layout.addWidget(reset_button)
+        button_layout.addWidget(apply_button)
+        layout.addLayout(button_layout)
+
+        # Connect button signals
+        reset_button.clicked.connect(self._on_reset_filters)
+        apply_button.clicked.connect(self._on_apply_filters)
+
+        self.filter_menu.addWidget(container, selectable=False)
+
+    def _on_apply_filters(self):
+        """Collects filter values and sends them to the ViewModel."""
+        active_filters = {}
+        for name, widget in self.filter_widgets.items():
+            value = widget.currentText()
+            if value != "All":
+                active_filters[name.lower()] = value
+
+        logger.info(f"Applying filters: {active_filters}")
+        # self.view_model.set_filters(active_filters) # This method needs to be implemented in VM
+        self.filter_menu.close()
+
+    def _on_reset_filters(self):
+        """Resets all filter widgets to 'All' and applies."""
+        for widget in self.filter_widgets.values():
+            widget.setCurrentIndex(0)
+        self._on_apply_filters()
