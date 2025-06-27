@@ -17,12 +17,15 @@ from qfluentwidgets import (
     SearchLineEdit,
     DropDownToolButton,
     SubtitleLabel,
+    TitleLabel,
+    TransparentToolButton,
     PushButton,
     VBoxLayout,
     FlowLayout,
     IndeterminateProgressBar,
     BodyLabel,
     RoundMenu,
+    IconWidget,
     PrimaryPushButton,
     ComboBox,
     themeColor,
@@ -99,22 +102,56 @@ class ObjectListPanel(QWidget):
             f"""QListWidget::item:selected {{ background: rgba(255, 255, 255, 0.08); border-left: 4px solid {border_color}; }}"""
         )
 
-        # 2. Empty/No Results Label
-        self.empty_label = SubtitleLabel("No objects found.", self)
-        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_state_widget = QWidget(self)
+        empty_layout = QVBoxLayout(self.empty_state_widget)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.setSpacing(10)
 
-        # 3. Shimmer Frame for Loading
+        self.empty_icon = IconWidget(FluentIcon.SEARCH, self.empty_state_widget)
+        self.empty_icon.setFixedSize(48, 48)
+
+        self.empty_title_label = TitleLabel("No Objects Found", self.empty_state_widget)
+        self.empty_subtitle_label = BodyLabel("This category is empty.", self.empty_state_widget)
+        self.empty_subtitle_label.setAlignment(Qt.AlignmentFlag.AlignBaseline | Qt.AlignmentFlag.AlignCenter)
+        self.empty_subtitle_label.setWordWrap(True)
+
+        # You can add a button here for a "call to action"
+        self.empty_action_button = PushButton("Create New Object")
+        self.empty_action_button.setVisible(False) # Hide it by default
+
+        empty_layout.addStretch(1)
+        empty_layout.addWidget(self.empty_icon, 0, Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(self.empty_title_label, 0, Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(self.empty_subtitle_label, 0, Qt.AlignmentFlag.AlignTop)
+        empty_layout.addWidget(self.empty_action_button, 0, Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addStretch(1)
+
+        # 3. Shimmer Frame for Loading (No changes here)
         self.shimmer_frame = ShimmerFrame(self)
-
         self.stack.addWidget(self.list_widget)
-        self.stack.addWidget(self.empty_label)
+        self.stack.addWidget(self.empty_state_widget)
         self.stack.addWidget(self.shimmer_frame)
+
+        # --- Result Bar (Initially Hidden) ---
+        self.result_bar_widget = QWidget(self)
+        self.result_bar_widget.setObjectName("ResultBar")
+        result_bar_layout = QHBoxLayout(self.result_bar_widget)
+        result_bar_layout.setContentsMargins(14, 4, 10, 4)
+
+        self.result_label = BodyLabel("...")
+        self.clear_filter_button = TransparentToolButton(FluentIcon.CLOSE, self.result_bar_widget)
+        self.clear_filter_button.setToolTip("Clear all filters and search")
+
+        result_bar_layout.addWidget(self.result_label, 1)
+        result_bar_layout.addWidget(self.clear_filter_button)
+        self.result_bar_widget.setVisible(False) # Hide it by default
 
         # --- Main Layout ---
         main_layout = QVBoxLayout(self)  # Use fluent VBoxLayout
         main_layout.setContentsMargins(0, 10, 0, 5)
         main_layout.setSpacing(6)
         main_layout.addLayout(toolbar_layout)
+        main_layout.addWidget(self.result_bar_widget)
         main_layout.addWidget(self.bulk_action_widget)
         main_layout.addWidget(self.stack, 1)
 
@@ -122,11 +159,6 @@ class ObjectListPanel(QWidget):
         """Connects this panel's widgets and slots to the ViewModel."""
         # ViewModel -> View connections
         self.view_model.items_updated.connect(self._on_items_updated)
-        # ... other vm -> view connections
-
-        # View -> ViewModel connections
-        # self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
-        # ... other view -> vm connections
 
         # --- Connect ViewModel signals to this panel's slots ---
         self.view_model.loading_started.connect(self._on_loading_started)
@@ -145,10 +177,14 @@ class ObjectListPanel(QWidget):
         self.view_model.active_selection_changed.connect(
             self._on_active_selection_changed
         )
+        self.view_model.empty_state_changed.connect(self._on_empty_state_changed)
         self.view_model.available_filters_changed.connect(self._on_available_filters_changed)
+        self.view_model.filter_state_changed.connect(self._on_filter_state_changed)
+        self.view_model.clear_search_text.connect(self.search_bar.clear)
+        self.clear_filter_button.clicked.connect(self.view_model.clear_all_filters_and_search)
 
         # --- Connect UI widget actions to ViewModel slots ---
-        # self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
+        self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
         # self.create_button.clicked.connect(self._on_create_object_requested)
 
     # --- SLOTS (Responding to ViewModel Signals) ---
@@ -165,19 +201,24 @@ class ObjectListPanel(QWidget):
         pass
 
     def _on_items_updated(self, items_data: dict):
-        """Repopulates the list view with new data dictionaries."""
+        """
+        Repopulates the list view and intelligently updates the view state
+        (list, empty, or no results).
+        """
         self.list_widget.clear()
         self._item_widgets.clear()
 
+        # --- UI Feedback Logic ---
         if not items_data:
-            self.stack.setCurrentWidget(self.empty_label)
+            # If no items are available, show the empty state widget.
             return
+        # -------------------------------------------
 
+        # If there are items, show the list widget.
         self.stack.setCurrentWidget(self.list_widget)
 
         for item_data in items_data:
             list_item = QListWidgetItem(self.list_widget)
-            # Pass item_data (dict) ke constructor widget
             item_widget = ObjectListItemWidget(
                 item_data=item_data,
                 viewmodel=self.view_model,
@@ -293,13 +334,11 @@ class ObjectListPanel(QWidget):
         self.filter_widgets.clear()
 
         if not filter_options:
-            # Add a disabled action if there are no filters
             action = QAction("No Filters Available", self)
             action.setEnabled(False)
             self.filter_menu.addAction(action)
             return
 
-        # Create a container widget and layout for our controls
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -310,10 +349,18 @@ class ObjectListPanel(QWidget):
             layout.addWidget(BodyLabel(name))
             combo = ComboBox()
             combo.addItems(["All"] + options)
+
+            # --- State Persistence Logic ---
+            # Check if there is an active filter for this combobox
+            # The key in active_filters is lowercase (e.g., 'rarity')
+            active_value = self.view_model.active_filters.get(name.lower())
+            if active_value:
+                combo.setCurrentText(active_value)
+            # -----------------------------
+
             layout.addWidget(combo)
             self.filter_widgets[name] = combo
 
-        # Add Apply and Reset buttons
         layout.addSpacing(10)
         button_layout = QHBoxLayout()
         reset_button = PushButton("Reset")
@@ -334,14 +381,42 @@ class ObjectListPanel(QWidget):
         for name, widget in self.filter_widgets.items():
             value = widget.currentText()
             if value != "All":
+                # Use lowercase for the key to match model attributes
                 active_filters[name.lower()] = value
 
-        logger.info(f"Applying filters: {active_filters}")
-        # self.view_model.set_filters(active_filters) # This method needs to be implemented in VM
+        # Call the ViewModel method we implemented
+        self.view_model.set_filters(active_filters)
         self.filter_menu.close()
 
     def _on_reset_filters(self):
         """Resets all filter widgets to 'All' and applies."""
         for widget in self.filter_widgets.values():
             widget.setCurrentIndex(0)
-        self._on_apply_filters()
+
+        # Call the ViewModel method to clear the filters
+        self.view_model.clear_filters()
+        self.filter_menu.close()
+
+
+    def _on_empty_state_changed(self, title: str, subtitle: str):
+        """Updates the text on the empty state widget and displays it."""
+        self.empty_title_label.setText(title)
+        self.empty_subtitle_label.setText(subtitle)
+
+        # Example of contextual icon/button
+        if "filter" in subtitle or "criteria" in subtitle:
+            self.empty_icon.setIcon(FluentIcon.FILTER)
+            self.empty_action_button.setVisible(False)
+        else:
+            self.empty_icon.setIcon(FluentIcon.SEARCH_MIRROR)
+            self.empty_action_button.setVisible(True) # Show "Create" button for true empty states
+
+        self.stack.setCurrentWidget(self.empty_state_widget)
+
+    def _on_filter_state_changed(self, show_bar: bool, count: int):
+        """Shows or hides the result bar based on the filter state."""
+        if show_bar:
+            plural = "s" if count > 1 else ""
+            self.result_label.setText(f"{count} result{plural} found")
+
+        self.result_bar_widget.setVisible(show_bar)

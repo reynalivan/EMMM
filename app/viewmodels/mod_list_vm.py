@@ -23,8 +23,8 @@ from app.services.database_service import DatabaseService
 from app.services.mod_service import ModService
 from app.services.workflow_service import WorkflowService
 from app.utils.system_utils import SystemUtils
-from app.core.constants import CONTEXT_OBJECTLIST, CONTEXT_FOLDERGRID
-
+from app.utils.async_utils import debounce
+from app.core.constants import DEBOUNCE_DELAY_MS, CONTEXT_OBJECTLIST, CONTEXT_FOLDERGRID
 
 class ModListViewModel(QObject):
     """
@@ -45,6 +45,9 @@ class ModListViewModel(QObject):
     )  # message, level ('info', 'error', 'success')
     active_selection_changed = pyqtSignal(str)
     selection_invalidated = pyqtSignal()
+    empty_state_changed = pyqtSignal(str, str)
+    filter_state_changed = pyqtSignal(bool, int)
+    clear_search_text = pyqtSignal()
 
     # ---Signals for Panel-Specific UI ---
 
@@ -57,7 +60,6 @@ class ModListViewModel(QObject):
     bulk_operation_finished = pyqtSignal(list)  # list of failed items
 
     # ---Signals for Cross-ViewModel Communication ("Efek Domino") ---
-
     active_object_modified = pyqtSignal(object)
     active_object_deleted = pyqtSignal()
     foldergrid_item_modified = pyqtSignal(object)
@@ -228,14 +230,41 @@ class ModListViewModel(QObject):
     # ---Filtering and Searching ---
 
     def set_filters(self, filters: dict):
-        """Flow 5.1: Sets the active filters and triggers a view update."""
-        logger.info(f"Received detailed filters: {filters}")
+        """
+        Flow 5.1: Sets the active detail filters (e.g., rarity, element)
+        and triggers a view update.
+        """
+        logger.info(f"Applying detailed filters: {filters}")
         self.active_filters = filters
         self.apply_filters_and_search()
 
+    def clear_filters(self):
+        """
+        Clears all active detail filters and triggers a view update.
+        """
+        if not self.active_filters:
+            return
+
+        logger.info("Clearing all detailed filters.")
+        self.active_filters = {}
+        self.apply_filters_and_search()
+
+    @debounce(DEBOUNCE_DELAY_MS)
     def on_search_query_changed(self, query: str):
-        """Flow 5.1: Sets the search query and triggers a view update (debounced)."""
-        pass
+        """
+        Flow 5.1: Handles live text changes from the search bar with a debounce delay.
+        """
+        # Sanitize the input query
+        sanitized_query = query.lower().strip()
+
+        # Only trigger a refresh if the query has actually changed
+        if self.search_query == sanitized_query:
+            return
+
+        logger.info(f"Search query changed to: '{sanitized_query}'")
+        self.search_query = sanitized_query
+        self.apply_filters_and_search()
+
 
     # ---Single Item Actions ---
 
@@ -401,53 +430,129 @@ class ModListViewModel(QObject):
         source_list = self.master_list
 
         # STAGE 1: Apply main category filter (Character vs Other) if in objectlist context
-        if self.context == "objectlist":
+        if self.context == CONTEXT_OBJECTLIST:
             if self.active_category_filter == ModType.CHARACTER:
-                filtered_items = [
-                    item for item in source_list if isinstance(item, CharacterObjectItem)
-                ]
-            else:  # Assumes ModType.OTHER
-                filtered_items = [
-                    item for item in source_list if isinstance(item, GenericObjectItem)
-                ]
+                filtered_items = [item for item in source_list if isinstance(item, CharacterObjectItem)]
+            else:
+                filtered_items = [item for item in source_list if isinstance(item, GenericObjectItem)]
         else:
-            # For foldergrid, no category filter is applied
             filtered_items = source_list
 
         # STAGE 2: Apply detailed filters from self.active_filters
         if self.active_filters:
-            items_after_detail_filter = []
-            for item in filtered_items:
-                match = True
-                for key, value in self.active_filters.items():
-                    if not hasattr(item, key) or getattr(item, key) != value:
-                        match = False
-                        break
-                if match:
-                    items_after_detail_filter.append(item)
-            filtered_items = items_after_detail_filter
+                items_after_detail_filter = []
+                for item in filtered_items:
+                    match = True
+                    for key, value in self.active_filters.items():
+                        # --- MODIFIKASI Logika Filter ---
+                        # Handle multi-select for tags
+                        if key == 'tags' and isinstance(value, list):
+                            if not hasattr(item, 'tags') or not item.tags or not set(value).issubset(set(item.tags)):
+                                match = False
+                                break
+                        # Handle single-select for other fields
+                        else:
+                            item_value = getattr(item, key.lower(), None)
+                            if item_value != value:
+                                match = False
+                                break
+                        # --------------------------------
+                    if match:
+                        items_after_detail_filter.append(item)
+                filtered_items = items_after_detail_filter
 
 
         # STAGE 3: Sort the final list
-        sorted_list = sorted(
-            filtered_items,
-            key=lambda item: (
-                not item.is_pinned,
-                item.status != ModStatus.ENABLED,
-                item.actual_name.lower(),
-            ),
-        )
-        self.displayed_items = sorted_list
+        scored_results = []
+        if not self.search_query:
+            # If search is empty, assign a neutral score to all items
+            scored_results = [(item, 99) for item in filtered_items]
+        else:
+            # If search is active, score each item based on relevance
+            for item in filtered_items:
+                score = 99  # Default non-match score
 
-        # STAGE 4: Prepare and emit data for the view
-        view_data = [self._create_dict_from_item(item) for item in self.displayed_items]
-        logger.info(
-            f"Applying filters and emitting {len(view_data)} items to the view."
+                # Context-aware scoring
+                if self.context == CONTEXT_OBJECTLIST:
+                    if self.search_query in item.actual_name.lower():
+                        score = 1
+                    elif item.tags and any(self.search_query in tag.lower() for tag in item.tags):
+                        score = 2
+                    elif isinstance(item, CharacterObjectItem):
+                        if (item.element and self.search_query in item.element.lower()) or \
+                            (item.weapon and self.search_query in item.weapon.lower()):
+                            score = 3
+
+                elif self.context == CONTEXT_FOLDERGRID:
+                    if self.search_query in item.actual_name.lower():
+                        score = 1
+                    elif item.tags and any(self.search_query in tag.lower() for tag in item.tags):
+                        score = 2
+                    elif item.author and self.search_query in item.author.lower():
+                        score = 3
+                    elif item.description and self.search_query in item.description.lower():
+                        score = 4
+
+                # Only include items that have a match (score < 99)
+                if score < 99:
+                    scored_results.append((item, score))
+
+        # --- STAGE 4: Sort the final list ---
+        # Sort by: 1. Score (relevance), 2. Pinned, 3. Enabled, 4. Name
+        sorted_results = sorted(
+            scored_results,
+            key=lambda x: (x[1], not x[0].is_pinned, x[0].status != ModStatus.ENABLED, x[0].actual_name.lower())
         )
+
+        # Extract only the item objects from the (item, score) tuples
+        self.displayed_items = [item for item, score in sorted_results]
+
+        # --- STAGE 5: Check for empty results and emit CONTEXT-AWARE state ---
+        if not self.displayed_items:
+            # This block is now context-aware
+            if not self.master_list:
+                # Case 1: The folder itself is truly empty.
+                if self.context == CONTEXT_OBJECTLIST:
+                    title = "No Objects Found"
+                    subtitle = "This game's mods folder seems to be empty.\nCreate a new object to get started."
+                else: # CONTEXT_FOLDERGRID
+                    title = "Folder is Empty"
+                    subtitle = "Drag and drop a .zip file or folder here to add a new mod."
+                self.empty_state_changed.emit(title, subtitle)
+
+            elif self.search_query or self.active_filters:
+                # Case 2: A search/filter was applied and yielded no results (generic message).
+                title = "No Matching Results"
+                subtitle = "Try adjusting your filter or search terms."
+                self.empty_state_changed.emit(title, subtitle)
+
+            else:
+                # Case 3: No search/filter, but the base list for the context is empty.
+                # This only really applies to the objectlist's category filter.
+                if self.context == CONTEXT_OBJECTLIST:
+                    category_name = self.active_category_filter.value
+                    title = f"No {category_name}s Found"
+                    subtitle = f"This category is empty. You can add mods to it."
+                    self.empty_state_changed.emit(title, subtitle)
+                else:
+                    # This case is unlikely for foldergrid but provides a fallback.
+                    title = "Folder is Empty"
+                    subtitle = "This folder contains no mods."
+                    self.empty_state_changed.emit(title, subtitle)
+
+        # --- STAGE 6: Emit filter state for the result bar (BARU) ---
+        is_filter_active = bool(self.active_filters or self.search_query)
+        found_count = len(self.displayed_items)
+
+        # Show bar only if a filter/search is active AND there are results
+        show_bar = is_filter_active and found_count > 0
+        self.filter_state_changed.emit(show_bar, found_count)
+
+        # --- STAGE 7: Prepare and emit data for the view ---
+        view_data = [self._create_dict_from_item(item) for item in self.displayed_items]
         self.items_updated.emit(view_data)
 
     # ---Private Slots for Async Results ---
-
     def _on_skeletons_loaded(self, result: dict, received_token: int):
         """Handles the result from the skeleton loading worker."""
         # Race Condition Check: If this result is from an old request, ignore it.
@@ -796,21 +901,51 @@ class ModListViewModel(QObject):
         self.apply_filters_and_search()
 
     def _update_available_filters(self):
-        """Generates available filter options based on the active category and emits them."""
-        if self.context != "objectlist":
-            return
+        """Generates available filter options based on the active context and emits them."""
         available_options = {}
-        if self.active_category_filter == ModType.CHARACTER:
-            logger.info("Generating filter options for 'Character' category.")
-            all_rarities = set(i.rarity for i in self.master_list if isinstance(i, CharacterObjectItem) and i.rarity)
-            all_elements = set(i.element for i in self.master_list if isinstance(i, CharacterObjectItem) and i.element)
-            if all_rarities:
-                available_options['Rarity'] = sorted(list(all_rarities), reverse=True)
-            if all_elements:
-                available_options['Element'] = sorted(list(all_elements))
-        else:
-            logger.info("Generating filter options for 'Other' category.")
-            all_subtypes = set(i.subtype for i in self.master_list if isinstance(i, GenericObjectItem) and i.subtype)
-            if all_subtypes:
-                available_options['Subtype'] = sorted(list(all_subtypes))
+
+        if self.context == CONTEXT_OBJECTLIST:
+            # Logic for objectlist
+            if self.active_category_filter == ModType.CHARACTER:
+                all_rarities = set(i.rarity for i in self.master_list if isinstance(i, CharacterObjectItem) and i.rarity)
+                all_elements = set(i.element for i in self.master_list if isinstance(i, CharacterObjectItem) and i.element)
+                if all_rarities:
+                    available_options['Rarity'] = sorted(list(all_rarities), reverse=True)
+                if all_elements:
+                    available_options['Element'] = sorted(list(all_elements))
+            else: # 'Other'
+                all_subtypes = set(i.subtype for i in self.master_list if isinstance(i, GenericObjectItem) and i.subtype)
+                if all_subtypes:
+                    available_options['Subtype'] = sorted(list(all_subtypes))
+
+        elif self.context == CONTEXT_FOLDERGRID:
+            # --- Logic for foldergrid ---
+            logger.info("Generating filter options for 'FolderGrid' context.")
+            all_authors = set(i.author for i in self.master_list if isinstance(i, FolderItem) and i.author)
+
+            all_tags = set()
+            for item in self.master_list:
+                if isinstance(item, FolderItem) and item.tags:
+                    all_tags.update(item.tags)
+
+            if all_authors:
+                available_options['Author'] = sorted(list(all_authors))
+            if all_tags:
+                available_options['Tags'] = sorted(list(all_tags))
+            # ---------------------------------
+
         self.available_filters_changed.emit(available_options)
+
+    def clear_all_filters_and_search(self):
+        """Clears all active filters and the search query."""
+        should_update = bool(self.active_filters or self.search_query)
+
+        self.active_filters = {}
+        self.search_query = ""
+
+        # If there was something to clear, trigger a UI update
+        if should_update:
+            logger.info("Clearing all filters and search.")
+            # Also notify the view to clear the search bar text
+            self.clear_search_text.emit()
+            self.apply_filters_and_search()
