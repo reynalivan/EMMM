@@ -62,6 +62,7 @@ class ObjectListItemWidget(QWidget):
 
         self.avatar = AvatarWidget(self)
         self.avatar.setRadius(34)
+        self.avatar.setFixedSize(QSize(76, 76))
 
         # Checkbox is made as a child of Avatar for overlay
 
@@ -151,6 +152,8 @@ class ObjectListItemWidget(QWidget):
             default_type="object",
         )
         self.avatar.setPixmap(thumbnail_pixmap)
+        self.avatar.setRadius(34)
+        self.avatar.setFixedSize(QSize(76, 76))
 
     def show_processing_state(self, is_processing: bool, text: str = "Processing..."):
         """Flow 3.1a, 4.2: Shows a visual indicator that the item is being processed."""
