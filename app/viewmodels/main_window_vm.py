@@ -34,7 +34,6 @@ class MainWindowViewModel(QObject):
     """
 
     # ---Signals for Global UI Feedback ---
-
     toast_requested = pyqtSignal(str, ToastLevel)  # message, level
 
     global_operation_started = pyqtSignal(str)
@@ -45,9 +44,7 @@ class MainWindowViewModel(QObject):
     safe_mode_switch_state = pyqtSignal(bool)
 
     # ---Signals for Game List UI ---
-
     game_list_updated = pyqtSignal(list)  # list[dict] instead of list[Game]
-
     active_game_changed = pyqtSignal(object)  # Game object or None
 
     def __init__(
@@ -82,35 +79,55 @@ class MainWindowViewModel(QObject):
         self.toast_requested.emit("Loading configuration...", ToastLevel.INFO)
 
         # Create a worker to load config file without blocking the UI
-
         worker = Worker(self.config_service.load_config)
 
         # Connect signals from the worker to the appropriate slots
-
         worker.signals.result.connect(self._on_load_config_finished)
         worker.signals.error.connect(self._on_load_config_error)
 
         # Execute the worker in the global thread pool
-
         thread_pool = QThreadPool.globalInstance()
 
         if thread_pool:
             thread_pool.start(worker)
         else:
             # This case is highly unlikely in a running app but is good to handle.
-
             logger.critical("Could not retrieve the global QThreadPool instance.")
             self.toast_requested.emit(
                 "Critical error: Could not start background tasks.", "error"
             )
 
     def refresh_all_from_config(self):
-        """Flow 2.1: Reloads config from disk, typically after settings change."""
+        """
+        [REVISED] Reloads config from disk and ensures all child VMs
+        are updated with the new, refreshed game object references.
+        """
         logger.info("Configuration has changed. Refreshing application state...")
-        # Re-running the initial load sequence is the most reliable way to refresh
 
-        app_config = self.config_service.load_config()
-        self._on_load_config_finished(app_config)
+        # 1. Keep track of the previously active game's ID
+        previous_active_game_id = self.active_game.id if self.active_game else None
+
+        # 2. Load the new config from the file
+        new_config = self.config_service.load_config()
+
+        # 3. Update the main list of games
+        self._on_load_config_finished(new_config)
+
+        # 4. Find the corresponding refreshed game object and RESET the active game
+        if previous_active_game_id:
+            refreshed_active_game = next(
+                (g for g in self.config.games if g.id == previous_active_game_id), None
+            )
+
+            if refreshed_active_game:
+                # By calling set_current_game, we force an update of all child
+                # VMs and trigger a reload of the objectlist with the new game object.
+                logger.info("Re-setting active game to sync new configuration...")
+                self.set_current_game(refreshed_active_game)
+                # ---------------------
+            else:
+                # The previously active game was deleted, clear the view
+                self.set_current_game(None)
 
     # ---Public Slots (for UI Actions) ---
 
@@ -123,16 +140,13 @@ class MainWindowViewModel(QObject):
         self.active_game = game
 
         # Save this choice for the next session
-
         self.config_service.save_setting("last_active_game_id", self.active_game.id)
 
         # Revised: DICT EMIT contains relevant data, not all objects
-
         active_game_data = {"name": self.active_game.name, "id": self.active_game.id}
         self.active_game_changed.emit(active_game_data)
 
         # Flow 2.1 Step 5: Trigger the next flow
-
         if self.active_game.path and self.active_game.path.is_dir():
             self.objectlist_vm.load_items(
                 path=self.active_game.path, game=self.active_game

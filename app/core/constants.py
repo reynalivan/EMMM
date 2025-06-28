@@ -13,7 +13,7 @@ DEFAULT_DISABLED_PREFIX: str = "DISABLED "
 PIN_SUFFIX: str = "_pin"
 
 # --- File & Directory Names ---
-CONFIG_FILE_NAME: str = "config.ini"
+CONFIG_FILE_NAME: str = "config.json"
 DATABASE_FILE_NAME: str = "database_object.json"
 CACHE_DIR_NAME: str = "cache"
 LOG_DIR_NAME: str = "logs"

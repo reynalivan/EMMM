@@ -1,4 +1,5 @@
 # app/services/config_service.py
+import json
 from pathlib import Path
 import configparser
 from typing import Any
@@ -20,12 +21,9 @@ class ConfigService:
 
     def load_config(self) -> AppConfig:
         """
-        Flow 1.1: Loads the entire configuration from config.ini.
+        Flow 1.1: Loads the entire configuration from config.json.
         Handles FileNotFoundError and parsing errors gracefully by returning a default AppConfig.
         """
-        parser = configparser.ConfigParser()
-        parser.optionxform = lambda optionstr: optionstr
-
         if not self.config_path.exists():
             logger.warning(
                 f"Config file not found at '{self.config_path}'. Returning default config."
@@ -33,130 +31,148 @@ class ConfigService:
             return AppConfig()
 
         try:
-            parser.read(self.config_path)
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-            # --- Parse [Games] section ---
+            # --- Parse [games] list ---
+            games_data = data.get("games", [])
             games = []
-            if parser.has_section("Games"):
-                for name, value in parser.items("Games"):
-                    try:
-                        # Expecting format: path|id
-                        path_str, game_id = value.strip().split("|")
-                        game_path = Path(path_str)
-                        if game_path.is_dir():
-                            games.append(Game(id=game_id, name=name, path=game_path))
-                        else:
-                            logger.warning(
-                                f"Path for game '{name}' does not exist: '{path_str}'. Skipping."
+            for game_dict in games_data:
+                try:
+                    # Pastikan path adalah objek Path dan valid
+                    game_path = Path(game_dict.get("path"))
+                    if game_path.is_dir():
+                        games.append(
+                            Game(
+                                id=game_dict.get("id"),
+                                name=game_dict.get("name"),
+                                path=game_path,
+                                game_type=game_dict.get("game_type")
                             )
-                    except ValueError:
-                        logger.error(
-                            f"Malformed value for game '{name}' in config.ini. Expected 'path|id'. Skipping."
                         )
+                    else:
+                        logger.warning(
+                            f"Path for game '{game_dict.get('name')}' does not exist: '{game_path}'. Skipping."
+                        )
+                except (TypeError, KeyError) as e:
+                    logger.error(f"Malformed game entry in config.json: {game_dict}. Error: {e}. Skipping.")
 
-            # --- Parse [Settings] section ---
-            settings = parser["Settings"] if parser.has_section("Settings") else {}
+
+            # --- Parse [settings] object ---
+            settings = data.get("settings", {})
             last_active_game_id = settings.get("last_active_game_id")
-            safe_mode_enabled = settings.get("safe_mode_enabled", "False").lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            )
+            safe_mode_enabled = bool(settings.get("safe_mode_enabled", False))
 
-            # --- Parse [UI] section ---
-            ui_prefs = parser["UI"] if parser.has_section("UI") else {}
-            geometry_str = ui_prefs.get("window_geometry")
-            geometry = (
-                tuple(map(int, geometry_str.split(","))) if geometry_str else None
-            )
-            if geometry is not None and len(geometry) != 4:
-                logger.warning(
-                    f"window_geometry should have 4 values, got {len(geometry)}. Ignoring."
-                )
+
+            # --- Parse [ui] object ---
+            ui_prefs = data.get("ui", {})
+            geometry = tuple(ui_prefs.get("window_geometry")) if "window_geometry" in ui_prefs else None
+            splitter_sizes = tuple(ui_prefs.get("splitter_sizes")) if "splitter_sizes" in ui_prefs else None
+
+            # Validasi tambahan untuk geometry dan splitter
+            if geometry and len(geometry) != 4:
+                logger.warning(f"window_geometry has {len(geometry)} values, expected 4. Ignoring.")
                 geometry = None
-
-            splitter_str = ui_prefs.get("splitter_sizes")
-            if splitter_str:
-                splitter_parts = tuple(map(int, splitter_str.split(",")))
-                if len(splitter_parts) == 3:
-                    splitter_sizes = splitter_parts
-                else:
-                    logger.warning(
-                        f"splitter_sizes should have 3 values, got {len(splitter_parts)}. Ignoring."
-                    )
-                    splitter_sizes = None
-            else:
+            if splitter_sizes and len(splitter_sizes) != 3:
+                logger.warning(f"splitter_sizes has {len(splitter_sizes)} values, expected 3. Ignoring.")
                 splitter_sizes = None
 
+            logger.info("Successfully loaded configuration from config.json.")
             return AppConfig(
                 games=games,
                 last_active_game_id=last_active_game_id,
                 safe_mode_enabled=safe_mode_enabled,
                 window_geometry=geometry,
                 splitter_sizes=splitter_sizes,
+                # preset will be handled later
             )
 
-        except configparser.Error as e:
-            logger.error(f"Failed to parse config.ini: {e}. Returning default config.")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse config.json: {e}. Returning default config.")
+            return AppConfig()
+        except Exception as e:
+            logger.critical(f"An unexpected error occurred while loading config: {e}", exc_info=True)
             return AppConfig()
 
     def save_config(self, config: AppConfig):
         """
-        Saves the entire AppConfig object to the config.ini file.
-        This operation overwrites the existing file.
+        [REVISED] Saves the entire AppConfig object to the config.json file.
+        This operation serializes the dataclasses into a JSON structure.
         """
         logger.info(f"Saving configuration to {self.config_path}...")
-        parser = configparser.ConfigParser()
-        parser.optionxform = lambda optionstr: optionstr
 
-        # --- [Settings] Section ---
-        parser["Settings"] = {
-            "last_active_game_id": config.last_active_game_id or "",
-            "safe_mode_enabled": str(config.safe_mode_enabled),
-        }
-
-        # --- [UI] Section ---
-        if config.window_geometry:
-            parser["UI"] = {
-                "window_geometry": ",".join(map(str, config.window_geometry)),
-                "splitter_sizes": ",".join(map(str, config.splitter_sizes or [])),
+        try:
+            # 1. Build the main dictionary from the AppConfig object
+            config_data = {
+                "settings": {
+                    "last_active_game_id": config.last_active_game_id,
+                    "safe_mode_enabled": config.safe_mode_enabled,
+                },
+                "ui": {
+                    "window_geometry": config.window_geometry,
+                    "splitter_sizes": config.splitter_sizes,
+                },
+                "games": [
+                    {
+                        "id": game.id,
+                        "name": game.name,
+                        "path": str(game.path),  # Convert Path object to string for JSON
+                        "game_type": game.game_type,
+                    }
+                    for game in config.games
+                ],
+                "presets": {
+                    # Logic for presets will be added here in the future
+                },
             }
 
-        # --- [Games] Section ---
-        parser["Games"] = {game.name: f"{game.path}|{game.id}" for game in config.games}
+            # 2. Write the dictionary to the JSON file
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                # Use indent=4 for a human-readable file
+                json.dump(config_data, f, indent=4)
 
-        # --- [Presets] Section (Placeholder for now) ---
-        # parser['Presets'] = { ... }
+            logger.info("Configuration saved successfully to config.json.")
 
-        try:
-            with open(self.config_path, "w") as config_file:
-                parser.write(config_file)
-            logger.info("Configuration saved successfully.")
         except IOError as e:
             # Raise a custom error to be caught by the ViewModel
+            logger.error(f"IOError while saving config: {e}", exc_info=True)
             raise ConfigSaveError(f"Failed to write to config file: {e}") from e
+        except TypeError as e:
+            # This can happen if a data type is not JSON serializable
+            logger.error(f"TypeError during JSON serialization: {e}", exc_info=True)
+            raise ConfigSaveError(f"A data type could not be saved to JSON: {e}") from e
 
-    def save_setting(self, key: str, value: str, section: str = "Settings"):
+    def save_setting(self, key: str, value: Any, section: str = "settings"):
         """
-        Saves a single key-value pair to a specific section of the config file.
-        Used for quick, individual updates like last_active_game_id.
+        [REVISED] Saves a single key-value pair to the config.json file.
+        This operation reads the entire file, updates one value, and writes it back.
         """
-        parser = configparser.ConfigParser()
-
-        # Read the existing file to not overwrite other sections
-        if self.config_path.exists():
-            parser.read(self.config_path)
-
-        # Ensure the section exists
-        if not parser.has_section(section):
-            parser.add_section(section)
-
-        parser.set(section, key, str(value))
+        # Ensure section key is lowercase to match our structure
+        section = section.lower()
 
         try:
-            with open(self.config_path, "w") as config_file:
-                parser.write(config_file)
+            # 1. Read the entire existing config file
+            if self.config_path.exists():
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    config_data = json.load(f)
+            else:
+                # If the file doesn't exist, start with an empty structure
+                config_data = {"settings": {}, "ui": {}, "games": [], "presets": {}}
+
+            # 2. Update the value in the dictionary
+            # Ensure the section dictionary exists
+            if section not in config_data:
+                config_data[section] = {}
+
+            config_data[section][key] = value
+
+            # 3. Write the entire dictionary back to the file
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(config_data, f, indent=4)
+
             logger.info(f"Saved setting: [{section}] {key} = {value}")
-        except IOError as e:
+
+        except (IOError, json.JSONDecodeError) as e:
             logger.error(f"Failed to save setting '{key}' to config file: {e}")
+            # Optionally raise an error or handle it silently
+            raise ConfigSaveError(f"Failed to update setting '{key}': {e}") from e

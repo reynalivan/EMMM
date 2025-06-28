@@ -1,0 +1,69 @@
+{
+  "GIMI": {
+    "schema": {
+      "object_types": ["Character", "Weapon", "Other"],
+      "rarity": ["5", "4", "3"],
+      "element": ["Anemo", "Geo", "Electro", "Dendro", "Hydro", "Pyro", "Cryo"],
+      "gender": ["Male", "Female", "Unknown"],
+      "weapon_types": ["Sword", "Claymore", "Bow", "Polearm", "Catalyst"],
+      "icons": {
+        "Anemo": "app/assets/icons/elements/anemo.png",
+        "Geo": "app/assets/icons/elements/geo.png",
+        "Electro": "app/assets/icons/elements/electro.png",
+        "Sword": "app/assets/icons/weapons/sword.png"
+      }
+    },
+    "objects": [
+      {
+        "name": "Albedo",
+        "object_type": "Character",
+        "rarity": "5",
+        "element": "Geo",
+        "gender": "Male",
+        "weapon": "Sword"
+      },
+      {
+        "name": "Klee",
+        "object_type": "Character",
+        "rarity": "5",
+        "element": "Pyro",
+        "gender": "Female",
+        "weapon": "Catalyst"
+      },
+      {
+        "name": "Staff of Homa",
+        "object_type": "Weapon",
+        "rarity": "5",
+        "subtype": "Polearm"
+      },
+      {
+        "name": "Barbara",
+        "object_type": "Character",
+        "rarity": "4",
+        "element": "Hydro",
+        "gender": "Female",
+        "weapon": "Catalyst"
+      }
+    ]
+  },
+  "SRMI": {
+    "schema": {
+      "object_types": ["Character", "Light Cone"],
+      "rarity": ["5", "4"],
+      "element": ["Physical", "Fire", "Ice", "Lightning", "Wind", "Quantum", "Imaginary"],
+      "gender": ["Male", "Female"],
+      "path": ["The Destruction", "The Hunt", "The Erudition", "The Harmony", "The Nihility", "The Preservation", "The Abundance"],
+      "icons": {}
+    },
+    "objects": [
+      {
+        "name": "March 7th",
+        "object_type": "Character",
+        "rarity": "4",
+        "element": "Ice",
+        "gender": "Female",
+        "path": "The Preservation"
+      }
+    ]
+  }
+}

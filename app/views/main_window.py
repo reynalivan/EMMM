@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QFrame,
+    QStyle
 )
 from app.utils import ui_utils
 from app.utils.logger_utils import logger
@@ -19,7 +20,8 @@ from qfluentwidgets import (
     SwitchButton,
     PushButton,
     FluentIcon,
-    NavigationInterface
+    NavigationInterface,
+    IndeterminateProgressBar
 )
 
 # Import ViewModels
@@ -37,7 +39,7 @@ from app.views.sections.preview_panel import PreviewPanel
 from app.services.thumbnail_service import ThumbnailService
 
 # Import Dialogs (Views)
-
+from app.views.dialogs.edit_game_dialog import EditGameDialog
 from app.views.dialogs.settings_dialog import SettingsDialog
 
 
@@ -112,9 +114,9 @@ class MainWindow(FluentWindow):
         hl.addLayout(right)
 
         # Panels
-        self.object_list_panel = ObjectListPanel(self.main_window_vm.objectlist_vm)
-        self.folder_grid_panel = FolderGridPanel(self.main_window_vm.foldergrid_vm)
-        self.preview_panel = PreviewPanel(self.main_window_vm.preview_panel_vm)
+        self.object_list_panel = ObjectListPanel(self.main_window_vm.objectlist_vm, self)
+        self.folder_grid_panel = FolderGridPanel(self.main_window_vm.foldergrid_vm, self)
+        self.preview_panel = PreviewPanel(self.main_window_vm.preview_panel_vm, self)
         self.object_list_panel.setMinimumWidth(284)
         self.object_list_panel.setMaximumWidth(400)
         self.preview_panel.setMinimumWidth(276)
@@ -131,6 +133,11 @@ class MainWindow(FluentWindow):
 
         # Assemble the content widget
         content_v_layout.addWidget(self.header_widget)
+
+        self.progress_bar = IndeterminateProgressBar(self)
+        self.progress_bar.setVisible(False)
+        content_v_layout.addWidget(self.progress_bar)
+
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
@@ -173,6 +180,12 @@ class MainWindow(FluentWindow):
         self.main_window_vm.game_list_updated.connect(self._on_game_list_updated)
         self.main_window_vm.active_game_changed.connect(self._on_active_game_changed)
         self.main_window_vm.toast_requested.connect(self._on_toast_requested)
+        self.main_window_vm.objectlist_vm.bulk_operation_started.connect(self._on_bulk_operation_started)
+        self.main_window_vm.objectlist_vm.bulk_operation_finished.connect(self._on_bulk_operation_finished)
+        self.main_window_vm.objectlist_vm.game_type_setup_required.connect(self._on_game_type_setup_required)
+
+        # self.main_window_vm.foldergrid_vm.bulk_operation_started.connect(self._on_bulk_operation_started)
+        # self.main_window_vm.foldergrid_vm.bulk_operation_finished.connect(self._on_bulk_operation_finished)
 
         self.main_window_vm.settings_dialog_requested.connect(
             self._on_settings_dialog_requested
@@ -321,6 +334,75 @@ class MainWindow(FluentWindow):
 
         pass
 
+    def _on_game_type_setup_required(self, game_id: str):
+        """
+        Handles the request from the ViewModel to force the user to set a game_type
+        for a misconfigured game.
+        """
+        logger.warning(f"UI received request to configure game_type for game ID: {game_id}")
+
+        current_config = self.main_window_vm.config
+        if not current_config:
+            logger.error("Cannot handle game_type setup: main config is not loaded.")
+            return
+        self.settings_vm.load_current_config(current_config)
+
+        # 1. Get the full game data from the *main* config, which is the source of truth
+        game_data = next((g for g in current_config.games if g.id == game_id), None)
+        if not game_data:
+            logger.error(f"Could not find game with ID {game_id} to configure.")
+            return
+
+
+        # 2. Get available types from the database to populate the ComboBox
+        db_service = self.main_window_vm.objectlist_vm.database_service
+        available_types = db_service.get_all_game_types()
+
+        # 3. Create and show the EditGameDialog in 'force selection' mode
+        game_dict = {
+            "id": game_data.id, "name": game_data.name,
+            "path": str(game_data.path), "game_type": game_data.game_type
+        }
+
+        dialog = EditGameDialog(
+            game_data=game_dict,
+            available_game_types=available_types,
+            parent=self,
+            force_selection_mode=True
+        )
+
+        # Center the dialog
+        dialog.move(
+            self.geometry().center() - dialog.rect().center()
+        )
+
+        if dialog.exec():
+            # 4. If the user saves, update and save the configuration immediately
+            updated_data = dialog.get_data()
+
+            # update the ViewModel with the new game data
+            self.settings_vm.update_temp_game(
+                game_id=updated_data["id"],
+                new_name=updated_data["name"],
+                new_path=updated_data["path"],
+                new_game_type=updated_data["game_type"]
+            )
+
+            # save the changes to the main config
+            if self.settings_vm.save_all_changes():
+                logger.info(f"Game '{updated_data['name']}' successfully updated with a new game_type.")
+                # Reload the main config to sync the entire application
+                self.main_window_vm.refresh_all_from_config()
+
+                UiUtils.show_toast(
+                    self,
+                    "Game configuration updated. You can now try your action again.",
+                    "success"
+                )
+
+            else:
+                logger.error("Failed to save the updated game configuration after forced setup.")
+
     def _on_preview_unsaved_changes(self, context: dict):
         """
         Flow 5.2 Part A: Prompts the user to confirm discarding unsaved changes.
@@ -336,6 +418,30 @@ class MainWindow(FluentWindow):
                 next_item_data
             )
             return
+
+    def _on_bulk_operation_started(self, message: str = "Processing..."):
+        """Disables interactions and shows a progress indicator."""
+        # Disable all interactive elements to prevent user actions during bulk operations
+        self.object_list_panel.setEnabled(False)
+        self.folder_grid_panel.setEnabled(False)
+        self.preview_panel.setEnabled(False)
+        self.progress_bar.setVisible(True)
+
+    def _on_bulk_operation_finished(self, failed_items: list):
+        """Re-enables interactions and hides the progress indicator."""
+        # self.navigation_interface.setEnabled(True)
+        self.object_list_panel.setEnabled(True)
+        self.folder_grid_panel.setEnabled(True)
+        self.preview_panel.setEnabled(True)
+        self.progress_bar.setVisible(False)
+
+        # refresh request_main_refresh
+        self.main_window_vm.request_main_refresh()
+
+        if failed_items:
+            error_message = f"Bulk operation completed with {len(failed_items)} errors."
+            UiUtils.show_toast(self, error_message, "error")
+            logger.error(error_message)
 
     def closeEvent(self, event):
         super().closeEvent(event)

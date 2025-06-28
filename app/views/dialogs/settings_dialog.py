@@ -10,8 +10,8 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QTableWidgetItem,
     QFileDialog,
+    QStyle,
 )
-
 from qfluentwidgets import (
     Pivot,
     TableWidget,
@@ -25,7 +25,8 @@ from qfluentwidgets import (
 from app.utils.ui_utils import UiUtils
 from app.utils.logger_utils import logger
 from app.viewmodels.settings_vm import SettingsViewModel
-
+from app.views.dialogs.edit_game_dialog import EditGameDialog
+from app.views.dialogs.select_game_type_dialog import SelectGameTypeDialog
 
 class SettingsDialog(QDialog):  # Inherit from fluent Dialog
     """
@@ -48,27 +49,22 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         self.setMinimumSize(700, 500)
 
         # REVISED: Create one main layout and apply it directly to the dialog
-
         dialog_layout = QVBoxLayout(self)
         dialog_layout.setContentsMargins(15, 15, 15, 15)
         dialog_layout.setSpacing(10)
 
         # ---Pivot for Tab Navigation ---
-
         self.pivot = Pivot(self)
 
         # ---Stacked Widget for Tab Content ---
-
         self.stack = QStackedWidget(self)
 
         # ---Create and Add Tab Contents ---
         # Call these methods FIRST to populate the pivot and stack
-
         self._create_games_tab()
         self._create_presets_tab()
 
         # Set initial tab AFTER items have been added
-
         self.pivot.setCurrentItem("games_tab")
 
         # ---Assemble Layout ---
@@ -108,17 +104,14 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         toolbar_layout.addStretch(1)
 
         # Table to display games
-
         self.games_table = TableWidget(self)
-        self.games_table.setColumnCount(2)
-        self.games_table.setHorizontalHeaderLabels(["Game Name", "Mods Path"])
+        self.games_table.setColumnCount(3)
+        self.games_table.setHorizontalHeaderLabels(["Name", "Path", "Mods Type"])
 
-        # ---REVISED SECTION: Apply fluent styles ---
-
+        # ---Apply fluent styles ---
         self.games_table.setBorderVisible(True)
         self.games_table.setBorderRadius(8)
         self.games_table.setSelectRightClickedRow(True)  # Good UX for context menus
-        # ---END REVISED SECTION ---
 
         vertical_header = self.games_table.verticalHeader()
         if vertical_header is not None:
@@ -127,7 +120,8 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         self.games_table.setAlternatingRowColors(True)
         header = self.games_table.horizontalHeader()
         if header is not None:
-            header.setStretchLastSection(True)
+            header.setSectionResizeMode(1, header.ResizeMode.Stretch)
+            header.setSectionResizeMode(2, header.ResizeMode.ResizeToContents)
 
         layout.addLayout(toolbar_layout)
         layout.addWidget(self.games_table, 1)
@@ -179,11 +173,11 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         self.view_model.toast_requested.connect(self._on_toast_requested)
         self.view_model.confirmation_requested.connect(self._on_confirmation_requested)
         self.view_model.error_dialog_requested.connect(self._on_error_dialog_requested)
-
+        self.view_model.game_type_selection_requested.connect(self._on_game_type_selection_requested)
         # ---View -> ViewModel ---
 
         self.add_game_button.clicked.connect(self._on_add_game)
-        # self.edit_game_button.clicked.connect(self._on_edit_game)
+        self.edit_game_button.clicked.connect(self._on_edit_game)
         # self.remove_game_button.clicked.connect(self._on_remove_game)
         # self.rename_preset_button.clicked.connect(self._on_rename_preset)
         # self.delete_preset_button.clicked.connect(self._on_delete_preset)
@@ -243,16 +237,19 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
 
             name_item = QTableWidgetItem(game_dict["name"])
             path_item = QTableWidgetItem(game_dict["path"])
+            game_type = game_dict.get("game_type") or "Not Set" # Tampilkan "Not Set" jika None
+            type_item = QTableWidgetItem(game_type)
 
             # Store the game ID in the first item for easy retrieval
 
             name_item.setData(Qt.ItemDataRole.UserRole, game_dict["id"])
             self.games_table.setItem(row, 0, name_item)
             self.games_table.setItem(row, 1, path_item)
+            self.games_table.setItem(row, 2, type_item)
 
         # Resize path column to fit content
-
         self.games_table.resizeColumnToContents(1)
+        self.games_table.resizeColumnToContents(2)
 
     def _refresh_preset_list(self):
         """Populates the preset list view from the ViewModel's temp_presets."""
@@ -275,7 +272,6 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         pass
 
     # ---UI EVENT HANDLERS (Calling ViewModel methods) ---
-
     def _on_add_game(self):
         """Flow 1.2: Membuka dialog folder dan meneruskannya ke ViewModel."""
         selected_path = QFileDialog.getExistingDirectory(
@@ -285,15 +281,42 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         if selected_path:
             self.view_model.add_game_from_path(Path(selected_path))
 
-    # ... (sisa class)
 
     def _on_edit_game(self):
         """Flow 1.2: Opens an edit dialog for the selected game."""
-        # 1. Get the selected game from the list view.
-        # 2. Open a small dialog to get a new name/path.
-        # 3. If saved, call self.view_model.update_temp_game(...) and refresh the list.
+        selected_items = self.games_table.selectedItems()
+        if not selected_items:
+            UiUtils.show_toast(self, "Please select a game to edit.", "warning")
+            return
 
-        pass
+        selected_row = selected_items[0].row()
+        game_id = self.games_table.item(selected_row, 0).data(Qt.ItemDataRole.UserRole)
+
+        # Find the full game data from the viewmodel
+        game_data = next((g for g in self.view_model.temp_games if g.id == game_id), None)
+        if not game_data:
+            return # Should not happen
+
+        # Get available types from the database to populate the ComboBox
+        available_types = self.view_model.database_service.get_all_game_types()
+
+        # Convert dataclass to dict for the dialog
+        game_dict = {
+            "id": game_data.id,
+            "name": game_data.name,
+            "path": str(game_data.path),
+            "game_type": game_data.game_type
+        }
+
+        dialog = EditGameDialog(game_data=game_dict, available_game_types=available_types, parent=self)
+        if dialog.exec():
+            updated_data = dialog.get_data()
+            self.view_model.update_temp_game(
+                game_id=updated_data["id"],
+                new_name=updated_data["name"],
+                new_path=updated_data["path"],
+                new_game_type=updated_data["game_type"]
+            )
 
     def _on_remove_game(self):
         """Flow 1.2: Tells the ViewModel to remove the selected game from the temp list."""
@@ -320,13 +343,91 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
 
     def _on_save(self):
         """Flow 1.2: Tells the ViewModel to commit all changes and closes the dialog on success."""
+        for game in self.view_model.temp_games:
+            if not game.game_type:
+                # found a game without a game_type
+                logger.warning(f"Save aborted: Game '{game.name}' is missing a game_type.")
+
+                # Force the user to edit this game
+                self._force_edit_game(game.id)
+
+                # Stop the saving process
+                return
+
+
+        # If all games are valid, proceed with the saving process as usual
         if self.view_model.save_all_changes():
             self.accept()
-        # If it returns False (due to a validation error), the dialog remains open.
-
-        pass
 
     def _on_error_dialog_requested(self, title: str, message: str):
         """Shows a modal error dialog."""
         dialog = Dialog(title, message, self)
         dialog.exec()
+
+    def _force_edit_game(self, game_id: str):
+        """
+        A helper method to trigger the edit dialog in force_selection_mode.
+        This consolidates the logic from the previous step.
+        """
+        game_data = next((g for g in self.view_model.temp_games if g.id == game_id), None)
+        if not game_data: return
+
+        available_types = self.view_model.database_service.get_all_game_types()
+
+        game_dict = {
+            "id": game_data.id, "name": game_data.name,
+            "path": str(game_data.path), "game_type": game_data.game_type
+        }
+
+        dialog = EditGameDialog(
+            game_data=game_dict,
+            available_game_types=available_types,
+            parent=self,
+            force_selection_mode=True
+        )
+
+        dialog.setGeometry(
+            QStyle.alignedRect(Qt.LayoutDirection.LeftToRight, Qt.AlignmentFlag.AlignCenter, dialog.sizeHint(), self.geometry())
+        )
+
+        # --- Tampilkan dialog dan tunggu hasilnya ---
+        if dialog.exec():
+            # Jika pengguna mengklik "Save" di dialog edit
+            updated_data = dialog.get_data()
+            self.view_model.update_temp_game(
+                game_id=updated_data["id"],
+                new_name=updated_data["name"],
+                new_path=updated_data["path"],
+                new_game_type=updated_data["game_type"]
+            )
+            # Beri tahu pengguna untuk mencoba menyimpan lagi
+            UiUtils.show_toast(self, f"'{updated_data['name']}' updated. Please click Save again to apply all changes.", "info")
+
+
+    def _on_game_type_selection_requested(self, proposal: dict, available_types: list[str]):
+        """
+        Receives a signal from the ViewModel and shows a dialog to the user,
+        asking them to manually select a game_type for a new game.
+        """
+        logger.info(f"UI received request to select game_type for '{proposal['name']}'.")
+
+        dialog = SelectGameTypeDialog(
+            proposal_name=proposal['name'],
+            available_types=available_types,
+            parent=self  # Parent is the SettingsDialog itself
+        )
+
+        # Center the dialog relative to the settings dialog
+        dialog.setGeometry(
+            QStyle.alignedRect(
+                Qt.LayoutDirection.LeftToRight,
+                Qt.AlignmentFlag.AlignCenter,
+                dialog.sizeHint(),
+                self.geometry(),
+            )
+        )
+
+        if dialog.exec():
+            # If user confirms, get the selection and send it back to the ViewModel
+            selected_type = dialog.selected_game_type()
+            self.view_model.set_game_type_and_add(proposal, selected_type)

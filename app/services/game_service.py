@@ -43,6 +43,17 @@ class GameService:
         )
         return game_path
 
+    def _deduce_game_type_from_path(self, path: Path) -> str | None:
+        """
+        Helper function to deduce the game_type by checking if any known
+        game identifier (GIMI, SRMI) is present in the path string.
+        """
+        path_str_lower = str(path).lower()
+        for game_type_key in KNOWN_XXMI_FOLDERS:
+            if game_type_key.lower() in path_str_lower:
+                return game_type_key  # Return the original key, e.g., "GIMI"
+        return None
+
     def propose_games_from_path(self, path: Path) -> DetectionResult:
         """
         Flow 1.2: Detects XXMI structure using a multi-layered, intelligent approach.
@@ -87,9 +98,12 @@ class GameService:
                     # Now find the *actual* mods folder using our priority list
                     actual_mods_path = self._find_actual_mods_path(potential_game_path)
                     if actual_mods_path:
-                        proposals.append(
-                            {"name": folder_name, "path": actual_mods_path}
-                        )
+                        deduced_game_type = self._deduce_game_type_from_path(potential_game_path)
+                        proposals.append({
+                            "name": folder_name,
+                            "path": actual_mods_path,
+                            "game_type": deduced_game_type # Use the deduced type
+                        })
 
             if proposals:
                 return DetectionResult(is_detected=True, proposals=proposals)
@@ -107,5 +121,10 @@ class GameService:
         if final_path.name in ["Mods", "character", "SkinSelectImpact"]:
             final_name = final_path.parent.name
 
-        single_proposal = [{"name": final_name, "path": final_path}]
+        deduced_game_type = self._deduce_game_type_from_path(final_path)
+        single_proposal = [{
+            "name": final_name,
+            "path": final_path,
+            "game_type": deduced_game_type # Can be None if not found
+        }]
         return DetectionResult(is_detected=False, proposals=single_proposal)

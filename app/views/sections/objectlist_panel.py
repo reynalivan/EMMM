@@ -27,17 +27,19 @@ from qfluentwidgets import (
     RoundMenu,
     IconWidget,
     PrimaryPushButton,
+    MessageBox,
     ComboBox,
+    PrimaryToolButton,
     themeColor,
 )
-
+from app.views.dialogs.create_object_dialog import CreateObjectDialog
 from app.utils.logger_utils import logger
 from app.viewmodels.mod_list_vm import ModListViewModel
 from app.views.components.objectlist_widget import ObjectListItemWidget
 from app.views.components.common.shimmer_frame import ShimmerFrame
 from app.services.thumbnail_service import ThumbnailService
 from pathlib import Path
-
+from PyQt6.QtWidgets import QStyle
 # Import other necessary components...
 
 
@@ -49,6 +51,7 @@ class ObjectListPanel(QWidget):
 
     def __init__(self, viewmodel: ModListViewModel, parent: QWidget | None = None):
         super().__init__(parent)
+        self.main_window = parent if parent else self
         self.view_model = viewmodel
         self._item_widgets: Dict[str, QListWidgetItem] = {}
 
@@ -66,7 +69,8 @@ class ObjectListPanel(QWidget):
         toolbar_layout.setHorizontalSpacing(6)
         # set minimumSize toolbar layout
         self.search_bar = SearchLineEdit(self)
-        self.search_bar.setPlaceholderText("Search objects...")
+        self.search_bar.setPlaceholderText("Search...")
+        self.search_bar.setMaximumWidth(160)
 
         self.filter_btn = DropDownToolButton(FluentIcon.FILTER, self)
         self.filter_btn.setToolTip("Filter")
@@ -75,6 +79,10 @@ class ObjectListPanel(QWidget):
 
         toolbar_layout.addWidget(self.search_bar)
         toolbar_layout.addWidget(self.filter_btn)
+        self.create_button = PrimaryToolButton(FluentIcon.ADD, self)
+        self.create_button.setToolTip("Create new object")
+        self.create_button.setEnabled(False)
+        toolbar_layout.addWidget(self.create_button)
 
         # --- Bulk Action Toolbar (Initially Hidden) ---
         self.bulk_action_widget = QWidget(self)
@@ -159,6 +167,7 @@ class ObjectListPanel(QWidget):
         """Connects this panel's widgets and slots to the ViewModel."""
         # ViewModel -> View connections
         self.view_model.items_updated.connect(self._on_items_updated)
+        self.view_model.load_completed.connect(self._on_load_completed)
 
         # --- Connect ViewModel signals to this panel's slots ---
         self.view_model.loading_started.connect(self._on_loading_started)
@@ -185,12 +194,22 @@ class ObjectListPanel(QWidget):
 
         # --- Connect UI widget actions to ViewModel slots ---
         self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
-        # self.create_button.clicked.connect(self._on_create_object_requested)
+        self.create_button.clicked.connect(self._on_create_object_requested)
+        self.empty_action_button.clicked.connect(self._on_create_object_requested)
+        self.view_model.sync_confirmation_requested.connect(self._on_sync_confirmation_requested)
 
     # --- SLOTS (Responding to ViewModel Signals) ---
 
+    def _on_load_completed(self, success: bool):
+        """
+        Enables or disables the create button based on whether the
+        item loading was successful.
+        """
+        self.create_button.setEnabled(success)
+
     def _on_loading_started(self):
         """Flow 2.2: Clears the view and shows the loading shimmer."""
+        self.create_button.setEnabled(False)
         self.list_widget.clear()
         self._item_widgets.clear()
         self.stack.setCurrentWidget(self.shimmer_frame)
@@ -313,10 +332,67 @@ class ObjectListPanel(QWidget):
 
     # --- UI EVENT HANDLERS (Forwarding to ViewModel) ---
     def _on_create_object_requested(self):
-        """Flow 4.1.B: Shows the creation choice dialog and forwards to the ViewModel."""
-        # Show a dialog with "Manual" and "Sync from DB" options.
-        # Based on the choice, call the appropriate method on self.view_model.
-        pass
+        """Creates and shows the new pivot-based CreateObjectDialog."""
+        # Fetch all necessary data from the ViewModel first
+        schema = self.view_model.get_current_game_schema()
+        logger.info(f"schema: {schema}")
+
+        existing_names = self.view_model.get_all_item_names()
+
+        # --- Get missing objects for the sync tab ---
+        db_objects = self.view_model.database_service.get_all_objects_for_game(self.view_model.current_game.name)
+        existing_names_lower = {name.lower() for name in existing_names}
+        missing_objects = [
+            obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
+        ]
+
+        # --- Create and execute the new dialog ---
+        dialog = CreateObjectDialog(
+            schema=schema,
+            existing_names=existing_names,
+            missing_from_db=missing_objects,
+            parent=self.window()
+        )
+
+        dialog.setGeometry(QStyle.alignedRect(Qt.LayoutDirection.LeftToRight, Qt.AlignmentFlag.AlignCenter, dialog.sizeHint(), self.window().geometry()))
+
+        if not dialog.exec():
+            return
+
+        # --- Process the result ---
+        result = dialog.get_results()
+        if result["mode"] == "manual":
+            self.view_model.initiate_create_objects([result["task"]])
+        elif result["mode"] == "sync":
+            self.view_model.sync_objects_from_database() # This method will now be simpler
+
+    def _handle_manual_creation(self):
+        """Handles the logic for the 'Create Manually' path."""
+        schema = self.view_model.get_current_game_schema()
+
+        existing_names = self.view_model.get_all_item_names()
+
+        dialog = CreateObjectDialog(
+            schema=schema,
+            existing_names=existing_names,
+            missing_from_db=[],
+            parent=self.window()
+        )
+
+        # (Logika untuk memposisikan dialog di tengah tetap sama)
+        dialog.setGeometry(
+            QStyle.alignedRect(Qt.LayoutDirection.LeftToRight, Qt.AlignmentFlag.AlignCenter, dialog.sizeHint(), self.window().geometry())
+        )
+
+        if dialog.exec():
+            creation_task = dialog.get_data()
+            self.view_model.initiate_create_objects([creation_task])
+
+    def _handle_database_sync(self):
+        """Handles the logic for the 'Sync from Database' path."""
+        logger.info("Sync from database requested by user.")
+        # Simply call the ViewModel method. The ViewModel will handle the rest.
+        self.view_model.sync_objects_from_database()
 
     def _clear_layout(self, layout):
         """Helper function to remove all widgets from a layout."""
@@ -420,3 +496,17 @@ class ObjectListPanel(QWidget):
             self.result_label.setText(f"{count} result{plural} found")
 
         self.result_bar_widget.setVisible(show_bar)
+
+    def _on_sync_confirmation_requested(self, missing_objects: list):
+        """Receives a request from the ViewModel to show a confirmation dialog."""
+        title = "Confirm Sync"
+        content = (f"Found {len(missing_objects)} new object(s) in the database "
+                    f"that are not in your mods folder.\n\n"
+                    f"Do you want to create folders for all of them?")
+
+        w = MessageBox(title, content, self.window())
+        if w.exec():
+            # If confirmed, call back to the ViewModel to proceed
+            self.view_model.proceed_with_sync(missing_objects)
+        else:
+            self.view_model.toast_requested.emit("Sync operation cancelled.", "info")

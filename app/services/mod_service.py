@@ -651,3 +651,55 @@ class ModService:
             )
             logger.error(error_msg, exc_info=True)
             return {"success": False, "error": error_msg}
+
+    def create_manual_object(self, parent_path: Path, object_data: dict) -> dict:
+        """
+        Flow 4.1.B Step 5: Creates a new object folder and its properties.json file.
+        This is the core filesystem operation for manual object creation.
+        """
+        try:
+            folder_name = object_data.get("name")
+            if not folder_name:
+                raise ValueError("Folder name is missing in object data.")
+
+            folder_path = parent_path / folder_name
+            logger.info(f"Attempting to create new object folder at: {folder_path}")
+
+            # Create the main folder
+            folder_path.mkdir(exist_ok=False)  # Fails if folder already exists
+
+            # Prepare data for properties.json
+            properties = {
+                "id": f"emm_generated_{folder_name.lower().replace(' ', '_')}", # Example ID
+                "object_type": object_data.get("object_type", "Other"),
+                "actual_name": folder_name,
+                "is_pinned": False,
+                "thumbnail_path": "", # Initially no thumbnail
+                "tags": object_data.get("tags", []),
+                "gender": object_data.get("gender"),
+                "rarity": object_data.get("rarity"),
+                "element": object_data.get("element"),
+                "subtype": object_data.get("subtype"),
+            }
+
+            # Write properties.json
+            json_path = folder_path / "properties.json"
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(properties, f, indent=4)
+
+            logger.info(f"Successfully created object '{folder_name}'.")
+            # Return success with the path to the newly created folder
+            return {"success": True, "data": {"folder_path": folder_path}}
+
+        except FileExistsError:
+            error_msg = f"Folder '{folder_name}' already exists."
+            logger.warning(error_msg)
+            return {"success": False, "error": error_msg}
+        except PermissionError:
+            error_msg = "Permission denied. Could not create folder."
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}
+        except Exception as e:
+            error_msg = f"An unexpected error occurred: {e}"
+            logger.critical(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}

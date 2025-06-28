@@ -80,7 +80,7 @@ class FolderGridPanel(QWidget):
 
         # Search
         self.search_bar = SearchLineEdit(self)
-        self.search_bar.setPlaceholderText("Search in current folder…")
+        self.search_bar.setPlaceholderText("Search folder…")
         toolbar.addWidget(self.search_bar)
 
         # Filter dropdown

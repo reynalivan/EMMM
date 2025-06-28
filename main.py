@@ -78,9 +78,9 @@ def main():
 
     # ---2. Composition Root: Create and Wire All Dependencies ---
     try:
-        app_path = Path(".")
+        app_path = Path(__file__).parent.resolve()
         config_path = app_path / CONFIG_FILE_NAME
-        db_path = app_path / DATABASE_FILE_NAME
+        db_path = app_path / "app" / "assets" / DATABASE_FILE_NAME
         cache_path = app_path / CACHE_DIR_NAME
         log_path = app_path / LOG_DIR_NAME
 
@@ -160,6 +160,7 @@ def main():
         config_service=config_service,
         game_service=game_service,
         workflow_service=workflow_service,
+        database_service=database_service,
     )
 
     # Create the main orchestrator ViewModel, injecting all other components.

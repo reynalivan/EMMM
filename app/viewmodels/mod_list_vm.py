@@ -17,7 +17,6 @@ from app.models.mod_item_model import (
 )
 from app.utils.logger_utils import logger
 from app.utils.async_utils import Worker
-from app.utils.logger_utils import logger
 from app.services.thumbnail_service import ThumbnailService
 from app.services.database_service import DatabaseService
 from app.services.mod_service import ModService
@@ -64,6 +63,8 @@ class ModListViewModel(QObject):
     active_object_deleted = pyqtSignal()
     foldergrid_item_modified = pyqtSignal(object)
     load_completed = pyqtSignal(bool)
+    sync_confirmation_requested = pyqtSignal(list)
+    game_type_setup_required = pyqtSignal(str)
 
     def __init__(
         self,
@@ -365,9 +366,39 @@ class ModListViewModel(QObject):
         """Flow 4.1.A: Starts the creation workflow for new mods in foldergrid."""
         pass
 
+    def get_all_item_names(self) -> list[str]:
+        """Returns a list of all actual_names in the master list for duplicate checking."""
+        return [item.actual_name for item in self.master_list]
+
     def initiate_create_objects(self, tasks: list):
-        """Flow 4.1.B: Starts the creation workflow for new objects in objectlist."""
-        pass
+        """
+        Flow 4.1.B Step 4: Starts the background workflow for creating new objects.
+        """
+        if not tasks:
+            return
+
+        if not self.current_game or not self.current_game.path.is_dir():
+            self.toast_requested.emit("Cannot create object: Active game path is not set.", "error")
+            return
+
+        parent_path = self.current_game.path
+        logger.info(f"Initiating creation for {len(tasks)} object(s) in '{parent_path}'.")
+
+        self.bulk_operation_started.emit()
+
+        worker = Worker(
+            self.workflow_service.execute_object_creation,
+            tasks,
+            parent_path
+        )
+
+        # --- HUBUNGKAN SINYAL DI SINI ---
+        worker.signals.result.connect(self._on_creation_finished)
+        worker.signals.error.connect(self._on_creation_error)
+        worker.signals.progress.connect(self._on_creation_progress_updated)
+        # --------------------------------
+
+        QThreadPool.globalInstance().start(worker)
 
     def initiate_randomize(self):
         """Flow 6.2.B: Starts the randomization workflow for the current group."""
@@ -802,8 +833,26 @@ class ModListViewModel(QObject):
         pass
 
     def _on_creation_finished(self, result: dict):
-        """Handles the result of a mod or object creation workflow (Flow 4.1)."""
-        pass
+        """
+        Flow 4.1.B Step 6: Handles the result of the object creation workflow.
+        """
+        failed_items = result.get("failed", [])
+
+        # Emit signal to unlock the UI and report any failures
+        self.bulk_operation_finished.emit(failed_items)
+
+        if not failed_items:
+            # If everything was successful, show a success toast.
+            success_count = len(result.get("success", []))
+            plural = "s" if success_count > 1 else ""
+            self.toast_requested.emit(f"Successfully created {success_count} object{plural}.", "success")
+
+        # --- UI Update ---
+        # Reload all items from the current path. This is the simplest and most
+        # robust way to ensure the new item appears correctly in the list.
+        if self.navigation_root:
+            logger.info("Creation task finished, reloading object list...")
+            self.load_items(self.navigation_root, self.current_game, is_new_root=True)
 
     def _on_randomize_finished(self, result: dict):
         """Handles the result of a randomize operation (Flow 6.2.B)."""
@@ -902,27 +951,35 @@ class ModListViewModel(QObject):
 
     def _update_available_filters(self):
         """Generates available filter options based on the active context and emits them."""
+        if not self.current_game:
+            self.available_filters_changed.emit({})
+            return
+
         available_options = {}
 
         if self.context == CONTEXT_OBJECTLIST:
-            # Logic for objectlist
+            # For objectlist, use the schema directly for reliability
+            schema = self.database_service.get_schema_for_game(self.current_game.name)
+            if not schema:
+                self.available_filters_changed.emit({})
+                return
+
+            logger.info("Generating filter options for 'objectlist' from schema.")
             if self.active_category_filter == ModType.CHARACTER:
-                all_rarities = set(i.rarity for i in self.master_list if isinstance(i, CharacterObjectItem) and i.rarity)
-                all_elements = set(i.element for i in self.master_list if isinstance(i, CharacterObjectItem) and i.element)
-                if all_rarities:
-                    available_options['Rarity'] = sorted(list(all_rarities), reverse=True)
-                if all_elements:
-                    available_options['Element'] = sorted(list(all_elements))
-            else: # 'Other'
+                available_options['Rarity'] = schema.get('rarity', [])
+                available_options['Element'] = schema.get('element', [])
+                available_options['Gender'] = schema.get('gender', [])
+                available_options['Weapon'] = schema.get('weapon_types', [])
+            else:
                 all_subtypes = set(i.subtype for i in self.master_list if isinstance(i, GenericObjectItem) and i.subtype)
                 if all_subtypes:
                     available_options['Subtype'] = sorted(list(all_subtypes))
+
 
         elif self.context == CONTEXT_FOLDERGRID:
             # --- Logic for foldergrid ---
             logger.info("Generating filter options for 'FolderGrid' context.")
             all_authors = set(i.author for i in self.master_list if isinstance(i, FolderItem) and i.author)
-
             all_tags = set()
             for item in self.master_list:
                 if isinstance(item, FolderItem) and item.tags:
@@ -949,3 +1006,96 @@ class ModListViewModel(QObject):
             # Also notify the view to clear the search bar text
             self.clear_search_text.emit()
             self.apply_filters_and_search()
+
+    def _on_creation_progress_updated(self, current, total):
+        """Handles progress updates during the object creation workflow."""
+        # This is a placeholder for any UI updates or logging.
+        # You can connect this to a progress bar or similar UI element.
+        logger.debug(f"Creation progress: {current}/{total}")
+        pass
+
+    def _on_creation_error(self, error_info: tuple):
+        """Handles a critical failure during the creation worker thread."""
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred during object creation: {value}\n{tb}")
+
+        # Pastikan UI tidak terkunci
+        self.bulk_operation_finished.emit([])
+
+        # Tampilkan pesan error ke pengguna
+        self.toast_requested.emit(
+            "A critical error occurred during creation. Please check the logs.", "error"
+        )
+
+    def sync_objects_from_database(self):
+        """
+        Step 2 Part 1: Finds missing objects and emits a signal
+        to request confirmation from the View, instead of creating a dialog itself.
+        """
+        if not self.current_game:
+            self.toast_requested.emit("No active game selected.", "warning")
+            return
+
+        game_name = self.current_game.name
+        logger.info(f"Starting database sync for game: {game_name}")
+
+        db_objects = self.database_service.get_all_objects_for_game(game_name)
+        if not db_objects:
+            self.toast_requested.emit("No objects defined in the database for this game.", "info")
+            return
+
+        existing_names_lower = {name.lower() for name in self.get_all_item_names()}
+        missing_objects = [
+            obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
+        ]
+
+        if not missing_objects:
+            self.toast_requested.emit("All database objects already exist.", "success")
+            return
+
+        # No more confirmation here. Just create tasks and go.
+        logger.info(f"Proceeding with sync. Creating {len(missing_objects)} tasks.")
+        sync_tasks = [{"type": "sync", "data": obj} for obj in missing_objects]
+        self.initiate_create_objects(sync_tasks)
+
+    def proceed_with_sync(self, confirmed_missing_objects: list):
+        """
+        Called by the View after the user
+        confirms the sync dialog. This method proceeds with the creation workflow.
+        """
+        if not confirmed_missing_objects:
+            return
+
+        logger.info(f"User confirmed sync. Creating {len(confirmed_missing_objects)} tasks.")
+
+        # Create tasks and delegate to the existing creation workflow
+        sync_tasks = [{"type": "sync", "data": obj} for obj in confirmed_missing_objects]
+        self.initiate_create_objects(sync_tasks)
+
+    def get_current_game_schema(self) -> dict | None:
+        """
+        A helper for the View to get the schema for the currently
+        active game using its 'game_type' for the lookup.
+        """
+        # --- STAGE 1: Validate active game ---
+        if not self.current_game:
+            logger.warning("get_current_game_schema called but no active game.")
+            return None
+
+        # --- STAGE 2: Validate game_type ---
+        game_type_to_lookup = self.current_game.game_type
+
+        if not game_type_to_lookup:
+            logger.warning(
+                f"Cannot get schema: Active game '{self.current_game.name}' has no game_type set."
+            )
+            # --- The Core Change ---
+            # Instead of just failing, ask the UI to fix this configuration issue.
+            logger.info(f"Emitting signal to request setup for game ID: {self.current_game.id}")
+            self.game_type_setup_required.emit(self.current_game.id)
+            # ---------------------
+            return None # Still return None to stop the current operation
+
+        # --- STAGE 3: Fetch schema using the valid game_type ---
+        logger.info(f"Requesting schema for game_type: '{game_type_to_lookup}'")
+        return self.database_service.get_schema_for_game(game_type_to_lookup)

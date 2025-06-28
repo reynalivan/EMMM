@@ -131,4 +131,4 @@ target_wrapper.*
 
 # Project-specific
 app/logs/
-config.ini
+config.json
