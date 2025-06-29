@@ -14,7 +14,7 @@ PIN_SUFFIX: str = "_pin"
 
 # --- File & Directory Names ---
 CONFIG_FILE_NAME: str = "config.json"
-DATABASE_FILE_NAME: str = "database_object.json"
+SCHEMA_FILE_NAME: str = "schema.json"
 CACHE_DIR_NAME: str = "cache"
 LOG_DIR_NAME: str = "logs"
 PROPERTIES_JSON_NAME: str = "properties.json"  # For objectlist items

@@ -1,4 +1,5 @@
 # app/services/mod_service.py
+import shutil
 import uuid
 import os
 import json
@@ -665,30 +666,54 @@ class ModService:
             folder_path = parent_path / folder_name
             logger.info(f"Attempting to create new object folder at: {folder_path}")
 
-            # Create the main folder
-            folder_path.mkdir(exist_ok=False)  # Fails if folder already exists
+            folder_path.mkdir(exist_ok=False)
 
-            # Prepare data for properties.json
+            # prepare properties.json data
             properties = {
-                "id": f"emm_generated_{folder_name.lower().replace(' ', '_')}", # Example ID
-                "object_type": object_data.get("object_type", "Other"),
+                "id": f"emm-obj-{uuid.uuid4()}", # Generate a unique ID
                 "actual_name": folder_name,
                 "is_pinned": False,
-                "thumbnail_path": "", # Initially no thumbnail
+                "object_type": object_data.get("object_type", "Other"),
                 "tags": object_data.get("tags", []),
-                "gender": object_data.get("gender"),
+                # get all metadata
                 "rarity": object_data.get("rarity"),
                 "element": object_data.get("element"),
-                "subtype": object_data.get("subtype"),
+                "gender": object_data.get("gender"),
+                "weapon": object_data.get("weapon"),
+                "region": object_data.get("region"),
+                "release_date": object_data.get("release_date"),
+                "thumbnail_path": "" # first is empty, will be updated later
             }
 
-            # Write properties.json
+            # Remove keys with None values to keep the JSON file clean
+            properties = {k: v for k, v in properties.items() if v is not None}
+
+            # Copy thumbnail if the path exists
+            source_thumb_path_str = object_data.get("thumbnail_path")
+            if source_thumb_path_str:
+                # Assume the path in JSON is relative to the project root
+                source_thumb_path = Path(source_thumb_path_str)
+                # Create a consistent destination thumbnail filename
+                dest_thumb_filename = f"_thumb{source_thumb_path.suffix}"
+                dest_thumb_path = folder_path / dest_thumb_filename
+
+                try:
+                    if source_thumb_path.is_file():
+                        shutil.copy(source_thumb_path, dest_thumb_path)
+                        # If successful, update path in properties.json
+                        properties["thumbnail_path"] = dest_thumb_filename
+                        logger.info(f"Copied thumbnail for '{folder_name}' to '{dest_thumb_path}'")
+                    else:
+                        logger.warning(f"Thumbnail source file not found for '{folder_name}': {source_thumb_path}")
+                except Exception as e:
+                    logger.error(f"Failed to copy thumbnail for '{folder_name}': {e}")
+
+            # write file properties.json
             json_path = folder_path / "properties.json"
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(properties, f, indent=4)
 
-            logger.info(f"Successfully created object '{folder_name}'.")
-            # Return success with the path to the newly created folder
+            logger.info(f"Successfully created object '{folder_name}' with full metadata.")
             return {"success": True, "data": {"folder_path": folder_path}}
 
         except FileExistsError:

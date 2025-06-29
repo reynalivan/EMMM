@@ -46,6 +46,7 @@ class MainWindowViewModel(QObject):
     # ---Signals for Game List UI ---
     game_list_updated = pyqtSignal(list)  # list[dict] instead of list[Game]
     active_game_changed = pyqtSignal(object)  # Game object or None
+    category_switch_requested = pyqtSignal(str) # 'character' or 'other'
 
     def __init__(
         self,
@@ -263,6 +264,7 @@ class MainWindowViewModel(QObject):
 
     def _connect_child_vm_signals(self):
         """Connects signals from child VMs to orchestrator methods."""
+        self.objectlist_vm.object_created.connect(self._on_object_created)
         # Flow 3.1a & 4.2.A: An active object was modified/renamed
         self.objectlist_vm.active_object_modified.connect(
             self._on_active_object_modified
@@ -500,3 +502,14 @@ class MainWindowViewModel(QObject):
 
         # In Stage 3, this method will also be responsible for
         # triggering the update of the detailed filter UI.
+
+    def _on_object_created(self, new_object_data: dict):
+        """
+        Receives a signal when a new object is created and decides
+        which category sidebar to switch to.
+        """
+        object_type = new_object_data.get("object_type")
+        if object_type == ModType.CHARACTER.value:
+            self.category_switch_requested.emit("character")
+        else:
+            self.category_switch_requested.emit("other")

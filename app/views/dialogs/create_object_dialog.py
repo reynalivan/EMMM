@@ -96,7 +96,7 @@ class CreateObjectDialog(QDialog):
 
         # --- Populate from schema, with fallbacks ---
         # If schema is empty, these lists will be empty.
-        self.object_type_combo.addItems(self.schema.get('object_types', []))
+        self.object_type_combo.addItems([e.value for e in ModType])
         self.rarity_combo.addItems(self.schema.get('rarity', []))
         self.gender_combo.addItems(self.schema.get('gender', []))
         self.element_combo.addItems(self.schema.get('element', []))

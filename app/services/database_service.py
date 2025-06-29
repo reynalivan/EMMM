@@ -10,19 +10,125 @@ class DatabaseService:
     It's designed to fail gracefully if the database is missing or corrupt.
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, schema_path: Path, app_path: Path):
         # --- Service Setup ---
-        self._db_path = db_path
-        self._cache: dict | None = None
+        self._schema_path = schema_path
+        self._app_path = app_path
+        self._schema_cache: dict | None = None
+        self._original_game_keys: list[str] = []
         self._user_notified_of_error = False
 
-    # --- Public Methods ---
-    def get_metadata_for_object(self, game_name: str, object_name: str) -> dict | None:
+    # --- Private/Internal Logic for Loading ---
+    def _ensure_schema_is_loaded(self):
+        """A lazy-loader guard clause to ensure the schema is loaded only once."""
+        if self._schema_cache is None:
+            self._load_schema_data()
+
+    def _load_schema_data(self):
         """
-        Flow 2.2: Finds metadata for a specific object, case-insensitively.
-        MODIFIED: Searches within the 'objects' list of the specified game.
+        [REVISED] Loads and caches the schema.json file.
+        This is the primary loading operation for this service.
         """
-        all_objects = self.get_all_objects_for_game(game_name)
+        try:
+            logger.info(f"Attempting to load schema from: {self._schema_path}")
+            if not self._schema_path.exists():
+                raise FileNotFoundError(f"Schema file not found at: {self._schema_path}")
+
+            with open(self._schema_path, "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+
+            # Create a case-insensitive cache for the schema
+            self._schema_cache = {key.lower(): value for key, value in raw_data.items()}
+            self._original_game_keys = list(raw_data.keys())
+
+            logger.info("Schema loaded and cached successfully (case-insensitive).")
+
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to load or parse schema.json. Error: {e}")
+            self._schema_cache = {}  # Set to empty dict to prevent further load attempts
+            self._original_game_keys = []
+            if not self._user_notified_of_error:
+                global_signals.toast_requested.emit(
+                    "Warning: schema.json is missing or corrupted. App functionality will be limited.",
+                    "warning"
+                )
+                self._user_notified_of_error = True
+
+    def _load_objects_from_file(self, file_path: Path) -> list[dict]:
+        """
+        [NEW HELPER] Safely loads a list of objects from a single JSON data file.
+        """
+        if not file_path.is_file():
+            logger.warning(f"Object data file not found: {file_path}")
+            return []
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Each file is expected to have a top-level "objects" key
+            return data.get("objects", [])
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Failed to read or parse object data file {file_path}: {e}")
+            return []
+
+    # --- Public Methods for Schema ---
+
+    def get_all_game_types(self) -> list[str]:
+        """Returns a list of all available game type keys from the schema."""
+        self._ensure_schema_is_loaded()
+        return self._original_game_keys
+
+    def get_schema_for_game(self, game_type: str) -> dict | None:
+        """Returns the entire schema dictionary for a specific game."""
+        self._ensure_schema_is_loaded()
+        game_key = game_type.lower()
+
+        if not self._schema_cache or game_key not in self._schema_cache:
+            logger.warning(f"Schema for game '{game_key}' not found in the database.")
+            return None
+
+        return self._schema_cache[game_key].get("schema")
+
+    # --- Stubs for Methods to be Implemented in Step 1.2 & 1.3 ---
+
+    def get_all_objects_for_game(self, game_type: str) -> list[dict]:
+        """
+        'object_link' from the schema, then loads
+        and combines data from all linked JSON files (e.g., char and other).
+        """
+        self._ensure_schema_is_loaded()
+        game_key = game_type.lower()
+
+        if not self._schema_cache or game_key not in self._schema_cache:
+            return []
+
+        game_schema_data = self._schema_cache.get(game_key, {})
+        object_links = game_schema_data.get("object_link", {})
+
+        if not object_links:
+            logger.warning(f"No 'object_link' found in schema for game: {game_type}")
+            return []
+
+        all_objects = []
+        # The base path for resolving relative paths in the JSON
+        base_path = self._schema_path.parent
+
+        for category, file_rel_path in object_links.items():
+            # Construct the full, absolute path to the data file
+            full_path = self._app_path / Path(file_rel_path)
+            logger.info(f"Loading '{category}' objects for '{game_type}' from: {full_path}")
+
+            # Load objects from the file and extend the main list
+            objects_from_file = self._load_objects_from_file(full_path)
+            all_objects.extend(objects_from_file)
+
+        return all_objects
+
+    def get_metadata_for_object(self, game_type: str, object_name: str) -> dict | None:
+        """
+        [REVISED] Finds metadata for a specific object, case-insensitively.
+        """
+        all_objects = self.get_all_objects_for_game(game_type)
         object_name_lower = object_name.lower()
 
         for obj in all_objects:
@@ -31,81 +137,21 @@ class DatabaseService:
 
         return None
 
-
-    def get_all_objects_for_game(self, game_name: str) -> list[dict]:
+    def get_alias_for_game(self, game_type: str, key: str, fallback: str = None) -> str:
         """
-        Flow 4.1.B: Returns a list of all object definitions for a specific game.
-        MODIFIED: Now accesses the 'objects' key in the new data structure.
+        [REVISED for Step 1.3] Gets a display alias for a given key from the
+        game's schema. Falls back to a capitalized version of the key if not found.
         """
-        self._ensure_db_is_loaded()
-        game_key = game_name.lower()
+        self._ensure_schema_is_loaded()
+        game_key = game_type.lower()
 
-        if not self._cache or game_key not in self._cache:
-            return []
+        if self._schema_cache and game_key in self._schema_cache:
+            game_schema_data = self._schema_cache.get(game_key, {})
+            aliases = game_schema_data.get("alias", {})
 
-        return self._cache[game_key].get("objects", [])
+            # Return the alias if it exists for the given key
+            if key in aliases:
+                return aliases[key]
 
-    def get_schema_for_game(self, game_name: str) -> dict | None:
-        """
-        NEW: Returns the entire schema dictionary for a specific game.
-        This will be used to populate filter and dialog options.
-        """
-        self._ensure_db_is_loaded()
-        game_key = game_name.lower() # Convert to lowercase for lookup
-
-        if not self._cache or game_key not in self._cache:
-            # This warning now only triggers if the key is genuinely not in the cache.
-            logger.warning(f"Schema for game '{game_key}' not found in the database.")
-            return None
-
-        return self._cache[game_key].get("schema")
-
-    def get_all_filter_options_for_game(self, game_name: str) -> dict[str, set]:
-        """Flow 5.1: Gathers all possible values for filters (rarity, element, etc.)."""
-        self._ensure_db_is_loaded()
-        # Logic to iterate through all objects and collect unique values for each attribute.
-        # e.g., returns {'rarity': {'5', '4'}, 'element': {'Pyro', 'Hydro'}, ...}
-        return {}
-
-    # --- Private/Internal Logic ---
-    def _ensure_db_is_loaded(self):
-        """A lazy-loader guard clause to ensure the database is loaded only once."""
-        if self._cache is None:
-            self._load_and_index_database()
-
-    def get_all_game_types(self) -> list[str]:
-        """Returns a list of all available game type keys from the database."""
-        self._ensure_db_is_loaded()
-        if not self._cache:
-            return []
-        return list(self._cache.keys())
-
-    def _load_and_index_database(self):
-        """
-        Flow 6.5: (Private) Loads and indexes the JSON file.
-        Handles errors gracefully and notifies the user only once on failure.
-        """
-        try:
-            logger.info(f"Attempting to load database from: {self._db_path}")
-            if not self._db_path.exists():
-                raise FileNotFoundError(f"Database file not found at: {self._db_path}")
-
-            with open(self._db_path, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-
-            # --- KOREKSI: Buat cache dengan kunci lowercase ---
-            self._cache = {key.lower(): value for key, value in raw_data.items()}
-            # ------------------------------------------------
-
-            logger.info("Database loaded and cached successfully (case-insensitive).")
-
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to load or parse database file. Error: {e}")
-            self._cache = {}
-
-            if not self._user_notified_of_error:
-                global_signals.toast_requested.emit(
-                    "Warning: database_object.json is missing or corrupted.",
-                    "warning"
-                )
-                self._user_notified_of_error = True
+        # Fallback logic if alias is not found
+        return fallback if fallback else key.replace("_", " ").capitalize()

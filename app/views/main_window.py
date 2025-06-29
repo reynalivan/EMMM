@@ -183,7 +183,7 @@ class MainWindow(FluentWindow):
         self.main_window_vm.objectlist_vm.bulk_operation_started.connect(self._on_bulk_operation_started)
         self.main_window_vm.objectlist_vm.bulk_operation_finished.connect(self._on_bulk_operation_finished)
         self.main_window_vm.objectlist_vm.game_type_setup_required.connect(self._on_game_type_setup_required)
-
+        self.main_window_vm.category_switch_requested.connect(self._on_category_switch_requested)
         # self.main_window_vm.foldergrid_vm.bulk_operation_started.connect(self._on_bulk_operation_started)
         # self.main_window_vm.foldergrid_vm.bulk_operation_finished.connect(self._on_bulk_operation_finished)
 
@@ -442,6 +442,15 @@ class MainWindow(FluentWindow):
             error_message = f"Bulk operation completed with {len(failed_items)} errors."
             UiUtils.show_toast(self, error_message, "error")
             logger.error(error_message)
+
+    def _on_category_switch_requested(self, category_key: str):
+        """Switches the main sidebar to the specified category."""
+        self.main_window_vm.on_category_selected(category_key)
+
+        route_key = f"{category_key}_filter"
+        logger.info(f"Programmatically switching sidebar to '{route_key}'")
+        self.navigationInterface.setCurrentItem(route_key)
+
 
     def closeEvent(self, event):
         super().closeEvent(event)

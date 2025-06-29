@@ -35,7 +35,7 @@ class ModListViewModel(QObject):
 
     loading_started = pyqtSignal()
     loading_finished = pyqtSignal()
-    items_updated = pyqtSignal(list)
+    items_updated = pyqtSignal(list,object)
     item_needs_update = pyqtSignal(object)
     item_processing_started = pyqtSignal(str)
     item_processing_finished = pyqtSignal(str, bool)
@@ -65,6 +65,7 @@ class ModListViewModel(QObject):
     load_completed = pyqtSignal(bool)
     sync_confirmation_requested = pyqtSignal(list)
     game_type_setup_required = pyqtSignal(str)
+    object_created = pyqtSignal(dict)
 
     def __init__(
         self,
@@ -98,7 +99,7 @@ class ModListViewModel(QObject):
         self._processing_ids = set()
         self.last_selected_item_id: str | None = None
         self.active_category_filter: ModType = ModType.CHARACTER
-
+        self._item_to_select_after_load: str | None = None
         self.thumbnail_service.thumbnail_generated.connect(self._on_thumbnail_generated)
 
     # ---Loading and Data Management ---
@@ -391,12 +392,11 @@ class ModListViewModel(QObject):
             tasks,
             parent_path
         )
-
-        # --- HUBUNGKAN SINYAL DI SINI ---
-        worker.signals.result.connect(self._on_creation_finished)
+        worker.signals.result.connect(
+            lambda result, tasks_info=tasks: self._on_creation_finished(result, tasks_info)
+        )
         worker.signals.error.connect(self._on_creation_error)
         worker.signals.progress.connect(self._on_creation_progress_updated)
-        # --------------------------------
 
         QThreadPool.globalInstance().start(worker)
 
@@ -453,7 +453,7 @@ class ModListViewModel(QObject):
 
     # ---Private/Internal Logic ---
 
-    def apply_filters_and_search(self):
+    def apply_filters_and_search(self, item_id_to_select: str = None):
         """
         Filters and sorts the master list based on all active criteria,
         then emits the result for the view to render.
@@ -581,7 +581,7 @@ class ModListViewModel(QObject):
 
         # --- STAGE 7: Prepare and emit data for the view ---
         view_data = [self._create_dict_from_item(item) for item in self.displayed_items]
-        self.items_updated.emit(view_data)
+        self.items_updated.emit(view_data, item_id_to_select)
 
     # ---Private Slots for Async Results ---
     def _on_skeletons_loaded(self, result: dict, received_token: int):
@@ -603,8 +603,31 @@ class ModListViewModel(QObject):
 
         logger.info(f"Successfully loaded {len(result['items'])} skeletons.")
         self.master_list = result["items"]
+
+        # --- Selection logic ---
+        item_id_to_select = None
+
+        # check if there is a newly created item to select
+        if self._item_to_select_after_load:
+            item = next((i for i in self.master_list if i.actual_name == self._item_to_select_after_load), None)
+            if item:
+                logger.info(f"Identified newly created item to select: '{item.actual_name}'")
+                item_id_to_select = item.id
+            self._item_to_select_after_load = None # Reset state
+
+        # if no new item to select, check if there is a previously selected item to restore
+        elif self.last_selected_item_id:
+            item = next((i for i in self.master_list if i.id == self.last_selected_item_id), None)
+            if item:
+                logger.info(f"Identified previously selected item to restore: '{item.actual_name}'")
+                item_id_to_select = item.id
+            else:
+                self.selection_invalidated.emit()
+        # -----------------------------------------------------------------
+
+
         self._update_available_filters()
-        self.apply_filters_and_search()
+        self.apply_filters_and_search(item_id_to_select=item_id_to_select)
         self.load_completed.emit(True)
 
         # --- FIX: Add logic to restore selection after loading is complete ---
@@ -832,27 +855,48 @@ class ModListViewModel(QObject):
         """Handles the result of a bulk action like enable, disable, or tag (Flow 3.2)."""
         pass
 
-    def _on_creation_finished(self, result: dict):
+    def _on_creation_finished(self, result: dict, tasks_info: list):
         """
-        Flow 4.1.B Step 6: Handles the result of the object creation workflow.
+        [REVISED] Handles the creation result with intelligent logic for both
+        single (manual) and bulk (sync) creation scenarios.
         """
         failed_items = result.get("failed", [])
+        successful_items = result.get("success", [])
 
-        # Emit signal to unlock the UI and report any failures
+        # Always unlock the UI first
         self.bulk_operation_finished.emit(failed_items)
 
-        if not failed_items:
-            # If everything was successful, show a success toast.
-            success_count = len(result.get("success", []))
-            plural = "s" if success_count > 1 else ""
-            self.toast_requested.emit(f"Successfully created {success_count} object{plural}.", "success")
+        # --- Smart UX Logic ---
+        if successful_items:
+            # Check if this was a single, manual creation
+            if len(tasks_info) == 1 and tasks_info[0].get("type") == "manual":
+                # SINGLE CREATION UX
+                created_object_task = tasks_info[0]
+                created_object_data = created_object_task.get("data", {})
+                object_name = created_object_data.get("name", "New Object")
+
+                # 1. Show a specific success toast
+                self.toast_requested.emit(f"Successfully created '{object_name}'.", "success")
+
+                # 2. Emit signal to switch the main sidebar category
+                self.object_created.emit(created_object_data)
+
+                # 3. Set the item to be auto-selected after the list reloads
+                self._item_to_select_after_load = object_name
+
+            else: # BULK CREATION (SYNC) UX
+                # For bulk operations, just show a summary toast.
+                # Do not switch sidebar or auto-select.
+                success_count = len(successful_items)
+                plural = "s" if success_count > 1 else ""
+                self.toast_requested.emit(f"Successfully synced {success_count} new object{plural}.", "success")
 
         # --- UI Update ---
-        # Reload all items from the current path. This is the simplest and most
-        # robust way to ensure the new item appears correctly in the list.
+        # Reloading the list is necessary in both cases to show the new item(s).
         if self.navigation_root:
             logger.info("Creation task finished, reloading object list...")
             self.load_items(self.navigation_root, self.current_game, is_new_root=True)
+
 
     def _on_randomize_finished(self, result: dict):
         """Handles the result of a randomize operation (Flow 6.2.B)."""
@@ -950,46 +994,54 @@ class ModListViewModel(QObject):
         self.apply_filters_and_search()
 
     def _update_available_filters(self):
-        """Generates available filter options based on the active context and emits them."""
-        if not self.current_game:
+        """
+        [REVISED for ALIAS] Generates available filter options and their
+        display names (aliases) based on the game's schema.
+        """
+        if not self.current_game or not self.current_game.game_type:
             self.available_filters_changed.emit({})
             return
 
+        game_type = self.current_game.game_type
+        # The new structure for available_options will be:
+        # { 'internal_key': ('DisplayName', [option1, option2]), ... }
         available_options = {}
 
         if self.context == CONTEXT_OBJECTLIST:
-            # For objectlist, use the schema directly for reliability
-            schema = self.database_service.get_schema_for_game(self.current_game.name)
+            schema = self.database_service.get_schema_for_game(game_type)
             if not schema:
                 self.available_filters_changed.emit({})
                 return
 
-            logger.info("Generating filter options for 'objectlist' from schema.")
+            logger.info(f"Generating aliased filter options for 'objectlist' (Game: {game_type}).")
+
             if self.active_category_filter == ModType.CHARACTER:
-                available_options['Rarity'] = schema.get('rarity', [])
-                available_options['Element'] = schema.get('element', [])
-                available_options['Gender'] = schema.get('gender', [])
-                available_options['Weapon'] = schema.get('weapon_types', [])
-            else:
+                # Define which keys from the schema we want to create filters for
+                filter_keys = ["rarity", "element", "gender", "weapon_types"]
+                for key in filter_keys:
+                    options = schema.get(key, [])
+                    if options:
+                        # Get the alias for the key, e.g., 'element' -> 'Combat Type'
+                        display_name = self.database_service.get_alias_for_game(game_type, key)
+                        available_options[key] = (display_name, options)
+            else: # For 'Other' categories
+                # You can add similar alias logic for subtypes if needed
                 all_subtypes = set(i.subtype for i in self.master_list if isinstance(i, GenericObjectItem) and i.subtype)
                 if all_subtypes:
-                    available_options['Subtype'] = sorted(list(all_subtypes))
-
+                    display_name = self.database_service.get_alias_for_game(game_type, "subtype", fallback="Subtype")
+                    available_options['subtype'] = (display_name, sorted(list(all_subtypes)))
 
         elif self.context == CONTEXT_FOLDERGRID:
-            # --- Logic for foldergrid ---
-            logger.info("Generating filter options for 'FolderGrid' context.")
+            # (Logika untuk foldergrid tetap sama karena tidak menggunakan alias dari schema)
             all_authors = set(i.author for i in self.master_list if isinstance(i, FolderItem) and i.author)
             all_tags = set()
             for item in self.master_list:
                 if isinstance(item, FolderItem) and item.tags:
                     all_tags.update(item.tags)
-
             if all_authors:
-                available_options['Author'] = sorted(list(all_authors))
+                available_options['author'] = ("Author", sorted(list(all_authors)))
             if all_tags:
-                available_options['Tags'] = sorted(list(all_tags))
-            # ---------------------------------
+                available_options['tags'] = ("Tags", sorted(list(all_tags)))
 
         self.available_filters_changed.emit(available_options)
 
@@ -1029,22 +1081,30 @@ class ModListViewModel(QObject):
 
     def sync_objects_from_database(self):
         """
-        Step 2 Part 1: Finds missing objects and emits a signal
-        to request confirmation from the View, instead of creating a dialog itself.
+        [REVISED] Gets all objects for the current game from the database,
+        finds which ones are missing from the local folder, and initiates
+        the creation workflow for them.
         """
-        if not self.current_game:
-            self.toast_requested.emit("No active game selected.", "warning")
+        # 1. Validate that there is an active game with a valid game_type
+        if not self.current_game or not self.current_game.game_type:
+            self.toast_requested.emit(
+                "Cannot sync: Active game has no Database Key (Type) set.", "warning"
+            )
             return
 
-        game_name = self.current_game.name
-        logger.info(f"Starting database sync for game: {game_name}")
+        game_type = self.current_game.game_type
+        logger.info(f"Starting database sync for game_type: '{game_type}'")
 
-        db_objects = self.database_service.get_all_objects_for_game(game_name)
+        # 2. Get all objects for this game_type from the database service
+        db_objects = self.database_service.get_all_objects_for_game(game_type)
         if not db_objects:
-            self.toast_requested.emit("No objects defined in the database for this game.", "info")
+            self.toast_requested.emit(f"No objects defined in the database for '{game_type}'.", "info")
             return
 
+        # 3. Get currently existing object names
         existing_names_lower = {name.lower() for name in self.get_all_item_names()}
+
+        # 4. Find which objects are missing
         missing_objects = [
             obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
         ]
@@ -1053,9 +1113,11 @@ class ModListViewModel(QObject):
             self.toast_requested.emit("All database objects already exist.", "success")
             return
 
-        # No more confirmation here. Just create tasks and go.
+        # 5. Create tasks and delegate to the existing creation workflow
+        # The user has already confirmed this action via the CreateObjectDialog.
         logger.info(f"Proceeding with sync. Creating {len(missing_objects)} tasks.")
         sync_tasks = [{"type": "sync", "data": obj} for obj in missing_objects]
+
         self.initiate_create_objects(sync_tasks)
 
     def proceed_with_sync(self, confirmed_missing_objects: list):

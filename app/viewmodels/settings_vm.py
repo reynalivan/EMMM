@@ -120,74 +120,53 @@ class SettingsViewModel(QObject):
             logger.info(f"XXMI structure detected at {path}.")
             dialog_params = {
                 "title": "XXMI Structure Detected",
-                "text": f"Found {len(detection_result.proposals)} potential games. Do you want to import them all?",
-                # 'Context' helps us know what to do with the results later
-                "context": {
-                    "type": "xxmi_import",
-                    "proposals": detection_result.proposals,
-                    "fallback_proposal": [{"name": path.name, "path": path}],
-                },
+                "text": f"Found {len(detection_result.proposals)} potential games. Import all?",
+                "context": {"proposals": detection_result.proposals}
             }
             self.confirmation_requested.emit(dialog_params)
         else:
-            # If there is nothing to confirm, immediately process
-
+            # Jika tidak ada deteksi XXMI, langsung proses satu proposal
             logger.info(
                 f"No XXMI structure detected at {path}. Processing single game."
             )
-            self._process_proposals(detection_result.proposals)
+            self.process_individual_proposals(detection_result.proposals)
+
+
 
     # Revised: a new slot to receive the results of the confirmation dialogue
-
     def on_confirmation_result(self, result: bool, context: dict):
-        """Dipanggil oleh View setelah pengguna menutup dialog konfirmasi."""
-        if context.get("type") == "xxmi_import":
-            if result:  # Users press "yes"
+        """Handles the result of the XXMI import confirmation."""
+        proposals = context.get("proposals", [])
+        if result:
+            logger.info("User confirmed XXMI import. Processing all proposals.")
+            self.process_individual_proposals(proposals)
+        else:  # user cancelled
+            self.toast_requested.emit("Import cancelled.", "info")
 
-                proposals = context.get("proposals", [])
-                logger.info("User confirmed XXMI import. Processing all proposals.")
-                self._process_proposals(proposals)
-            else:  # Users press "no"
 
-                proposals = context.get("fallback_proposal", [])
-                logger.info(
-                    "User declined XXMI import. Processing selected folder only."
-                )
-                self._process_proposals(proposals)
-
-    def _process_proposals(self, proposals: list[dict]):
+    def process_individual_proposals(self, proposals: list[dict]):
         """
-        [REVISED] Processes game proposals. If a proposal is complete (has a game_type),
-        it's added directly. If not, it emits a signal to request user input.
+        Processes a list of proposals one by one, deciding whether to add
+        directly or request a game_type from the user.
         """
-        logger.info(f"Processing {len(proposals)} game proposals.")
-
-        complete_proposals = []
-        incomplete_proposals = []
-
-        # Split proposals into complete and incomplete
         for proposal in proposals:
+            # Check if the proposal is complete
+            existing_paths = {str(g.path) for g in self.temp_games}
+            existing_names = {g.name.lower() for g in self.temp_games}
+            if proposal["name"].lower() in existing_names or str(proposal["path"]) in existing_paths:
+                self.toast_requested.emit(f"Game '{proposal['name']}' already exists.", "warning")
+                continue
+
+            # If the proposal has a game_type, add it directly
             if proposal.get("game_type"):
-                complete_proposals.append(proposal)
+                self.add_games_to_list([proposal])
             else:
-                incomplete_proposals.append(proposal)
-
-        # Process complete proposals directly
-        if complete_proposals:
-            self.add_games_to_list(complete_proposals)
-
-        # For incomplete proposals, trigger a signal to request input
-        if incomplete_proposals:
-            # Get all possible game_types from the database to display in the ComboBox
-            available_types = self.database_service.get_all_game_types()
-
-            # We will only request input for the first incomplete proposal at this time
-            # Logic for handling multiple incomplete proposals could be added later if needed
-            if available_types:
-                logger.info(f"Incomplete proposal found for '{incomplete_proposals[0]['name']}'. Requesting user selection.")
-                self.game_type_selection_requested.emit(incomplete_proposals[0], available_types)
-            else:
-                self.toast_requested.emit("Cannot add game: No game types found in database.", "error")
+                logger.info(f"Incomplete proposal for '{proposal['name']}'. Requesting user selection.")
+                available_types = self.database_service.get_all_game_types()
+                if available_types:
+                    self.game_type_selection_requested.emit(proposal, available_types)
+                else:
+                    self.toast_requested.emit("Cannot add game: No game types defined in database.", "error")
 
     def set_game_type_and_add(self, proposal: dict, selected_game_type: str):
         """

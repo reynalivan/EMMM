@@ -172,7 +172,6 @@ class ObjectListPanel(QWidget):
         # --- Connect ViewModel signals to this panel's slots ---
         self.view_model.loading_started.connect(self._on_loading_started)
         self.view_model.loading_finished.connect(self._on_loading_finished)
-        self.view_model.items_updated.connect(self._on_items_updated)
         self.view_model.item_needs_update.connect(self._on_item_needs_update)
         self.view_model.item_processing_started.connect(
             self._on_item_processing_started
@@ -219,7 +218,7 @@ class ObjectListPanel(QWidget):
         # self.shimmer_frame.stop_shimmer()
         pass
 
-    def _on_items_updated(self, items_data: dict):
+    def _on_items_updated(self, items_data: list, item_id_to_select: str | None):
         """
         Repopulates the list view and intelligently updates the view state
         (list, empty, or no results).
@@ -236,6 +235,7 @@ class ObjectListPanel(QWidget):
         # If there are items, show the list widget.
         self.stack.setCurrentWidget(self.list_widget)
 
+        # --- Populate the QListWidget with ObjectListItemWidgets ---
         for item_data in items_data:
             list_item = QListWidgetItem(self.list_widget)
             item_widget = ObjectListItemWidget(
@@ -249,6 +249,16 @@ class ObjectListPanel(QWidget):
             self.list_widget.setItemWidget(list_item, item_widget)
 
             self._item_widgets[item_data["id"]] = list_item
+
+        # ---- Handle Programmatic Selection ----
+        if item_id_to_select:
+            list_item_to_select = self._item_widgets.get(item_id_to_select)
+            if list_item_to_select:
+                logger.info(f"Programmatically selecting item ID: {item_id_to_select}")
+                self.list_widget.setCurrentItem(list_item_to_select)
+
+                # Beri tahu ViewModel bahwa seleksi sudah diatur di UI
+                self.view_model.set_active_selection(item_id_to_select)
 
     def _on_list_item_clicked(self, item_data: dict):
         """Forwards the item selection event upwards to the main window."""
@@ -340,11 +350,16 @@ class ObjectListPanel(QWidget):
         existing_names = self.view_model.get_all_item_names()
 
         # --- Get missing objects for the sync tab ---
-        db_objects = self.view_model.database_service.get_all_objects_for_game(self.view_model.current_game.name)
-        existing_names_lower = {name.lower() for name in existing_names}
-        missing_objects = [
-            obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
-        ]
+        missing_objects = []
+        # make sure we have a game type to work with
+        if self.view_model.current_game and self.view_model.current_game.game_type:
+            game_type = self.view_model.current_game.game_type
+            db_objects = self.view_model.database_service.get_all_objects_for_game(game_type)
+
+            existing_names_lower = {name.lower() for name in existing_names}
+            missing_objects = [
+                obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
+            ]
 
         # --- Create and execute the new dialog ---
         dialog = CreateObjectDialog(
@@ -379,7 +394,6 @@ class ObjectListPanel(QWidget):
             parent=self.window()
         )
 
-        # (Logika untuk memposisikan dialog di tengah tetap sama)
         dialog.setGeometry(
             QStyle.alignedRect(Qt.LayoutDirection.LeftToRight, Qt.AlignmentFlag.AlignCenter, dialog.sizeHint(), self.window().geometry())
         )
@@ -421,21 +435,21 @@ class ObjectListPanel(QWidget):
         layout.setSpacing(10)
 
         # Create filter controls dynamically
-        for name, options in filter_options.items():
-            layout.addWidget(BodyLabel(name))
+        for key, (display_name, options) in filter_options.items():
+            # Use the internal key for state persistence
+            layout.addWidget(BodyLabel(display_name))
+
             combo = ComboBox()
             combo.addItems(["All"] + options)
 
-            # --- State Persistence Logic ---
-            # Check if there is an active filter for this combobox
-            # The key in active_filters is lowercase (e.g., 'rarity')
-            active_value = self.view_model.active_filters.get(name.lower())
+            # Use the internal key ('rarity') for state persistence and apply
+            active_value = self.view_model.active_filters.get(key)
             if active_value:
                 combo.setCurrentText(active_value)
-            # -----------------------------
 
             layout.addWidget(combo)
-            self.filter_widgets[name] = combo
+            self.filter_widgets[key] = combo # Save widget with internal key
+        # ------------------------------------------------
 
         layout.addSpacing(10)
         button_layout = QHBoxLayout()

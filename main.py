@@ -14,7 +14,7 @@ from app.core.constants import (
     APP_NAME,
     CACHE_DIR_NAME,
     CONFIG_FILE_NAME,
-    DATABASE_FILE_NAME,
+    SCHEMA_FILE_NAME,
     DEFAULT_ICONS,
     LOG_DIR_NAME,
     ORG_NAME,
@@ -80,7 +80,7 @@ def main():
     try:
         app_path = Path(__file__).parent.resolve()
         config_path = app_path / CONFIG_FILE_NAME
-        db_path = app_path / "app" / "assets" / DATABASE_FILE_NAME
+        db_path = app_path / "app" / "assets" / SCHEMA_FILE_NAME
         cache_path = app_path / CACHE_DIR_NAME
         log_path = app_path / LOG_DIR_NAME
 
@@ -92,7 +92,10 @@ def main():
         # Services with no or minimal dependencies first.
         config_service = ConfigService(config_path)
         game_service = GameService()
-        database_service = DatabaseService(db_path)
+        database_service = DatabaseService(
+            schema_path = app_path / "app" / "assets" / SCHEMA_FILE_NAME,
+            app_path = app_path
+        )
         ini_key_parsing_service = IniKeyParsingService()
         thumbnail_service = ThumbnailService(
             cache_dir=cache_path, default_icons=DEFAULT_ICONS
