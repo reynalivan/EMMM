@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QFileDialog,
     QStyle,
+    QFormLayout,
 )
 from qfluentwidgets import (
     Pivot,
@@ -24,7 +25,9 @@ from qfluentwidgets import (
     MessageBox,
     IconWidget,
     BodyLabel,
-    TitleLabel
+    TitleLabel,
+    LineEdit,
+    CheckBox,
 )
 from app.utils.ui_utils import UiUtils
 from app.utils.logger_utils import logger
@@ -41,7 +44,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
     def __init__(self, viewmodel: SettingsViewModel, parent: QWidget | None = None):
         super().__init__(parent)
         self.view_model = viewmodel
-
+        self.pages = {}
         self._init_ui()
         self._connect_signals()  # To be implemented later
 
@@ -66,6 +69,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         # ---Create and Add Tab Contents ---
         # Call these methods FIRST to populate the pivot and stack
         self._create_games_tab()
+        self._create_launcher_tab()
         self._create_presets_tab()
 
         # Set initial tab AFTER items have been added
@@ -131,13 +135,51 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         layout.addLayout(toolbar_layout)
         layout.addWidget(self.games_table, 1)
 
+        self.pages["games_tab"] = games_widget
+
         self.stack.addWidget(games_widget)
         self.pivot.addItem(
             routeKey="games_tab",
             text="Games",
-            onClick=lambda: self.stack.setCurrentWidget(games_widget),
+            onClick=lambda: self._switch_to_tab("games_tab"),
             icon=FluentIcon.GAME,
         )
+
+    def _create_launcher_tab(self):
+        """Creates the UI for the 'Launcher' settings tab."""
+        launcher_widget = QWidget()
+        layout = QFormLayout(launcher_widget)
+        layout.setContentsMargins(10, 20, 10, 10)
+        layout.setSpacing(15)
+        layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+
+        # -- Widget Launcher Path --
+        path_layout = QHBoxLayout()
+        self.launcher_path_edit = LineEdit(self)
+        self.launcher_path_edit.setReadOnly(True)
+        self.launcher_path_edit.setPlaceholderText("No launcher path set")
+        browse_button = PushButton("Browse...")
+        path_layout.addWidget(self.launcher_path_edit, 1)
+        path_layout.addWidget(browse_button)
+
+        layout.addRow("Launcher Path:", path_layout)
+
+        # -- Widget Auto-play --
+        self.auto_play_checkbox = CheckBox("Auto-play launcher on application startup", self)
+        layout.addRow("", self.auto_play_checkbox)
+        self.pages["launcher_tab"] = launcher_widget
+
+        self.stack.addWidget(launcher_widget)
+        self.pivot.addItem(
+            routeKey="launcher_tab",
+            text="Launcher",
+            onClick=lambda: self._switch_to_tab("launcher_tab"),
+            icon=FluentIcon.PLAY_SOLID,
+        )
+
+        browse_button.clicked.connect(self._on_browse_launcher)
+        self.auto_play_checkbox.toggled.connect(self.view_model.set_temp_auto_play)
+
 
     def _create_presets_tab(self):
         """Creates the UI for the 'Presets' management tab."""
@@ -185,12 +227,12 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         #layout.addWidget(SubtitleLabel("Manage Saved Presets"))
         #layout.addLayout(toolbar_layout)
         #layout.addWidget(self.presets_list, 1)
-
+        self.pages["presets_tab"] = presets_widget
         self.stack.addWidget(presets_widget)
         self.pivot.addItem(
             routeKey="presets_tab",
             text="Presets",
-            onClick=lambda: self.stack.setCurrentWidget(presets_widget),
+            onClick=lambda: self._switch_to_tab("presets_tab"),
             icon=FluentIcon.SAVE,
         )
 
@@ -209,6 +251,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         self.edit_game_button.clicked.connect(self._on_edit_game)
         self.games_table.itemDoubleClicked.connect(self._on_edit_game)
         self.remove_game_button.clicked.connect(self._on_remove_game)
+        self.view_model.launcher_settings_refreshed.connect(self._refresh_launcher_tab)
         # self.rename_preset_button.clicked.connect(self._on_rename_preset)
         # self.delete_preset_button.clicked.connect(self._on_delete_preset)
 
@@ -480,3 +523,33 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
             # If user confirms, get the selection and send it back to the ViewModel
             selected_type = dialog.selected_game_type()
             self.view_model.set_game_type_and_add(proposal, selected_type)
+
+    def _refresh_launcher_tab(self, launcher_path: str, auto_play: bool):
+        """Populates the launcher tab UI from the ViewModel's state."""
+        self.launcher_path_edit.setText(launcher_path)
+        self.auto_play_checkbox.setChecked(auto_play)
+
+    def _on_browse_launcher(self):
+        """Opens a file dialog to select the launcher executable."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Launcher Executable",
+            "", # Direktori awal
+            "Executable files (*.exe);;All files (*)"
+        )
+
+        if file_path:
+            # Perbarui tampilan UI
+            self.launcher_path_edit.setText(file_path)
+            # Beri tahu ViewModel tentang perubahan
+            self.view_model.set_temp_launcher_path(file_path)
+
+    def _switch_to_tab(self, routeKey: str):
+        """
+        A central method to handle tab switching. It updates both the
+        QStackedWidget and the Pivot to ensure they are in sync.
+        """
+        target_widget = self.pages.get(routeKey)
+        if target_widget:
+            self.stack.setCurrentWidget(target_widget)
+            self.pivot.setCurrentItem(routeKey)

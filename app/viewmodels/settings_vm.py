@@ -21,7 +21,7 @@ class SettingsViewModel(QObject):
     config_updated = pyqtSignal()
     toast_requested = pyqtSignal(str, str)  # message, level
     game_type_selection_requested = pyqtSignal(dict, list)
-
+    launcher_settings_refreshed = pyqtSignal(str, bool)  # launcher_path, auto_play
     confirmation_requested = pyqtSignal(dict)
     error_dialog_requested = pyqtSignal(str, str)  # title, message
 
@@ -44,7 +44,8 @@ class SettingsViewModel(QObject):
 
         self.original_config: AppConfig | None = None
         self.temp_games: list[Game] = []  # A mutable list for game edits
-
+        self.temp_launcher_path: str | None = None
+        self.temp_auto_play: bool = False
         self.temp_presets: dict = {}  # A mutable dict for preset edits
 
     # ---Public Methods (API for the View) ---
@@ -54,17 +55,19 @@ class SettingsViewModel(QObject):
         logger.info("Loading current configuration into SettingsViewModel.")
         self.original_config = app_config
         self.temp_games = list(app_config.games) if app_config else []
+        self.temp_launcher_path = app_config.launcher_path
+        self.temp_auto_play = app_config.auto_play_on_startup
         # self.temp_presets = dict(app_config.presets) if app_config else {}
 
         # Prepare simple data for the view
         # Convert list[Game] to list[dict]
-
         view_data = [
             {"id": g.id, "name": g.name, "path": str(g.path), "game_type": g.game_type} for g in self.temp_games
         ]
 
         # Emit signals to tell the dialog to populate its UI
         self.games_list_refreshed.emit(view_data)
+        self.launcher_settings_refreshed.emit(self.temp_launcher_path or "", self.temp_auto_play)
 
         # self.presets_list_refreshed.emit(self.temp_presets) # For later
 
@@ -88,16 +91,21 @@ class SettingsViewModel(QObject):
         if not self.original_config:
             # Should not happen in normal flow, but as a safeguard
 
-            new_config = AppConfig(games=self.temp_games)
+            new_config = AppConfig(
+                games=self.temp_games,
+                launcher_path=self.temp_launcher_path,
+                auto_play_on_startup=self.temp_auto_play
+            )
         else:
             new_config = dataclasses.replace(
                 self.original_config,
                 games=self.temp_games,
+                launcher_path=self.temp_launcher_path,
+                auto_play_on_startup=self.temp_auto_play
                 # presets=self.temp_presets # Add this later
             )
 
         # ---3. Transactional Save ---
-
         try:
             self.config_service.save_config(new_config)
             self.config_updated.emit()  # Notify MainWindowViewModel
@@ -113,10 +121,16 @@ class SettingsViewModel(QObject):
     # ---Game Management ---
 
     def add_game_from_path(self, path: Path):
-        """Flow 1.2: Memulai deteksi dan meminta konfirmasi jika perlu."""
+        """Flow 1.2: Detects XXMI structure and proposes games from a given path."""
         detection_result = self.game_service.propose_games_from_path(path)
 
+        if detection_result.suggested_launcher_path and not self.temp_launcher_path:
+            logger.info(f"Auto-setting launcher path to suggested path: {detection_result.suggested_launcher_path}")
+            self.set_temp_launcher_path(str(detection_result.suggested_launcher_path))
+            self.launcher_settings_refreshed.emit(self.temp_launcher_path, self.temp_auto_play)
+
         if detection_result.is_detected:
+            # Case 1: Multiple games found (XXMI structure)
             logger.info(f"XXMI structure detected at {path}.")
             dialog_params = {
                 "title": "XXMI Structure Detected",
@@ -125,11 +139,16 @@ class SettingsViewModel(QObject):
             }
             self.confirmation_requested.emit(dialog_params)
         else:
-            # Jika tidak ada deteksi XXMI, langsung proses satu proposal
-            logger.info(
-                f"No XXMI structure detected at {path}. Processing single game."
-            )
-            self.process_individual_proposals(detection_result.proposals)
+            # Case 2: Single game found (fallback)
+            # We still use the confirmation signal to keep the flow consistent.
+            # The context is the same, so the handler doesn't need to change.
+            game_name = detection_result.proposals[0].get('name', 'this folder')
+            dialog_params = {
+                "title": "Confirm New Game",
+                "text": f"Add '{game_name}' to your games list?",
+                "context": {"proposals": detection_result.proposals}
+            }
+            self.confirmation_requested.emit(dialog_params)
 
 
 
@@ -263,6 +282,16 @@ class SettingsViewModel(QObject):
         self.games_list_refreshed.emit(view_data)
 
     # ---Preset Management (Async Operations) ---
+
+    def set_temp_launcher_path(self, path: str):
+        """Updates the temporary launcher path when the user changes it."""
+        self.temp_launcher_path = path if path else None
+        logger.debug(f"Temporary launcher path set to: {self.temp_launcher_path}")
+
+    def set_temp_auto_play(self, is_checked: bool):
+        """Updates the temporary auto-play state."""
+        self.temp_auto_play = is_checked
+        logger.debug(f"Temporary auto-play state set to: {self.temp_auto_play}")
 
     def rename_preset(self, old_name: str, new_name: str):
         """Flow 6.2.A: Starts the async workflow to rename a preset and update all mods."""

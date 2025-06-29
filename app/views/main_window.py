@@ -61,6 +61,7 @@ class MainWindow(FluentWindow):
         # Flow 1.1: Trigger the initial data loading sequence after setup.
         self.main_window_vm.start_initial_load()
 
+
     def _init_ui(self) -> None:
         """
         Builds the window layout using FluentWindow's managed navigation system.
@@ -183,6 +184,9 @@ class MainWindow(FluentWindow):
         self.main_window_vm.category_switch_requested.connect(self._on_category_switch_requested)
         # self.main_window_vm.foldergrid_vm.bulk_operation_started.connect(self._on_bulk_operation_started)
         # self.main_window_vm.foldergrid_vm.bulk_operation_finished.connect(self._on_bulk_operation_finished)
+        self.play_button.clicked.connect(self.main_window_vm.on_play_button_clicked)
+        self.main_window_vm.play_settings_required.connect(self._on_play_settings_required)
+        self.main_window_vm.play_button_state_changed.connect(self.play_button.setEnabled)
 
         self.main_window_vm.settings_dialog_requested.connect(
             self._on_settings_dialog_requested
@@ -306,7 +310,7 @@ class MainWindow(FluentWindow):
             self.play_button.setEnabled(False)
         self.gamelist_combo.blockSignals(False)
 
-    def _on_settings_dialog_requested(self):
+    def _on_settings_dialog_requested(self, initial_tab: str = "games_tab"):
         """Flow 1.2: Creates and shows the SettingsDialog."""
         logger.info("Settings dialog requested.")
 
@@ -320,6 +324,7 @@ class MainWindow(FluentWindow):
 
         # 3. Load the current config into the dialog's ViewModel
         self.settings_vm.load_current_config(self.main_window_vm.config)
+        dialog._switch_to_tab(initial_tab)
 
         # 4. Execute the dialog and check the result
         if dialog.exec():
@@ -448,6 +453,19 @@ class MainWindow(FluentWindow):
         logger.info(f"Programmatically switching sidebar to '{route_key}'")
         self.navigationInterface.setCurrentItem(route_key)
 
+    def _on_play_settings_required(self):
+        """
+        Shows a toast notification and opens the SettingsDialog to the
+        Launcher tab when the launcher path is not configured.
+        """
+        UiUtils.show_toast(
+            self,
+            "Launcher path not set. Please configure it first.",
+            "info",
+            duration=3000
+        )
+        # Panggil metode yang sudah ada, tetapi dengan argumen tambahan
+        self._on_settings_dialog_requested(initial_tab="launcher_tab")
 
     def closeEvent(self, event):
         super().closeEvent(event)

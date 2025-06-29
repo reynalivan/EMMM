@@ -1,9 +1,11 @@
 # App/viewmodels/main window vm.py
 
+import os
 from pathlib import Path
+import subprocess
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 from typing import Optional, List, Dict
-
+import subprocess as sp
 from app.utils.logger_utils import logger
 from app.utils.async_utils import Worker
 from app.models.mod_item_model import ModType
@@ -47,6 +49,8 @@ class MainWindowViewModel(QObject):
     game_list_updated = pyqtSignal(list)  # list[dict] instead of list[Game]
     active_game_changed = pyqtSignal(object)  # Game object or None
     category_switch_requested = pyqtSignal(str) # 'character' or 'other'
+    play_settings_required = pyqtSignal()
+    play_button_state_changed = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -134,6 +138,20 @@ class MainWindowViewModel(QObject):
             else:
                 # The previously active game was deleted, clear the view
                 self.set_current_game(None)
+
+    def run_auto_play_on_startup(self):
+        """
+        Checks the config and runs the launcher if auto-play is enabled.
+        This should be called once after the initial config is loaded.
+        """
+        logger.info("Checking for auto-play on startup...")
+        if self.config and self.config.auto_play_on_startup and self.config.launcher_path:
+            launcher_path = Path(self.config.launcher_path)
+            if launcher_path.is_file():
+                logger.info(f"Auto-play is enabled. Attempting to run: {launcher_path}")
+                self.on_play_button_clicked()
+            else:
+                logger.warning("Auto-play enabled, but launcher path is invalid.")
 
     # ---Public Slots (for UI Actions) ---
 
@@ -394,10 +412,12 @@ class MainWindowViewModel(QObject):
         """
         logger.info("Configuration loaded. Updating view model state...")
         self.config = app_config
+        is_play_enabled = bool(app_config and app_config.launcher_path)
+        self.play_button_state_changed.emit(is_play_enabled)
 
         # Proceed to the next step in the startup flow
-
         self._process_config_update()
+        self.run_auto_play_on_startup()
 
     def _on_load_config_error(self, error_info: tuple):
         """Handles errors that occur during the config loading process."""
@@ -518,3 +538,47 @@ class MainWindowViewModel(QObject):
             self.category_switch_requested.emit("character")
         else:
             self.category_switch_requested.emit("other")
+
+    def on_play_button_clicked(self):
+        """
+        Handles the logic when the main 'Play' button is clicked.
+        """
+        if self.config and self.config.launcher_path:
+            launcher_path = Path(self.config.launcher_path)
+            if launcher_path.is_file():
+                logger.info(f"Play button clicked. Running: {launcher_path}")
+                try:
+                    subprocess.Popen([str(launcher_path)], cwd=str(launcher_path.parent))
+                except OSError as e:
+                    if e.winerror == 740:
+                        logger.warning("Elevation required. Trying runas fallback...")
+                        try:
+                            logger.warning("Elevation needed. Fallback via PowerShell…")
+                            ret = self.run_as_admin_with_powershell(str(launcher_path))
+                            if ret != 0:
+                                err = f"Powershell exit code {ret}"
+                                logger.error(f"Fallback elevation failed: {err}")
+                                self.toast_requested.emit(f"Failed to run as admin: {err}", ToastLevel.ERROR)
+
+                        except Exception as fallback_error:
+                            logger.error(f"Fallback elevation failed: {fallback_error}")
+                            self.toast_requested.emit(f"Failed to run launcher (admin): {fallback_error}", ToastLevel.ERROR)
+                    else:
+                        logger.error(f"Failed to run launcher: {e}")
+                        self.toast_requested.emit(f"Failed to run launcher: {e}", ToastLevel.ERROR)
+                except Exception as e:
+                    logger.error(f"Failed to run launcher: {e}")
+                    self.toast_requested.emit(f"Failed to run launcher: {e}", "error")
+            else:
+                self.toast_requested.emit("Launcher path is invalid. Please check settings.", "warning")
+                self.play_settings_required.emit()
+        else:
+            logger.info("Play button clicked, but no launcher path is set. Requesting settings.")
+            self.play_settings_required.emit()
+
+    @staticmethod
+    def run_as_admin_with_powershell(cmd_path: str):
+        ps_cmd = (
+            f'powershell -Command "Start-Process \'{cmd_path}\' -Verb RunAs"'
+        )
+        return os.system(ps_cmd)

@@ -12,6 +12,7 @@ class DetectionResult:
 
     is_detected: bool
     proposals: list[dict[str, Path]] = field(default_factory=list)
+    suggested_launcher_path: Path | None = None
 
 
 class GameService:
@@ -68,6 +69,7 @@ class GameService:
         logger.info(f"Analyzing path for game proposals: {path}")
 
         xxmi_root_path: Path | None = None
+        suggested_launcher = None
         proposals: List[Dict[str, Any]] = []
 
         # --- Detection Method 1: Check for Launcher Root ---
@@ -91,6 +93,11 @@ class GameService:
 
         # --- Process Proposals if an XXMI Root was found ---
         if xxmi_root_path:
+            potential_launcher_path = xxmi_root_path / self.LAUNCHER_EXECUTABLE_PATH
+            if potential_launcher_path.is_file():
+                logger.info(f"Found suggested launcher path: {potential_launcher_path}")
+                suggested_launcher = potential_launcher_path
+
             # Construct potential paths for all known games and validate them.
             for folder_name in sorted(list(KNOWN_XXMI_FOLDERS)):
                 potential_game_path = xxmi_root_path / folder_name
@@ -106,7 +113,7 @@ class GameService:
                         })
 
             if proposals:
-                return DetectionResult(is_detected=True, proposals=proposals)
+                return DetectionResult(is_detected=True, proposals=proposals,suggested_launcher_path=suggested_launcher)
 
         # --- Fallback: If no XXMI structure is detected at all ---
         logger.info(
