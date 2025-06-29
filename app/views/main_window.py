@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (
     QFrame,
     QStyle
 )
-from app.utils import ui_utils
 from app.utils.logger_utils import logger
 from qfluentwidgets import (
     FluentWindow,
@@ -25,18 +24,15 @@ from qfluentwidgets import (
 )
 
 # Import ViewModels
-
 from app.utils.ui_utils import UiUtils
-from app.viewmodels import preview_panel_vm
 from app.viewmodels.main_window_vm import MainWindowViewModel
 from app.viewmodels.settings_vm import SettingsViewModel
 
 # Import Custom Panels (Views)
-
 from app.views.sections.objectlist_panel import ObjectListPanel
 from app.views.sections.foldergrid_panel import FolderGridPanel
 from app.views.sections.preview_panel import PreviewPanel
-from app.services.thumbnail_service import ThumbnailService
+
 
 # Import Dialogs (Views)
 from app.views.dialogs.edit_game_dialog import EditGameDialog
@@ -97,6 +93,7 @@ class MainWindow(FluentWindow):
         self.gamelist_combo.setPlaceholderText("Select Game")
         self.gamelist_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.safe_mode_switch = SwitchButton("Safe Mode")
+        self.safe_mode_switch.setVisible(False)  # Hide for now, can be enabled later
         left.addWidget(self.gamelist_combo)
         left.addWidget(self.safe_mode_switch)
         left.addStretch(1)

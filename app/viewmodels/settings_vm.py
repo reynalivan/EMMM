@@ -237,8 +237,30 @@ class SettingsViewModel(QObject):
         self.games_list_refreshed.emit(view_data)
 
     def remove_temp_game(self, game_id: str):
-        """Flow 1.2: Removes a game from the temporary list."""
-        pass
+        """
+        [IMPLEMENTED] Removes a game from the temporary list based on its ID
+        and emits a signal to refresh the view.
+        """
+        # Find the game to remove
+        game_to_remove = next((g for g in self.temp_games if g.id == game_id), None)
+
+        if not game_to_remove:
+            logger.warning(f"Attempted to remove a game with ID '{game_id}' that does not exist.")
+            self.toast_requested.emit("Could not find the selected game to remove.", "error")
+            return
+
+        # Remove the game from the list
+        self.temp_games.remove(game_to_remove)
+        logger.info(f"Removed game '{game_to_remove.name}' from temporary list.")
+
+        # --- Refresh the view ---
+        # Prepare the updated data for the view
+        view_data = [
+            {"id": g.id, "name": g.name, "path": str(g.path), "game_type": g.game_type}
+            for g in self.temp_games
+        ]
+        # Emit the signal to tell the dialog to update its table
+        self.games_list_refreshed.emit(view_data)
 
     # ---Preset Management (Async Operations) ---
 

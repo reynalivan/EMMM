@@ -96,11 +96,13 @@ class FolderGridPanel(QWidget):
         self.preset_combo.setMinimumWidth(150)
         self.preset_combo.setEnabled(False)
         toolbar.addWidget(self.preset_combo)
+        self.preset_combo.setVisible(False)  # Hide for now, can be enabled later
 
         # Shuffle button
         self.randomize_btn = TransparentToolButton(FluentIcon.ROTATE, self)
         self.randomize_btn.setToolTip("Shuffle mods")
         toolbar.addWidget(self.randomize_btn)
+        self.randomize_btn.setVisible(False)  # Hide for now, can be enabled later
 
         # Spacer
         toolbar.addStretch()

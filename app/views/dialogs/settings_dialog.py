@@ -21,6 +21,10 @@ from qfluentwidgets import (
     FluentIcon,
     SubtitleLabel,
     Dialog,
+    MessageBox,
+    IconWidget,
+    BodyLabel,
+    TitleLabel
 )
 from app.utils.ui_utils import UiUtils
 from app.utils.logger_utils import logger
@@ -107,6 +111,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         self.games_table = TableWidget(self)
         self.games_table.setColumnCount(3)
         self.games_table.setHorizontalHeaderLabels(["Name", "Path", "Mods Type"])
+        self.games_table.setEditTriggers(self.games_table.EditTrigger.NoEditTriggers)
 
         # ---Apply fluent styles ---
         self.games_table.setBorderVisible(True)
@@ -153,9 +158,33 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         self.presets_list = ListWidget(self)
         self.presets_list.setObjectName("PresetsList")
 
-        layout.addWidget(SubtitleLabel("Manage Saved Presets"))
-        layout.addLayout(toolbar_layout)
-        layout.addWidget(self.presets_list, 1)
+        # Hide buttons and list until they are implemented
+        self.rename_preset_button.setVisible(False)
+        self.delete_preset_button.setVisible(False)
+        self.presets_list.setVisible(False)
+
+        # --- Widget "Coming Soon" ---
+        layout.addStretch(1)
+
+        coming_soon_icon = IconWidget(FluentIcon.DEVELOPER_TOOLS, presets_widget)
+        coming_soon_icon.setFixedSize(48, 48)
+        layout.addWidget(coming_soon_icon, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(5)
+
+        title = TitleLabel("Feature Coming Soon!", presets_widget)
+        subtitle = BodyLabel("Preset management is currently under development.", presets_widget)
+        subtitle.setTextColor("#8a8a8a") # Warna abu-abu untuk subteks
+
+        layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle, 0, Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch(1)
+
+        # -------------------------
+
+        #layout.addWidget(SubtitleLabel("Manage Saved Presets"))
+        #layout.addLayout(toolbar_layout)
+        #layout.addWidget(self.presets_list, 1)
 
         self.stack.addWidget(presets_widget)
         self.pivot.addItem(
@@ -178,7 +207,8 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
 
         self.add_game_button.clicked.connect(self._on_add_game)
         self.edit_game_button.clicked.connect(self._on_edit_game)
-        # self.remove_game_button.clicked.connect(self._on_remove_game)
+        self.games_table.itemDoubleClicked.connect(self._on_edit_game)
+        self.remove_game_button.clicked.connect(self._on_remove_game)
         # self.rename_preset_button.clicked.connect(self._on_rename_preset)
         # self.delete_preset_button.clicked.connect(self._on_delete_preset)
 
@@ -319,11 +349,30 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
             )
 
     def _on_remove_game(self):
-        """Flow 1.2: Tells the ViewModel to remove the selected game from the temp list."""
-        # 1. Get the selected game.
-        # 2. Call self.view_model.remove_temp_game(...) and refresh the list.
+        """
+        [IMPLEMENTED] Gets the selected game from the table, asks for confirmation,
+        and tells the ViewModel to remove it from the temporary list.
+        """
+        # 1. Get the selected game from the table
+        selected_items = self.games_table.selectedItems()
+        if not selected_items:
+            UiUtils.show_toast(self, "Please select a game to remove.", "warning")
+            return
 
-        pass
+        selected_row = selected_items[0].row()
+        game_id = self.games_table.item(selected_row, 0).data(Qt.ItemDataRole.UserRole)
+        game_name = self.games_table.item(selected_row, 0).text()
+
+        # 2. Show a confirmation dialog
+        title = "Confirm Removal"
+        content = f"Are you sure you want to remove '{game_name}'?\n\nThis change will be permanent after you click 'Save'."
+
+        # We use a standard MessageBox here for confirmation
+        confirm_dialog = MessageBox(title, content, self)
+
+        if confirm_dialog.exec(): # This returns True if the user clicks 'Yes'
+            # 3. If confirmed, call the ViewModel method
+            self.view_model.remove_temp_game(game_id)
 
     def _on_rename_preset(self):
         """Flow 6.2.A: Opens a dialog to get a new name for a selected preset."""

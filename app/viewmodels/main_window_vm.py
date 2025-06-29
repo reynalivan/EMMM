@@ -121,10 +121,15 @@ class MainWindowViewModel(QObject):
             )
 
             if refreshed_active_game:
-                # By calling set_current_game, we force an update of all child
-                # VMs and trigger a reload of the objectlist with the new game object.
-                logger.info("Re-setting active game to sync new configuration...")
-                self.set_current_game(refreshed_active_game)
+                # Update the active game reference in this ViewModel
+                self.active_game = refreshed_active_game
+
+                logger.info(f"Forcing objectlist refresh for game '{refreshed_active_game.name}' with new game_type '{refreshed_active_game.game_type}'.")
+                self.objectlist_vm.load_items(
+                    path=refreshed_active_game.path,
+                    game=refreshed_active_game,
+                    is_new_root=True # Treat this as a root change to reset filters etc.
+                )
                 # ---------------------
             else:
                 # The previously active game was deleted, clear the view
