@@ -172,17 +172,35 @@ class ModService:
                 properties = {}
                 needs_json_update = False
 
+
+                # 1. Load local properties.json first
                 if props_path.is_file():
                     try:
                         with open(props_path, "r", encoding="utf-8") as f:
                             properties = json.load(f)
                     except json.JSONDecodeError:
-                        logger.warning(
-                            f"{PROPERTIES_JSON_NAME} for '{skeleton_item.actual_name}' is corrupted. Overwriting."
-                        )
-                        needs_json_update = True
-                else:
-                    needs_json_update = True
+                        logger.warning(f"{PROPERTIES_JSON_NAME} for '{skeleton_item.actual_name}' is corrupted. Rebuilding.")
+                        properties = {} # Treat as empty if corrupt
+
+                # 2. Check if essential data is missing for this type
+                is_character = isinstance(skeleton_item, CharacterObjectItem)
+                essential_keys = ["rarity", "element", "gender", "weapon"] if is_character else ["subtype"]
+                is_incomplete = not all(key in properties for key in essential_keys)
+
+                if is_incomplete:
+                    logger.info(f"Local properties for '{skeleton_item.actual_name}' is incomplete. Fetching from database...")
+                    # 3. If incomplete, fetch supplementary data from the database
+                    db_metadata = self.database_service.get_metadata_for_object(
+                        game_name, skeleton_item.actual_name
+                    ) or {}
+
+                    # 4. Merge data: database data is used as a fallback for missing keys
+                    # This ensures local properties are always prioritized.
+                    final_data = db_metadata.copy()
+                    final_data.update(properties) # Values from 'properties' will overwrite db_metadata
+                    properties = final_data
+                    needs_json_update = True # Mark for saving
+
 
                 # --- Reality Check (Suffix Logic) ---
                 found_thumb_path: Path | None = None
@@ -208,44 +226,31 @@ class ModService:
                     properties["thumbnail_path"] = found_thumb_path.name
                     needs_json_update = True
 
+                # 5. If data was supplemented or thumbnail path changed, save the complete properties.json
                 if needs_json_update:
                     self._write_json(props_path, properties)
 
-                # Get other metadata
-                metadata = (
-                    self.database_service.get_metadata_for_object(
-                        game_name, skeleton_item.actual_name
-                    )
-                    or {}
-                )
-
+                # 6. Build the final payload using the finalized 'properties' dictionary
                 data_payload = {
+                    "is_skeleton": False,
                     "tags": properties.get("tags", []),
                     "thumbnail_path": (
                         skeleton_item.folder_path / p
                         if (p := properties.get("thumbnail_path"))
                         else None
                     ),
-                    "is_skeleton": False,
                 }
 
-                # Add attributes specific to Character or Generic types
-                if isinstance(skeleton_item, CharacterObjectItem):
-                    data_payload.update(
-                        {
-                            "gender": metadata.get("gender"),
-                            "rarity": metadata.get("rarity"),
-                            "element": metadata.get("element"),
-                            "weapon": metadata.get("weapon"),
-                            "region": metadata.get("region"),
-                        }
-                    )
+                if is_character:
+                    data_payload.update({
+                        "rarity": properties.get("rarity"),
+                        "element": properties.get("element"),
+                        "gender": properties.get("gender"),
+                        "weapon": properties.get("weapon"),
+                        "region": properties.get("region"),
+                    })
                 elif isinstance(skeleton_item, GenericObjectItem):
-                    data_payload.update(
-                        {
-                            "subtype": metadata.get("subtype"),
-                        }
-                    )
+                    data_payload.update({"subtype": properties.get("subtype")})
 
                 return dataclasses.replace(skeleton_item, **data_payload)
 

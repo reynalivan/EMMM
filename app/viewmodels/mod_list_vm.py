@@ -475,19 +475,21 @@ class ModListViewModel(QObject):
                 for item in filtered_items:
                     match = True
                     for key, value in self.active_filters.items():
-                        # --- MODIFIKASI Logika Filter ---
-                        # Handle multi-select for tags
+                        item_value = getattr(item, key, None)
+
+                        # Add logging to see the comparison
+                        logger.debug(f"Filtering '{item.actual_name}': Attr '{key}' (Value: {item_value}) vs Filter (Value: {value})")
+
                         if key == 'tags' and isinstance(value, list):
-                            if not hasattr(item, 'tags') or not item.tags or not set(value).issubset(set(item.tags)):
+                            # Handle multi-select for tags
+                            if not isinstance(item_value, list) or not set(value).issubset(set(item_value)):
                                 match = False
                                 break
-                        # Handle single-select for other fields
                         else:
-                            item_value = getattr(item, key.lower(), None)
+                            # Handle single-select for other fields
                             if item_value != value:
                                 match = False
                                 break
-                        # --------------------------------
                     if match:
                         items_after_detail_filter.append(item)
                 filtered_items = items_after_detail_filter
