@@ -66,6 +66,7 @@ class ModListViewModel(QObject):
     sync_confirmation_requested = pyqtSignal(list)
     game_type_setup_required = pyqtSignal(str)
     object_created = pyqtSignal(dict)
+    list_refresh_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -1163,3 +1164,73 @@ class ModListViewModel(QObject):
         # --- STAGE 3: Fetch schema using the valid game_type ---
         logger.info(f"Requesting schema for game_type: '{game_type_to_lookup}'")
         return self.database_service.get_schema_for_game(game_type_to_lookup)
+
+    def convert_object_type(self, item_id: str, new_type: ModType):
+        """
+        Initiates the background process to convert an object's type.
+        """
+        item_to_convert = next((item for item in self.master_list if item.id == item_id), None)
+
+        if not item_to_convert:
+            logger.error(f"Cannot convert type: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to convert '{item_to_convert.actual_name}' to type '{new_type.value}'.")
+
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(
+            self.mod_service.convert_object_type,
+            item_id,
+            item_to_convert.folder_path,
+            new_type.value
+        )
+
+        # --- FINAL STEP: Connect signals to handle the result ---
+        worker.signals.result.connect(self._on_conversion_finished)
+        worker.signals.error.connect(
+            lambda error_info, id=item_id: self._on_conversion_error(error_info, id)
+        )
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_conversion_finished(self, result: dict):
+        """
+        [IMPLEMENTED] Handles the result of the conversion process.
+        Reloads the entire object list on success to reflect model changes.
+        """
+        item_id = result.get("item_id")
+
+        # Always signal that processing is finished for this item
+        if item_id:
+            self.item_processing_finished.emit(item_id, result["success"])
+
+        if result.get("success"):
+            logger.info(f"Type conversion successful for item {item_id}. Reloading object list.")
+            self.toast_requested.emit("Object type converted successfully.", "success")
+
+            # TODO: 1. Find the name of the item to re-select after the refresh
+            item_to_reselect = next((item for item in self.master_list if item.id == item_id), None)
+            item_id_to_select = item_to_reselect.id if item_to_reselect else None
+            if item_id_to_select:
+                logger.info(f"Item to re-select after reload: {item_to_reselect.actual_name}")
+
+            # 2. Emit a signal requesting the parent ViewModel to handle the reload
+            self.list_refresh_requested.emit()
+
+        else:
+            # On failure, show an error toast
+            self.toast_requested.emit(f"Failed to convert type: {result.get('error')}", "error")
+
+    def _on_conversion_error(self, error_info: tuple, item_id: str):
+        """
+        [NEW] Handles a critical failure during the conversion worker thread.
+        """
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred during type conversion for item {item_id}: {value}\n{tb}")
+
+        # Ensure the UI is unblocked
+        self.item_processing_finished.emit(item_id, False)
+
+        # Show a generic error message to the user
+        self.toast_requested.emit("A critical error occurred. Please check the logs.", "error")

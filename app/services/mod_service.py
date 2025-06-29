@@ -733,3 +733,39 @@ class ModService:
             error_msg = f"An unexpected error occurred: {e}"
             logger.critical(error_msg, exc_info=True)
             return {"success": False, "error": error_msg}
+
+    def convert_object_type(self, item_id: str, item_path: Path, new_type_str: str) -> dict:
+        """
+        Changes the 'object_type' within an item's properties.json file.
+        This is an atomic file operation.
+        """
+        props_path = item_path / PROPERTIES_JSON_NAME
+
+        try:
+            # 1. Read the existing properties.json
+            if not props_path.is_file():
+                # If the file doesn't exist, create a basic structure
+                logger.warning(f"'{PROPERTIES_JSON_NAME}' not found for item at '{item_path}'. Creating a new one.")
+                properties = {}
+            else:
+                with open(props_path, "r", encoding="utf-8") as f:
+                    properties = json.load(f)
+
+            # 2. Update the object_type value
+            logger.info(f"Converting object '{item_path.name}' to type '{new_type_str}'.")
+            properties["object_type"] = new_type_str
+
+            # 3. Write the changes back to the file
+            self._write_json(props_path, properties)
+
+            # Return success
+            return {"success": True, "item_id": item_id}
+
+        except (IOError, json.JSONDecodeError) as e:
+            error_msg = f"Failed to read or write {props_path}: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during type conversion: {e}"
+            logger.critical(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}

@@ -17,7 +17,7 @@ from qfluentwidgets import (
 )
 
 # Import models and services for type hinting
-
+from app.models.mod_item_model import ModType
 from app.viewmodels.mod_list_vm import ModListViewModel
 from app.utils.logger_utils import logger
 
@@ -168,6 +168,7 @@ class ObjectListItemWidget(QWidget):
     def contextMenuEvent(self, event):
         """Creates and shows a context menu on right-click."""
         menu = RoundMenu(parent=self)
+        item_id = self.item_data.get("id")
 
         # ---Enable/dynamic disable/disable action ---
         is_enabled = self.item_data.get("is_enabled", False)
@@ -198,6 +199,31 @@ class ObjectListItemWidget(QWidget):
         # Pin action.triggered.connect(...)
 
         menu.addAction(pin_action)
+
+        convert_menu = RoundMenu("Convert to", self)
+        convert_menu.setIcon(FluentIcon.CONSTRACT)
+
+        current_object_type_str = self.item_data.get("object_type", "Unknown")
+        # Loop with all ModType enum values
+        for mod_type in ModType:
+            action = QAction(mod_type.value, self)
+
+            # Mark or disable the currently active type
+            if mod_type.value == current_object_type_str:
+                action.setEnabled(False)
+                # Add "(current)" for clarity
+                action.setText(f"{mod_type.value} (current)")
+
+            # Connect triggered signal to the method in the ViewModel
+            # We use lambda to forward the item_id and new type
+            action.triggered.connect(
+                lambda checked=False, item_id_arg=item_id, new_type_arg=mod_type:
+                self.view_model.convert_object_type(item_id_arg, new_type_arg)
+            )
+            convert_menu.addAction(action)
+
+        # Tambahkan submenu ke menu utama
+        menu.addMenu(convert_menu)
 
         rename_action = QAction(FluentIcon.EDIT.icon(), "Rename...", self)
         menu.addAction(rename_action)
