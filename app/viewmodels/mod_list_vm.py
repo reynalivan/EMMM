@@ -510,7 +510,7 @@ class ModListViewModel(QObject):
         matched_db_names = set()
         count_to_update = 0
         for local_item in all_local_items:
-            match_info = self.database_service.find_best_object_match(game_type, local_item.actual_name)
+            match_info = self.database_service.find_best_object_match(all_db_objects, local_item.actual_name)
             if match_info and match_info.get("score", 0) > 0.8:
                 best_match = match_info["match"]
                 count_to_update += 1
@@ -1078,9 +1078,7 @@ class ModListViewModel(QObject):
         Receives a signal from ThumbnailService when a new thumbnail is ready on disk.
         Updates the internal item model and triggers a targeted UI refresh.
         """
-        logger.debug(
-            f"Received generated thumbnail for item '{item_id}' at '{cache_path}'"
-        )
+
         try:
             # 1. Find the appropriate item in Master_list
 
@@ -1509,8 +1507,13 @@ class ModListViewModel(QObject):
 
         logger.info(f"Initiating sync for '{item_name}'. Finding best match in database...")
 
-        # 1. Find the best match in the database
-        best_match_info = self.database_service.find_best_object_match(game_type, item_name)
+        # --- THE CORE FIX ---
+        # 1. Fetch the list of all DB objects ONCE.
+        all_db_objects = self.database_service.get_all_objects_for_game(game_type)
+
+        # 2. Pass the pre-fetched list to the matching method.
+        best_match_info = self.database_service.find_best_object_match(all_db_objects, item_name)
+        # --- END OF FIX ---
 
         # 2. Core Logic: Decide what to do
         if best_match_info and best_match_info.get("score", 0) > 0.75:

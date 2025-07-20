@@ -318,7 +318,9 @@ class MainWindow(FluentWindow):
 
         # 2. Create the dialog instance, passing the ViewModel
         dialog = SettingsDialog(viewmodel=self.settings_vm, parent=self)
-
+        dialog.view_model.reconciliation_finished.connect(
+            self.main_window_vm.request_main_refresh
+        )
         # 3. Load the current config into the dialog's ViewModel
         self.settings_vm.load_current_config(self.main_window_vm.config)
         dialog._switch_to_tab(initial_tab)
@@ -327,7 +329,6 @@ class MainWindow(FluentWindow):
         if dialog.exec():
             # This block runs only if the user clicks "Save" AND
             # the save operation in the ViewModel is successful.
-
             logger.info("Settings saved. Refreshing main window state.")
             self.main_window_vm.refresh_all_from_config()
 

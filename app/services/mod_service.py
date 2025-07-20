@@ -731,8 +731,8 @@ class ModService:
         folder_path = parent_path / folder_name
 
         try:
-            logger.info(f"Attempting to create new object folder at: {folder_path}")
-            folder_path.mkdir(exist_ok=False) # Fails if folder already exists, which is correct
+            logger.info(f"Ensuring object folder exists at: {folder_path}")
+            folder_path.mkdir(exist_ok=True)
 
             # --- Thumbnail Processing Logic ---
             # Prioritize a manually selected source (from dialog) over a DB source.
@@ -808,10 +808,6 @@ class ModService:
             logger.info(f"Successfully created object '{folder_name}' with full metadata.")
             return {"success": True, "data": {"folder_path": folder_path}}
 
-        except FileExistsError:
-            error_msg = f"Folder '{folder_name}' already exists."
-            logger.warning(error_msg)
-            return {"success": False, "error": error_msg}
         except PermissionError:
             error_msg = "Permission denied. Could not create folder."
             logger.error(error_msg, exc_info=True)

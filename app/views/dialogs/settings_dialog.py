@@ -100,6 +100,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         layout = QVBoxLayout(games_widget)
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(10)
+
         layout.addWidget(SubtitleLabel("Manage Mods Paths"))
 
         toolbar_layout = QHBoxLayout()
@@ -144,6 +145,15 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
             onClick=lambda: self._switch_to_tab("games_tab"),
             icon=FluentIcon.GAME,
         )
+
+        sync_layout = QHBoxLayout()
+        self.sync_game_button = PushButton(FluentIcon.SYNC, "Sync Data with Database")
+        self.sync_game_button.setToolTip("Creates missing mod folders and updates existing ones from the database for the selected game.")
+        self.sync_game_button.setEnabled(False)
+        sync_layout.addWidget(self.sync_game_button)
+        sync_layout.addStretch(1)
+        layout.addLayout(sync_layout)
+
 
     def _create_launcher_tab(self):
         """Creates the UI for the 'Launcher' settings tab."""
@@ -239,6 +249,11 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
     def _connect_signals(self):
         """Connects UI element signals and ViewModel signals to their handlers."""
         # ---ViewModel -> View ---
+        self.games_table.itemSelectionChanged.connect(self._on_game_selection_changed)
+        self.sync_game_button.clicked.connect(self._on_sync_this_game_clicked)
+        self.view_model.bulk_operation_started.connect(self._on_long_op_started)
+        self.view_model.bulk_operation_finished.connect(self._on_long_op_finished)
+
 
         self.view_model.games_list_refreshed.connect(self._refresh_game_list)
         self.view_model.toast_requested.connect(self._on_toast_requested)
@@ -258,12 +273,6 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         # Connect Save and Cancel buttons
         self.save_button.clicked.connect(self._on_save)
         self.cancel_button.clicked.connect(self.reject)
-
-        # ---Connect ViewModel signals to dialog slots ---
-        # self.view_model.long_operation_started.connect(self._on_long_op_started)
-        # self.view_model.long_operation_finished.connect(self._on_long_op_finished)
-
-        pass
 
     def _on_confirmation_requested(self, params: dict):
         """Membuat dan menampilkan dialog konfirmasi fluent."""
@@ -330,19 +339,51 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
 
     # ---SLOTS (Responding to ViewModel Signals) ---
 
-    def _on_long_op_started(self, message: str):
-        """Flow 6.2.A: Shows a progress overlay when a preset is being managed."""
-        # Shows an overlay on the dialog to prevent interaction during preset rename/delete.
+    def _on_sync_this_game_clicked(self):
+        """
+        [NEW] Handles the 'Sync Data with Database' button click.
+        """
+        selected_items = self.games_table.selectedItems()
+        if not selected_items:
+            UiUtils.show_toast(self, "Please select a game to sync.", "warning")
+            return
 
-        pass
+        selected_row = selected_items[0].row()
+        game_id = self.games_table.item(selected_row, 0).data(Qt.ItemDataRole.UserRole)
+        game_name = self.games_table.item(selected_row, 0).text()
 
-    def _on_long_op_finished(self, result: dict):
-        """Flow 6.2.A: Hides the overlay and refreshes lists after a preset operation."""
-        # Hides the overlay.
-        # Refreshes the preset list to show the changes.
-        # If there were failures, shows a message box with the details from the result dict.
+        # Show a confirmation dialog
+        title = "Confirm Full Sync"
+        content = (f"This will synchronize the mods for '{game_name}' with the database.\n\n"
+                   "• Missing mod folders will be created.\n"
+                   "• Existing mod folders will be updated.\n\n"
+                   "This may take a moment. Are you sure you want to proceed?")
 
-        pass
+        if UiUtils.show_confirm_dialog(self.window(), title, content, "Yes, Start Sync", "Cancel"):
+            # If confirmed, call the ViewModel to start the process
+            self.view_model.initiate_reconciliation_for_game(game_id)
+
+    def _on_long_op_started(self):
+        """
+        [REVISED] Shows an overlay on the dialog to prevent interaction
+        during the sync process.
+        """
+        # self.overlay = ShimmerFrame(self)
+        # self.overlay.setGeometry(self.rect())
+        # self.overlay.start_shimmer()
+        self.setEnabled(False)
+        logger.info("Long operation started, dialog disabled.")
+
+
+    def _on_long_op_finished(self):
+        """
+        [REVISED] Hides the overlay and re-enables the dialog.
+        """
+        # self.overlay.stop_shimmer()
+        # self.overlay.hide()
+        self.setEnabled(True)
+        logger.info("Long operation finished, dialog enabled.")
+
 
     # ---UI EVENT HANDLERS (Calling ViewModel methods) ---
     def _on_add_game(self):
@@ -358,6 +399,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
     def _on_edit_game(self):
         """Flow 1.2: Opens an edit dialog for the selected game."""
         selected_items = self.games_table.selectedItems()
+
         if not selected_items:
             UiUtils.show_toast(self, "Please select a game to edit.", "warning")
             return
@@ -553,3 +595,14 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         if target_widget:
             self.stack.setCurrentWidget(target_widget)
             self.pivot.setCurrentItem(routeKey)
+
+    def _on_game_selection_changed(self):
+        """
+        [NEW] Enables or disables the 'Sync' and 'Edit'/'Remove' buttons
+        based on whether a game is selected in the table.
+        """
+        is_a_game_selected = bool(self.games_table.selectedItems())
+
+        self.sync_game_button.setEnabled(is_a_game_selected)
+        self.edit_game_button.setEnabled(is_a_game_selected)
+        self.remove_game_button.setEnabled(is_a_game_selected)

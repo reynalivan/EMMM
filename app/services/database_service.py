@@ -73,29 +73,35 @@ class DatabaseService:
             return []
 
     # --- Public Methods for Schema ---
-    def find_best_object_match(self, game_type: str, item_name: str) -> dict | None:
+    def get_game_type_from_path(self, game_path: Path) -> str:
         """
-        [NEW] Finds the best partial match for an item name against the database
-        using string similarity.
+        [NEW] Infers the game type from the given game path.
         """
-        all_objects = self.get_all_objects_for_game(game_type)
-        if not all_objects:
+        self._ensure_schema_is_loaded()
+        for game_key in self._original_game_keys:
+            if game_key in game_path.parts:
+                return game_key
+        return ""
+
+    def find_best_object_match(self, all_db_objects: list, item_name: str) -> dict | None:
+        """
+        [REVISED] Finds the best partial match for an item name against a
+        PRE-FETCHED list of database objects.
+        """
+        if not all_db_objects:
             return None
 
         best_match = None
         highest_score = 0.0
         item_name_lower = item_name.lower()
 
-        for db_obj in all_objects:
+        for db_obj in all_db_objects:
             db_name_lower = db_obj.get("name", "").lower()
-
-            # Calculate similarity score based on name
             score = SequenceMatcher(None, item_name_lower, db_name_lower).ratio()
 
-            # Boost score if tags also match
             tags = db_obj.get("tags", [])
             if any(item_name_lower in tag.lower() for tag in tags):
-                score += 0.2 # Small boost for tag match
+                score += 0.2
 
             if score > highest_score:
                 highest_score = score
@@ -130,12 +136,12 @@ class DatabaseService:
         and combines data from all linked JSON files (e.g., char and other).
         """
         self._ensure_schema_is_loaded()
-        game_key = game_type.lower()
+        game_key = game_type
 
         if not self._schema_cache or game_key not in self._schema_cache:
             return []
 
-        game_schema_data = self._schema_cache.get(game_key, {})
+        game_schema_data = self._schema_cache.get(game_key.lower(), {})
         object_links = game_schema_data.get("object_link", {})
 
         if not object_links:

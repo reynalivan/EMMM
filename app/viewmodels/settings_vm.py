@@ -1,13 +1,14 @@
 # App/viewmodels/settings vm.py
 
 import dataclasses
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 from pathlib import Path
 from app.models.config_model import AppConfig
 from app.models.game_model import Game
 from app.services.config_service import ConfigService, ConfigSaveError
 from app.services.game_service import GameService
 from app.services.workflow_service import WorkflowService
+from app.utils.async_utils import Worker
 from app.utils.logger_utils import logger
 from app.services.database_service import DatabaseService
 
@@ -24,6 +25,10 @@ class SettingsViewModel(QObject):
     launcher_settings_refreshed = pyqtSignal(str, bool)  # launcher_path, auto_play
     confirmation_requested = pyqtSignal(dict)
     error_dialog_requested = pyqtSignal(str, str)  # title, message
+    reconciliation_progress_updated = pyqtSignal(int, int) # current, total
+    reconciliation_finished = pyqtSignal()
+    bulk_operation_started = pyqtSignal()
+    bulk_operation_finished = pyqtSignal(list)  # list of failed items
 
     def __init__(
         self,
@@ -292,6 +297,67 @@ class SettingsViewModel(QObject):
         """Updates the temporary auto-play state."""
         self.temp_auto_play = is_checked
         logger.debug(f"Temporary auto-play state set to: {self.temp_auto_play}")
+
+    def initiate_reconciliation_for_game(self, game_id: str):
+        """
+        [NEW] Starts the self-contained reconciliation workflow for a single game.
+        """
+        game_to_sync = next((g for g in self.temp_games if g.id == game_id), None)
+        if not game_to_sync:
+            self.toast_requested.emit(f"Could not find game with ID {game_id} to sync.", "error")
+            return
+
+        logger.info(f"User initiated reconciliation for game: '{game_to_sync.name}'")
+
+        self.bulk_operation_started.emit()
+
+        worker = Worker(
+            self.workflow_service.reconcile_single_game,
+            game_to_sync
+        )
+
+        worker.signals.progress.connect(self.reconciliation_progress_updated)
+        worker.signals.error.connect(self._on_reconciliation_error)
+        worker.signals.result.connect(self._on_reconciliation_finished)
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_reconciliation_finished(self, result: dict):
+        """
+        [NEW] Handles the summary result from the single-game reconciliation workflow.
+        """
+        # Emit the bulk operation finished signal with any failures
+        self.bulk_operation_finished.emit(result.get("failures", []))
+
+        if result.get("created") or result.get("updated"):
+            created = result.get("created", 0)
+            updated = result.get("updated", 0)
+            failed = result.get("failed", 0)
+
+            summary = f"Sync for '{result.get('game_type')}' complete: {created} created, {updated} updated."
+            level = "success"
+            if failed > 0:
+                summary += f" ({failed} failed)."
+                level = "warning"
+
+            self.toast_requested.emit(summary, level)
+
+            # Beri tahu MainWindow bahwa ada perubahan dan ia perlu me-refresh
+            self.reconciliation_finished.emit()
+        elif result.get("error"):
+            self.toast_requested.emit(f"Sync process failed: {result.get('error')}", "error")
+        else:
+            self.toast_requested.emit("No changes detected during sync.", "info")
+
+    def _on_reconciliation_error(self, error_info: tuple):
+        """
+        [NEW] Handles a critical failure from the reconciliation worker.
+        """
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred during reconciliation: {value}\n{tb}")
+
+        self.bulk_operation_finished.emit([])
+        self.toast_requested.emit("A critical error occurred during sync. Please check the logs.", "error")
 
     def rename_preset(self, old_name: str, new_name: str):
         """Flow 6.2.A: Starts the async workflow to rename a preset and update all mods."""

@@ -1,6 +1,8 @@
 from difflib import SequenceMatcher
 from pathlib import Path
 from PyQt6.QtCore import pyqtSignal
+from app.core.constants import CONTEXT_OBJECTLIST
+from app.models.game_model import Game
 from app.services.config_service import ConfigService
 from app.services.database_service import DatabaseService
 from app.services.mod_service import ModService
@@ -165,6 +167,9 @@ class WorkflowService:
         executes that plan.
         """
         logger.info(f"Starting reconciliation for game '{game_type}'. Local items: {len(all_local_items)}, DB objects: {len(all_db_objects)}")
+        if game_type is None:
+           game_type = self.database_service.get_game_type_from_path(game_path)
+
 
         tasks_to_create = []
         tasks_to_update = []
@@ -173,8 +178,9 @@ class WorkflowService:
         # --- STAGE 1: Match Existing Local Items ---
         for local_item in all_local_items:
             # Call the existing, centralized matching method
-            match_info = self.database_service.find_best_object_match(game_type, local_item.actual_name)
-
+            match_info = self.database_service.find_best_object_match(
+                all_db_objects, local_item.actual_name
+            )
             # If a confident match is found, plan an update
             if match_info and match_info.get("score", 0) > 0.8:
                 best_match = match_info["match"]
@@ -226,3 +232,30 @@ class WorkflowService:
         }
         logger.info("Reconciliation finished. Summary: %s", payload)
         return payload
+
+    def reconcile_single_game(self, game: Game, progress_callback=None) -> dict:
+        """
+        [NEW] A self-contained workflow that reconciles all objects for a
+        single game. It fetches all necessary data itself.
+        """
+        if not game or not game.game_type:
+            return {"success": False, "error": "Invalid game or missing game_type."}
+
+        game_type = game.game_type
+        logger.info(f"Starting self-contained reconciliation for game: '{game.name}' (Type: {game_type})")
+
+        # 1. Fetch all required data directly within the service
+        all_local_items = self.mod_service.get_item_skeletons(game.path, CONTEXT_OBJECTLIST).get("items", [])
+        all_db_objects = self.database_service.get_all_objects_for_game(game_type)
+
+        # 2. Reuse the existing, powerful reconciliation engine
+        # We pass the fetched data to the method we built previously.
+        result_summary = self.reconcile_objects_with_database(
+            game_path=game.path,
+            game_type=game_type,
+            all_local_items=all_local_items,
+            all_db_objects=all_db_objects,
+            progress_callback=progress_callback
+        )
+
+        return result_summary
