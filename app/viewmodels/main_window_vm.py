@@ -289,6 +289,7 @@ class MainWindowViewModel(QObject):
         """Connects signals from child VMs to orchestrator methods."""
         self.objectlist_vm.object_created.connect(self._on_object_created)
         self.objectlist_vm.list_refresh_requested.connect(self._on_list_refresh_requested)
+        self.foldergrid_vm.list_refresh_requested.connect(self._on_list_refresh_requested)
         # Flow 3.1a & 4.2.A: An active object was modified/renamed
         self.objectlist_vm.active_object_modified.connect(
             self._on_active_object_modified
@@ -589,11 +590,18 @@ class MainWindowViewModel(QObject):
         Handles a request from a child ViewModel to reload the object list.
         This ensures the reload uses the most up-to-date game object.
         """
+        sender_vm = self.sender()
+        if sender_vm not in [self.objectlist_vm, self.foldergrid_vm]:
+            return
+
         if self.active_game and self.active_game.path.is_dir():
-            logger.info(f"Handling refresh request for object list of game '{self.active_game.name}'.")
-            # Panggil load_items dengan referensi game yang paling baru
-            self.objectlist_vm.load_items(
-                path=self.active_game.path,
-                game=self.active_game,
-                is_new_root=True # Pastikan refresh total
+            logger.info(f"Handling refresh request for '{sender_vm.context}' of game '{self.active_game.name}'.")
+
+            # Use the most up-to-date path from the child VM, but the game object from this orchestrator
+            path_to_load = sender_vm.current_path if sender_vm.current_path else self.active_game.path
+
+            sender_vm.load_items(
+                path=path_to_load,
+                game=self.active_game, # Provide the master, up-to-date game object
+                is_new_root=(sender_vm == self.objectlist_vm) # A full refresh of objectlist is a root change
             )

@@ -29,6 +29,7 @@ from qfluentwidgets import (
     CheckBox,
     FlowLayout,
     TitleLabel,
+    MessageBox,
     IconWidget,
 )
 from qfluentwidgets.components.widgets import HorizontalSeparator
@@ -197,6 +198,9 @@ class FolderGridPanel(QWidget):
         self.view_model.bulk_operation_finished.connect(self._on_bulk_action_completed)
 
         # --- Connections for UI feedback ---
+        self.view_model.exclusive_activation_confirmation_requested.connect(
+            self._on_exclusive_activation_confirmation_requested
+        )
         self.view_model.filter_state_changed.connect(self._on_filter_state_changed)
         self.view_model.empty_state_changed.connect(self._on_empty_state_changed)
         self.view_model.clear_search_text.connect(self.search_bar.clear)
@@ -448,6 +452,37 @@ class FolderGridPanel(QWidget):
             self.empty_icon.setIcon(FluentIcon.FOLDER)
 
         self.stack.setCurrentWidget(self.empty_state_widget)
+
+    def _on_exclusive_activation_confirmation_requested(self, plan: dict):
+        """
+        [NEW] Receives the action plan from the ViewModel and shows a
+        confirmation dialog to the user.
+        """
+        item_to_enable_name = plan.get("enable_name", "the selected mod")
+        disable_names = plan.get("disable_names", [])
+
+        # Build a clear and informative message for the user
+        title = "Confirm Action"
+        content = f"This will enable '{item_to_enable_name}'.\n\n"
+
+        if disable_names:
+            content += "The following currently active mod(s) will be disabled:\n"
+            # List up to 5 mods to keep the dialog clean
+            for name in disable_names[:5]:
+                content += f"  • {name}\n"
+            if len(disable_names) > 5:
+                content += f"  • ...and {len(disable_names) - 5} more.\n"
+
+        content += "\nDo you want to proceed?"
+
+        # Create and show the confirmation dialog
+        confirm_dialog = MessageBox(title, content, self.window())
+
+        # The exec() method returns True if the user clicks the "Yes" button
+        if confirm_dialog.exec():
+            # If confirmed, call the ViewModel method to proceed with the action
+            self.view_model.proceed_with_exclusive_activation(plan)
+
 
     def _on_selection_changed(self, has_selection: bool):
         """Flow 3.2: Enables or disables bulk action buttons based on selection."""

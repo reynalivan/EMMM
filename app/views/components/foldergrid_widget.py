@@ -231,9 +231,26 @@ class FolderGridItemWidget(CardWidget):
     def contextMenuEvent(self, event):
         """Creates and shows a context menu on right-click."""
         menu = RoundMenu(parent=self)
+        item_id = self.item_data.get("id")
+        if not item_id:
+            return
 
-        # Aksi di sini bisa berbeda, karena kita sudah punya SwitchButton
-        # Tapi "Open in Explorer" sangat relevan
+
+        is_enabled = self.item_data.get("is_enabled", False)
+
+        if not is_enabled:
+            # Create the action
+            solo_action = QAction(FluentIcon.PLAY_SOLID.icon(), "Enable Only This", self)
+
+            # Connect it to a new method in the ViewModel that we will create next
+            solo_action.triggered.connect(
+                lambda: self.view_model.activate_mod_exclusively(item_id)
+            )
+
+            # Add it to the top of the menu for easy access
+            menu.addAction(solo_action)
+            menu.addSeparator()
+
         open_folder_action = QAction(
             FluentIcon.FOLDER.icon(), "Open in File Explorer", self
         )

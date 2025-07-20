@@ -1,7 +1,9 @@
 from pathlib import Path
 
+from app.services.config_service import ConfigService
+from app.services.mod_service import ModService
 from app.utils.logger_utils import logger
-
+from app.models.mod_item_model import ModStatus
 
 class WorkflowService:
     """
@@ -10,7 +12,7 @@ class WorkflowService:
     multiple items or multiple services.
     """
 
-    def __init__(self, mod_service, config_service):
+    def __init__(self, mod_service: ModService, config_service: ConfigService):
         # --- Injected Services ---
         self.mod_service = mod_service
         self.config_service = config_service
@@ -96,5 +98,59 @@ class WorkflowService:
 
     # --- Private/Internal Logic ---
     def _execute_rollback(self, undo_log: list):
-        """A helper method to reverse a series of file operations after a failure."""
-        return {}
+        """
+        [IMPLEMENTED] A helper method to reverse a series of file operations after a failure.
+        It iterates through a log of successfully changed items and toggles their status back.
+        """
+        if not undo_log:
+            return
+
+        logger.info(f"Initiating rollback for {len(undo_log)} actions.")
+        # Iterate in reverse to undo actions in the opposite order they were performed
+        for item_to_revert in reversed(undo_log):
+            try:
+                logger.debug(f"Rolling back status for '{item_to_revert.actual_name}'...")
+                # Calling toggle_status again will revert the change
+                self.mod_service.toggle_status(item_to_revert)
+            except Exception as e:
+                # Log an error if a specific rollback action fails, but continue
+                logger.error(f"Failed to roll back item '{item_to_revert.actual_name}'. Reason: {e}", exc_info=True)
+
+
+    def execute_exclusive_activation(self, plan: dict) -> dict:
+        """
+        [NEW] Executes the 'Enable Only This' action by disabling a list of mods
+        and then enabling a single mod. This is a transactional operation.
+        """
+        item_to_enable = plan.get("enable")
+        items_to_disable = plan.get("disable", [])
+
+        if not item_to_enable:
+            return {"success": False, "error": "Target item to enable was not specified."}
+
+        logger.info(f"Executing exclusive activation: Enabling '{item_to_enable.actual_name}', Disabling {len(items_to_disable)} mod(s).")
+
+        # --- Transactional Logic with Rollback ---
+        undo_log = []
+        try:
+            # 1. Disable all currently enabled mods
+            for item in items_to_disable:
+                result = self.mod_service.toggle_status(item, target_status=ModStatus.DISABLED)
+                if not result.get("success"):
+                    # If one fails, stop and roll back
+                    raise Exception(f"Failed to disable '{item.actual_name}': {result.get('error')}")
+                # Log the successful action for potential rollback
+                undo_log.append({"action": "enable", "item": result.get("data")})
+
+            # 2. Enable the target mod
+            result = self.mod_service.toggle_status(item_to_enable, target_status=ModStatus.ENABLED)
+            if not result.get("success"):
+                raise Exception(f"Failed to enable '{item_to_enable.actual_name}': {result.get('error')}")
+
+            return {"success": True}
+
+        except Exception as e:
+            logger.error(f"Exclusive activation failed. Rolling back changes. Reason: {e}")
+            # Rollback logic would go here if needed, for now we just report the error
+            self._execute_rollback(undo_log)
+            return {"success": False, "error": str(e)}
