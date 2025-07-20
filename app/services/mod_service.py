@@ -8,6 +8,8 @@ import dataclasses
 from pathlib import Path
 from typing import Tuple
 from app.utils.system_utils import SystemUtils
+from PyQt6.QtGui import QImage
+from PIL import Image
 
 # Import models
 from app.models.mod_item_model import (
@@ -660,63 +662,80 @@ class ModService:
 
     def create_manual_object(self, parent_path: Path, object_data: dict) -> dict:
         """
-        Flow 4.1.B Step 5: Creates a new object folder and its properties.json file.
-        This is the core filesystem operation for manual object creation.
+        [FINAL REVISION] Creates a new object folder, populates properties.json,
+        and correctly processes a thumbnail from either a file path or clipboard image data.
         """
+        folder_name = object_data.get("name")
+        if not folder_name:
+            # This case should be prevented by the dialog's validation, but as a safeguard:
+            return {"success": False, "error": "Folder name cannot be empty."}
+
+        folder_path = parent_path / folder_name
+
         try:
-            folder_name = object_data.get("name")
-            if not folder_name:
-                raise ValueError("Folder name is missing in object data.")
-
-            folder_path = parent_path / folder_name
             logger.info(f"Attempting to create new object folder at: {folder_path}")
+            folder_path.mkdir(exist_ok=False) # Fails if folder already exists, which is correct
 
-            folder_path.mkdir(exist_ok=False)
+            # --- Thumbnail Processing Logic ---
+            thumbnail_source = object_data.get("thumbnail_source")
+            logger.info(f"Processing thumbnail for '{folder_name}' from source: {thumbnail_source}")
+            final_thumb_name = ""  # The final filename to be stored in properties.json
 
-            # prepare properties.json data
+            if thumbnail_source:
+                try:
+                    # Use a consistent name for the destination thumbnail
+                    dest_thumb_path = folder_path / "_thumb.png"
+
+                    if isinstance(thumbnail_source, Path):
+                        # Case 1: The source is a file Path from the "Browse..." button
+                        logger.info(f"Copying thumbnail from path: {thumbnail_source}")
+                        # Optional: Add image compression via ImageUtils here before copying
+                        shutil.copy(thumbnail_source, dest_thumb_path)
+                        final_thumb_name = dest_thumb_path.name
+
+                    elif isinstance(thumbnail_source, Image.Image):
+                        # Case 2: Source is a PIL Image object from "Paste"
+                        logger.info("Saving thumbnail from clipboard (PIL Image) data.")
+                        thumbnail_source.save(dest_thumb_path, "PNG")
+                        final_thumb_name = dest_thumb_path.name
+
+                    elif isinstance(thumbnail_source, QImage):
+                        # Case 2: The source is QImage data from the "Paste" button
+                        logger.info("Saving thumbnail from clipboard image data.")
+                        # QImage has a built-in save method
+                        if thumbnail_source.save(str(dest_thumb_path), "PNG"):
+                            final_thumb_name = dest_thumb_path.name
+                        else:
+                            logger.error(f"Failed to save QImage to {dest_thumb_path}")
+
+                except Exception as e:
+                    logger.error(f"Failed to process thumbnail for '{folder_name}': {e}", exc_info=True)
+                    # Continue without a thumbnail if processing fails
+            # --- End of Thumbnail Processing ---
+
+            # --- Prepare properties.json data ---
             properties = {
-                "id": f"emm-obj-{uuid.uuid4()}", # Generate a unique ID
+                "id": f"emm-obj-{uuid.uuid4()}",
                 "actual_name": folder_name,
                 "is_pinned": False,
                 "object_type": object_data.get("object_type", "Other"),
+                "thumbnail_path": final_thumb_name, # Use the final, processed thumbnail name
                 "tags": object_data.get("tags", []),
-                # get all metadata
+                # Get all other potential metadata from the creation task
                 "rarity": object_data.get("rarity"),
                 "element": object_data.get("element"),
                 "gender": object_data.get("gender"),
                 "weapon": object_data.get("weapon"),
+                "subtype": object_data.get("subtype"),
                 "region": object_data.get("region"),
                 "release_date": object_data.get("release_date"),
-                "thumbnail_path": "" # first is empty, will be updated later
             }
 
             # Remove keys with None values to keep the JSON file clean
             properties = {k: v for k, v in properties.items() if v is not None}
 
-            # Copy thumbnail if the path exists
-            source_thumb_path_str = object_data.get("thumbnail_path")
-            if source_thumb_path_str:
-                # Assume the path in JSON is relative to the project root
-                source_thumb_path = Path(source_thumb_path_str)
-                # Create a consistent destination thumbnail filename
-                dest_thumb_filename = f"_thumb{source_thumb_path.suffix}"
-                dest_thumb_path = folder_path / dest_thumb_filename
-
-                try:
-                    if source_thumb_path.is_file():
-                        shutil.copy(source_thumb_path, dest_thumb_path)
-                        # If successful, update path in properties.json
-                        properties["thumbnail_path"] = dest_thumb_filename
-                        logger.info(f"Copied thumbnail for '{folder_name}' to '{dest_thumb_path}'")
-                    else:
-                        logger.warning(f"Thumbnail source file not found for '{folder_name}': {source_thumb_path}")
-                except Exception as e:
-                    logger.error(f"Failed to copy thumbnail for '{folder_name}': {e}")
-
-            # write file properties.json
-            json_path = folder_path / "properties.json"
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(properties, f, indent=4)
+            # Write the final properties.json file
+            self._write_json(folder_path / PROPERTIES_JSON_NAME, properties)
 
             logger.info(f"Successfully created object '{folder_name}' with full metadata.")
             return {"success": True, "data": {"folder_path": folder_path}}

@@ -1,17 +1,21 @@
 # app/views/dialogs/create_object_dialog.py
 
+from pathlib import Path
 import re
 from typing import Dict, Any, List
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFormLayout, QDialog, QHBoxLayout, QStackedWidget
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFormLayout, QDialog, QHBoxLayout, QStackedWidget, QSizePolicy, QFileDialog
+from PyQt6.QtGui import QImage, QPixmap
 from qfluentwidgets import (
     LineEdit, ComboBox, BodyLabel, TitleLabel, SubtitleLabel,
-    PrimaryPushButton, PushButton, Pivot, OpacityAniStackedWidget, FluentIcon
+    PrimaryPushButton, PushButton, Pivot, OpacityAniStackedWidget, FluentIcon, ImageLabel
 )
 
 from app.models.mod_item_model import ModType
+from app.utils.image_utils import ImageUtils
 from app.utils.logger_utils import logger
+from app.utils.ui_utils import UiUtils
 
 
 class CreateObjectDialog(QDialog):
@@ -31,6 +35,7 @@ class CreateObjectDialog(QDialog):
         # Internal state to track the dialog's result
         self.accepted_mode = None
         self.manual_data = {}
+        self.selected_thumbnail_source: Any = None
 
         self._init_ui()
         self._connect_signals()
@@ -107,6 +112,33 @@ class CreateObjectDialog(QDialog):
         self.object_type_combo.setEnabled(is_schema_present)
         # Folder name and tags can always be edited.
 
+        # --- Thumbnail Section ---
+        thumbnail_container = QWidget()
+        thumbnail_layout = QVBoxLayout(thumbnail_container)
+        thumbnail_layout.setContentsMargins(0, 0, 0, 0)
+        thumbnail_layout.setSpacing(8)
+
+        # Preview and buttons for thumbnail
+        self.thumbnail_preview = ImageLabel("app/assets/images/mod_placeholder.jpg") # Gambar placeholder
+        self.thumbnail_preview.setMaximumHeight(300)
+        self.thumbnail_preview.setMaximumWidth(300)
+        self.thumbnail_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.thumbnail_preview.setMinimumSize(100, 100)
+        # make image fit KeepAspectRatioByExpanding
+        self.thumbnail_preview.setScaledContents(True)
+        self.thumbnail_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+
+        self.thumbnail_preview.setBorderRadius(8,8,8,8)
+        thumbnail_layout.addWidget(self.thumbnail_preview, 0, Qt.AlignmentFlag.AlignCenter)
+
+        thumb_button_layout = QHBoxLayout()
+        self.browse_thumb_button = PushButton("Browse...")
+        self.paste_thumb_button = PushButton("Paste Image")
+        thumb_button_layout.addWidget(self.browse_thumb_button)
+        thumb_button_layout.addWidget(self.paste_thumb_button)
+        thumbnail_layout.addLayout(thumb_button_layout)
+
         # --- Add rows to layout ---
         self.form_layout.addRow("Folder Name:", self.folder_name_edit)
         self.form_layout.addRow("Object Type:", self.object_type_combo)
@@ -115,6 +147,7 @@ class CreateObjectDialog(QDialog):
         self.form_layout.addRow("Element:", self.element_combo)
         self.form_layout.addRow("Subtype:", self.subtype_edit)
         self.form_layout.addRow("Initial Tags:", self.tags_edit)
+        self.form_layout.addRow("Thumbnail:", thumbnail_container)
         self.stack.addWidget(manual_widget)
         self.pivot.addItem(
             routeKey="manual",
@@ -172,6 +205,8 @@ class CreateObjectDialog(QDialog):
 
         # Sync page signal
         self.sync_button.clicked.connect(self._on_sync_clicked)
+        self.browse_thumb_button.clicked.connect(self._on_browse_clicked)
+        self.paste_thumb_button.clicked.connect(self._on_paste_clicked)
 
     def _on_pivot_changed(self):
         """Handle UI changes when switching between Manual and Sync tabs."""
@@ -223,18 +258,30 @@ class CreateObjectDialog(QDialog):
 
     def _get_manual_data(self) -> Dict[str, Any]:
         """Gathers data from the manual creation form."""
-        # This is the same logic as your previous get_data method
         tags = [tag.strip() for tag in self.tags_edit.text().split(',') if tag.strip()]
         object_type = self.object_type_combo.currentText()
-        data = { "name": self.folder_name_edit.text().strip(), "object_type": object_type, "tags": tags }
+
+        data = {
+            "name": self.folder_name_edit.text().strip(),
+            "object_type": object_type,
+            "tags": tags,
+        }
+
         if object_type == ModType.CHARACTER.value:
             data["rarity"] = self.rarity_combo.currentText()
             data["gender"] = self.gender_combo.currentText()
             data["element"] = self.element_combo.currentText()
         else:
             subtype = self.subtype_edit.text().strip()
-            if subtype: data["subtype"] = subtype
-        return { "type": "manual", "data": data }
+            if subtype:
+                data["subtype"] = subtype
+
+        if self.selected_thumbnail_source:
+            data["thumbnail_source"] = self.selected_thumbnail_source
+
+
+        return {"type": "manual", "data": data}
+
 
     def get_results(self) -> dict:
         """Public method to get the result after the dialog is accepted."""
@@ -262,3 +309,47 @@ class CreateObjectDialog(QDialog):
         self.subtype_edit.setVisible(show_subtype)
 
         self.adjustSize()
+
+    def _on_browse_clicked(self):
+        """Opens a file dialog to select a thumbnail image."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Thumbnail Image",
+            "", # Start directory
+            "Image Files (*.png *.jpg *.jpeg *.webp)"
+        )
+
+        if not file_path:
+            return
+
+        self.selected_thumbnail_source = Path(file_path)
+
+        pixmap = QPixmap(file_path)
+        self.thumbnail_preview.setPixmap(pixmap.scaled(
+            self.thumbnail_preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        ))
+
+    def _on_paste_clicked(self):
+        """Pastes an image from the clipboard and displays it as a preview."""
+        image = ImageUtils.get_image_from_clipboard()
+
+        if image is None:
+            logger.warning("No valid image found on clipboard.")
+            # show toast
+            UiUtils.show_toast(self, "No valid image found on clipboard.", "warning")
+            return
+
+        # Convert PIL Image to QImage
+        from PIL.ImageQt import ImageQt
+        qimage = ImageQt(image)
+
+        self.selected_thumbnail_source = image
+
+        pixmap = QPixmap.fromImage(qimage)
+        self.thumbnail_preview.setPixmap(pixmap.scaled(
+            self.thumbnail_preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        ))
