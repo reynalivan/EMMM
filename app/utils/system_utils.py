@@ -50,7 +50,7 @@ class SystemUtils:
             return True
         except Exception as e:
             # The caller should log this error with more context.
-            print(
+            logger.error(
                 f"Error moving {path} to recycle bin: {e}"
             )  # Use logger in production
             return False

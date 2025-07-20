@@ -1,3 +1,4 @@
+from difflib import SequenceMatcher
 import json
 from pathlib import Path
 
@@ -72,6 +73,38 @@ class DatabaseService:
             return []
 
     # --- Public Methods for Schema ---
+    def find_best_object_match(self, game_type: str, item_name: str) -> dict | None:
+        """
+        [NEW] Finds the best partial match for an item name against the database
+        using string similarity.
+        """
+        all_objects = self.get_all_objects_for_game(game_type)
+        if not all_objects:
+            return None
+
+        best_match = None
+        highest_score = 0.0
+        item_name_lower = item_name.lower()
+
+        for db_obj in all_objects:
+            db_name_lower = db_obj.get("name", "").lower()
+
+            # Calculate similarity score based on name
+            score = SequenceMatcher(None, item_name_lower, db_name_lower).ratio()
+
+            # Boost score if tags also match
+            tags = db_obj.get("tags", [])
+            if any(item_name_lower in tag.lower() for tag in tags):
+                score += 0.1 # Small boost for tag match
+
+            if score > highest_score:
+                highest_score = score
+                best_match = db_obj
+
+        if best_match:
+            return {"match": best_match, "score": highest_score}
+
+        return None
 
     def get_all_game_types(self) -> list[str]:
         """Returns a list of all available game type keys from the schema."""

@@ -1,5 +1,6 @@
 # app/services/mod_service.py
 import shutil
+import time
 import uuid
 import os
 import json
@@ -51,11 +52,13 @@ class ModService:
         database_service: DatabaseService,
         image_utils: ImageUtils,
         system_utils: SystemUtils,
+        app_path: Path
     ):
         # --- Injected Services & Utilities ---
         self.database_service = database_service
         self.image_utils = image_utils
         self.system_utils = system_utils
+        self._app_path = app_path
 
     # --- Loading & Hydration ---
     def _parse_folder_name(self, folder_name: str) -> Tuple[str, ModStatus, bool]:
@@ -174,7 +177,6 @@ class ModService:
                 properties = {}
                 needs_json_update = False
 
-
                 # 1. Load local properties.json first
                 if props_path.is_file():
                     try:
@@ -185,24 +187,6 @@ class ModService:
                         properties = {} # Treat as empty if corrupt
 
                 # 2. Check if essential data is missing for this type
-                is_character = isinstance(skeleton_item, CharacterObjectItem)
-                essential_keys = ["rarity", "element", "gender", "weapon"] if is_character else ["subtype"]
-                is_incomplete = not all(key in properties for key in essential_keys)
-
-                if is_incomplete:
-                    logger.info(f"Local properties for '{skeleton_item.actual_name}' is incomplete. Fetching from database...")
-                    # 3. If incomplete, fetch supplementary data from the database
-                    db_metadata = self.database_service.get_metadata_for_object(
-                        game_name, skeleton_item.actual_name
-                    ) or {}
-
-                    # 4. Merge data: database data is used as a fallback for missing keys
-                    # This ensures local properties are always prioritized.
-                    final_data = db_metadata.copy()
-                    final_data.update(properties) # Values from 'properties' will overwrite db_metadata
-                    properties = final_data
-                    needs_json_update = True # Mark for saving
-
 
                 # --- Reality Check (Suffix Logic) ---
                 found_thumb_path: Path | None = None
@@ -243,7 +227,7 @@ class ModService:
                     ),
                 }
 
-                if is_character:
+                if isinstance(skeleton_item, CharacterObjectItem):
                     data_payload.update({
                         "rarity": properties.get("rarity"),
                         "element": properties.get("element"),
@@ -412,15 +396,89 @@ class ModService:
         # TODO: Implement actual pin/unpin logic
         return {}
 
-    def rename_item(self, item: object, new_name: str) -> dict:
-        """Flow 4.2.A: Renames a mod folder and updates its internal 'actual_name' in JSON."""
-        # TODO: Implement actual rename logic
-        return {}
+    def rename_item(self, item: BaseModItem, new_name: str) -> dict:
+        """
+        [REVISED] Renames a mod folder and its internal JSON file using a safer
+        'read -> rename -> write' sequence to avoid file lock issues.
+        """
+        is_objectlist_item = isinstance(item, ObjectItem)
+        json_filename = PROPERTIES_JSON_NAME if is_objectlist_item else INFO_JSON_NAME
 
-    def delete_item(self, item: object) -> dict:
-        """Flow 4.2.B: Moves a mod folder to the system's recycle bin."""
-        # TODO: Implement actual delete logic
-        return {}
+        original_path = item.folder_path
+        json_file_path_original = original_path / json_filename
+
+        # --- THE CORE FIX: Read data BEFORE any file system modifications ---
+        try:
+            if json_file_path_original.is_file():
+                with open(json_file_path_original, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            else:
+                # If the JSON doesn't exist, start with an empty dictionary
+                data = {}
+        except Exception as e:
+            error_msg = f"Failed to read JSON file before renaming: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}
+        # --- By this point, the file handle is closed and released ---
+
+        # Update the name in memory
+        data["actual_name"] = new_name
+
+        # Construct the new path
+        prefix = DEFAULT_DISABLED_PREFIX if item.status == ModStatus.DISABLED else ""
+        suffix = PIN_SUFFIX if item.is_pinned else ""
+        new_folder_name = f"{prefix}{new_name}{suffix}"
+        new_path = original_path.with_name(new_folder_name)
+
+        try:
+            logger.info(f"Renaming folder from '{original_path.name}' to '{new_path.name}'")
+
+            # Add a tiny delay to give the OS time to release any lingering handles
+            time.sleep(0.05)
+
+            # 1. Rename the folder on the filesystem
+            os.rename(original_path, new_path)
+
+            # 2. Write the modified data (already in memory) to the new location
+            json_file_path_new = new_path / json_filename
+            self._write_json(json_file_path_new, data)
+
+            # Return the new state
+            updated_data = {"folder_path": new_path, "actual_name": new_name}
+            new_item = dataclasses.replace(item, **updated_data)
+            return {"success": True, "data": new_item, "item_id": item.id}
+
+        except FileExistsError:
+            error_msg = f"A folder named '{new_path.name}' already exists."
+            logger.warning(error_msg)
+            return {"success": False, "error": str(e), "item_id": item.id}
+        except Exception as e:
+            # Attempt to roll back if something went wrong
+            if new_path.exists() and not original_path.exists():
+                logger.error(f"Error during rename process. Attempting to roll back folder rename...")
+                os.rename(new_path, original_path)
+
+            error_msg = f"Failed to rename item: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": str(e), "item_id": item.id}
+
+    def delete_item(self, item: BaseModItem) -> dict:
+        """
+        [NEW] Moves an item's folder to the system's recycle bin
+        by delegating to SystemUtils.
+        """
+        logger.info(f"Request to move folder to recycle bin: {item.folder_path}")
+        try:
+            self.system_utils.move_to_recycle_bin(item.folder_path)
+
+            logger.info(f"Successfully moved '{item.actual_name}' to recycle bin.")
+            return {"success": True, "item_id": item.id, "item_name": item.actual_name}
+
+        except Exception as e:
+            error_msg = f"Failed to move '{item.actual_name}' to recycle bin: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg, "item_id": item.id}
+
 
     # --- Creation Actions ---
     def create_foldergrid_item(self, parent_path: Path, task: dict) -> dict:
@@ -788,3 +846,116 @@ class ModService:
             error_msg = f"An unexpected error occurred during type conversion: {e}"
             logger.critical(error_msg, exc_info=True)
             return {"success": False, "error": error_msg}
+
+    def update_object_properties_from_db(self, item: ObjectItem, db_data: dict) -> dict:
+        """
+        [NEW] Updates an object's local properties.json with data from a
+        matched database entry and copies the thumbnail.
+        """
+        props_path = item.folder_path / PROPERTIES_JSON_NAME
+        properties = {}
+
+        # 1. Read existing local data
+        if props_path.is_file():
+            with open(props_path, "r", encoding="utf-8") as f:
+                properties = json.load(f)
+
+        # 2. Merge data: DB data is the base, local data overwrites it
+        # This preserves local settings like 'is_pinned'
+        final_data = db_data.copy()
+        final_data.update(properties)
+
+        # 3. Handle thumbnail copy
+        source_thumb_path_str = db_data.get("thumbnail_path")
+        if source_thumb_path_str:
+            try:
+                source_thumb_path = self._app_path / Path(source_thumb_path_str) # Assuming self._app_path exists
+                dest_thumb_filename = f"_thumb{source_thumb_path.suffix}"
+                dest_thumb_path = item.folder_path / dest_thumb_filename
+
+                if source_thumb_path.is_file():
+                    shutil.copy(source_thumb_path, dest_thumb_path)
+                    final_data["thumbnail_path"] = dest_thumb_filename
+                else:
+                    logger.warning(f"DB thumbnail not found: {source_thumb_path}")
+            except Exception as e:
+                logger.error(f"Failed to copy DB thumbnail for '{item.actual_name}': {e}")
+
+        # 4. Write the updated and merged data back to properties.json
+        try:
+            self._write_json(props_path, final_data)
+            return {"success": True, "item_id": item.id}
+        except Exception as e:
+            error_msg = f"Failed to write updated properties for '{item.actual_name}': {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg, "item_id": item.id}
+
+    def update_object(self, item: ObjectItem, update_data: dict) -> dict:
+        """
+        [NEW] Updates an object's folder and properties.json file based on
+        the provided data from the edit dialog.
+        """
+        original_path = item.folder_path
+        new_name = update_data.get("name", item.actual_name)
+
+        current_path = original_path
+        needs_rename = new_name != item.actual_name
+
+        try:
+            # --- 1. Handle Folder Rename (if name changed) ---
+            if needs_rename:
+                prefix = DEFAULT_DISABLED_PREFIX if item.status == ModStatus.DISABLED else ""
+                suffix = PIN_SUFFIX if item.is_pinned else ""
+                new_folder_name = f"{prefix}{new_name}{suffix}"
+                new_path = original_path.with_name(new_folder_name)
+
+                logger.info(f"Renaming object folder from '{original_path.name}' to '{new_path.name}'")
+                os.rename(original_path, new_path)
+                current_path = new_path # Use the new path for subsequent operations
+
+            # --- 2. Read existing JSON data ---
+            json_filename = PROPERTIES_JSON_NAME
+            props_path = current_path / json_filename
+            properties = {}
+            if props_path.is_file():
+                with open(props_path, "r", encoding="utf-8") as f:
+                    properties = json.load(f)
+
+            # --- 3. Update properties with new data ---
+            properties.update({
+                "actual_name": new_name,
+                "object_type": update_data.get("object_type"),
+                "rarity": update_data.get("rarity"),
+                "element": update_data.get("element"),
+                "gender": update_data.get("gender"),
+                "weapon": update_data.get("weapon"),
+                "subtype": update_data.get("subtype"),
+                "tags": update_data.get("tags", []),
+            })
+
+            # --- 4. Process new thumbnail if provided ---
+            thumbnail_source = update_data.get("thumbnail_source")
+            if thumbnail_source:
+                dest_thumb_path = current_path / "_thumb.png"
+                if isinstance(thumbnail_source, Path):
+                    shutil.copy(thumbnail_source, dest_thumb_path)
+                elif isinstance(thumbnail_source, (Image.Image, QImage)):
+                    thumbnail_source.save(str(dest_thumb_path), "PNG")
+
+                properties["thumbnail_path"] = dest_thumb_path.name
+                logger.info(f"Updated thumbnail for '{new_name}'.")
+
+            # --- 5. Write updated JSON back to disk ---
+            properties = {k: v for k, v in properties.items() if v is not None}
+            self._write_json(props_path, properties)
+
+            logger.info(f"Successfully updated object '{new_name}'.")
+            return {"success": True, "item_id": item.id}
+
+        except Exception as e:
+            error_msg = f"Failed to update object '{item.actual_name}': {e}"
+            logger.error(error_msg, exc_info=True)
+            # Attempt to roll back rename if it happened
+            if needs_rename and current_path.exists() and not original_path.exists():
+                os.rename(current_path, original_path)
+            return {"success": False, "error": error_msg, "item_id": item.id}

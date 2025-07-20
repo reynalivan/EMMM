@@ -62,7 +62,7 @@ class ThumbnailService(QObject):
 
         # 1. L1 Cache Check (Memory)
         if pixmap := self.memory_cache.get(item_id):
-            logger.debug(f"L1 cache HIT for item '{item_id}'")
+            # logger.debug(f"L1 cache HIT for item '{item_id}'")
             self.memory_cache.move_to_end(item_id)  # Mark as recently used
 
             return pixmap

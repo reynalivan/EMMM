@@ -47,9 +47,9 @@ class ModListViewModel(QObject):
     empty_state_changed = pyqtSignal(str, str)
     filter_state_changed = pyqtSignal(bool, int)
     clear_search_text = pyqtSignal()
+    manual_sync_required = pyqtSignal(str, list)
 
     # ---Signals for Panel-Specific UI ---
-
     path_changed = pyqtSignal(Path)
     selection_changed = pyqtSignal(bool)
     available_filters_changed = pyqtSignal(dict)
@@ -60,7 +60,7 @@ class ModListViewModel(QObject):
 
     # ---Signals for Cross-ViewModel Communication ("Efek Domino") ---
     active_object_modified = pyqtSignal(object)
-    active_object_deleted = pyqtSignal()
+    active_object_deleted = pyqtSignal(str)
     foldergrid_item_modified = pyqtSignal(object)
     load_completed = pyqtSignal(bool)
     sync_confirmation_requested = pyqtSignal(list)
@@ -156,15 +156,12 @@ class ModListViewModel(QObject):
         self.current_load_token += 1  # Invalidate any ongoing loads
 
         # Emit signal with empty list to clear the UI
-
-        self.items_updated.emit([])
+        self.items_updated.emit([], None)
 
         # Reset navigation root
-
         self.navigation_root = None
 
         # If this is foldergrid, also clear the breadcrumb
-
         if self.context == "foldergrid":
             self.path_changed.emit(Path())
 
@@ -323,12 +320,104 @@ class ModListViewModel(QObject):
         pass
 
     def rename_item(self, item_id: str, new_name: str):
-        """Flow 4.2.A: Handles renaming an item."""
-        pass
+        """
+        Flow 6.3: Initiates the background process for renaming an item.
+        """
+        if item_id in self._processing_ids:
+            return
+
+        item_to_rename = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_rename:
+            logger.error(f"Cannot rename: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to rename '{item_to_rename.actual_name}' to '{new_name}'.")
+        self._processing_ids.add(item_id)
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(self.mod_service.rename_item, item_to_rename, new_name)
+        worker.signals.result.connect(self._on_rename_finished)
+        worker.signals.error.connect(
+            lambda error_info, id=item_id: self._on_rename_error(id, error_info)
+        )
+        QThreadPool.globalInstance().start(worker)
+
+
+    def _on_rename_finished(self, result: dict):
+        """
+        [REVISED] Handles the result of the rename operation.
+        The item_id is now retrieved from the result dictionary.
+        """
+        # The service should also return the item_id for context
+        item_id = result.get("item_id")
+        if not item_id:
+            logger.error("Rename finished but result dictionary is missing 'item_id'.")
+            # Fallback: attempt to stop all processing animations
+            self.item_processing_finished.emit("", False)
+            return
+
+        self._processing_ids.discard(item_id)
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if not result.get("success"):
+            self.toast_requested.emit(result.get("error", "An unknown error occurred."), "error")
+            return
+
+        new_item = result.get("data")
+        self.update_item_in_list(new_item)
+        self.toast_requested.emit(f"Renamed to '{new_item.actual_name}' successfully.", "success")
+
+        if self.context == CONTEXT_OBJECTLIST and self.last_selected_item_id == item_id:
+            self.active_object_modified.emit(new_item)
+
+    def _on_rename_error(self, item_id: str, error_info: tuple):
+        """
+        Handles critical failures from the rename worker thread.
+        """
+        self._processing_ids.discard(item_id)
+        # Ensure the UI is unblocked
+        self.item_processing_finished.emit(item_id, False)
+
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred while renaming item {item_id}: {value}\n{tb}")
+        self.toast_requested.emit("A critical error occurred during rename. Please check the logs.", "error")
 
     def delete_item(self, item_id: str):
-        """Flow 4.2.B: Handles deleting an item to the recycle bin."""
-        pass
+        """
+        [IMPLEMENTED] Initiates the background process for moving an item
+        to the recycle bin.
+        """
+        if item_id in self._processing_ids:
+            return
+
+        item_to_delete = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_delete:
+            logger.error(f"Cannot delete: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to delete '{item_to_delete.actual_name}'. Starting worker.")
+        self._processing_ids.add(item_id)
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(self.mod_service.delete_item, item_to_delete)
+        worker.signals.result.connect(self._on_delete_finished)
+        worker.signals.error.connect(
+            lambda error_info, id=item_id: self._on_delete_error(id, error_info)
+        )
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_delete_error(self, item_id: str, error_info: tuple):
+        """
+        [NEW] Handles critical failures from the delete worker thread.
+        """
+        self._processing_ids.discard(item_id)
+        # Ensure the UI is unblocked
+        self.item_processing_finished.emit(item_id, False)
+
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred while deleting item {item_id}: {value}\n{tb}")
+        self.toast_requested.emit("A critical error occurred during deletion. Please check the logs.", "error")
 
     def open_in_explorer(self, item_id: str):
         """
@@ -847,13 +936,41 @@ class ModListViewModel(QObject):
         """Handles the result of a single item pin/unpin operation (Flow 6.3)."""
         pass
 
-    def _on_rename_finished(self, item_id: str, result: dict):
-        """Handles the result of a single item rename operation (Flow 4.2.A)."""
-        pass
 
-    def _on_delete_finished(self, item_id: str, result: dict):
-        """Handles the result of a single item delete operation (Flow 4.2.B)."""
-        pass
+    def _on_delete_finished(self, result: dict):
+        """
+        [IMPLEMENTED] Handles the result of the delete operation.
+        Removes the item from the internal lists and refreshes the UI.
+        """
+        item_id = result.get("item_id")
+        if not item_id:
+            return
+
+        self._processing_ids.discard(item_id)
+        # signal to UI that processing is finished
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if result.get("success"):
+            item_name = result.get("item_name", "Item")
+            self.toast_requested.emit(f"'{item_name}' moved to Recycle Bin.", "success")
+
+            # Delete the item from both master and displayed lists
+            self.master_list = [item for item in self.master_list if item.id != item_id]
+            self.displayed_items = [item for item in self.displayed_items if item.id != item_id]
+
+            # Call apply_filters_and_search to refresh the UI correctly
+            self.apply_filters_and_search()
+
+            # --- Domino Effect Logic (if the active item is deleted) ---
+            if self.context == CONTEXT_FOLDERGRID and self.last_selected_item_id == item_id:
+                self.selection_invalidated.emit() # Notify PreviewPanel to clear itself
+
+            elif self.context == CONTEXT_OBJECTLIST and self.last_selected_item_id == item_id:
+                self.active_object_deleted.emit(item_id) # Notify MainWindowViewModel to clear foldergrid
+
+        else:
+            self.toast_requested.emit(f"Failed to delete item: {result.get('error')}", "error")
+
 
     def _on_bulk_action_finished(self, result: dict):
         """Handles the result of a bulk action like enable, disable, or tag (Flow 3.2)."""
@@ -1309,3 +1426,125 @@ class ModListViewModel(QObject):
             self.toast_requested.emit(f"Operation failed: {result.get('error')}", "error")
             # Also request a refresh in case of partial failure, to show the real state
             self.list_refresh_requested.emit()
+
+    def force_sync_with_selection(self, item_id: str, selected_db_data: dict):
+        """
+        [NEW] Initiates a sync operation with a specific database entry
+        chosen manually by the user.
+        """
+        item_to_sync = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_sync:
+            logger.error(f"Cannot force sync: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"User forced sync for '{item_to_sync.actual_name}' with DB entry '{selected_db_data.get('name')}'.")
+
+        self.item_processing_started.emit(item_id)
+        worker = Worker(self.mod_service.update_object_properties_from_db, item_to_sync, selected_db_data)
+        worker.signals.result.connect(self._on_sync_finished)
+        QThreadPool.globalInstance().start(worker)
+
+    def initiate_sync_for_item(self, item_id: str):
+        """
+        [NEW] Starts the sync workflow for a single item. It finds the best
+        match and decides whether to sync automatically or ask for user input.
+        """
+        if not self.current_game or not self.current_game.game_type:
+            self.toast_requested.emit("Cannot sync: Active game has no Database Key (Type) set.", "error")
+            return
+
+        item_to_sync = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_sync:
+            logger.error(f"Cannot sync: Item with ID '{item_id}' not found.")
+            return
+
+        game_type = self.current_game.game_type
+        item_name = item_to_sync.actual_name
+
+        logger.info(f"Initiating sync for '{item_name}'. Finding best match in database...")
+
+        # 1. Find the best match in the database
+        best_match_info = self.database_service.find_best_object_match(game_type, item_name)
+
+        # 2. Core Logic: Decide what to do
+        if best_match_info and best_match_info.get("score", 0) > 0.75:
+            # High confidence match: Proceed with auto-sync
+            db_data = best_match_info["match"]
+            logger.info(f"High confidence match found: '{db_data.get('name')}' with score {best_match_info['score']:.2f}. Proceeding with auto-sync.")
+            self.item_processing_started.emit(item_id)
+            worker = Worker(self.mod_service.update_object_properties_from_db, item_to_sync, db_data)
+            worker.signals.result.connect(self._on_sync_finished)
+            QThreadPool.globalInstance().start(worker)
+        else:
+            # Low confidence match or no match: Request manual user selection
+            logger.info("Low confidence match or no match found. Requesting manual user selection.")
+            all_candidates = self.database_service.get_all_objects_for_game(game_type)
+            self.manual_sync_required.emit(item_id, all_candidates)
+
+    def _on_sync_finished(self, result: dict):
+        """
+        [NEW] Handles the result of a sync operation.
+        """
+        item_id = result.get("item_id")
+        if not item_id: return
+
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if result.get("success"):
+            self.toast_requested.emit("Sync with database successful.", "success")
+            self.thumbnail_service.invalidate_cache(item_id)
+            self.list_refresh_requested.emit()
+        else:
+            self.toast_requested.emit(f"Sync failed: {result.get('error')}", "error")
+
+
+    def update_object_item(self, item_id: str, update_data: dict):
+        """
+        [NEW] Initiates the background process to update an object's properties.
+        """
+        if item_id in self._processing_ids:
+            return
+
+        item_to_update = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_update:
+            logger.error(f"Cannot update: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to update object '{item_to_update.actual_name}'.")
+        self._processing_ids.add(item_id)
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(self.mod_service.update_object, item_to_update, update_data)
+        worker.signals.result.connect(self._on_update_finished)
+        # Tambahkan penanganan error untuk robusta
+        worker.signals.error.connect(lambda err, id=item_id: self._on_generic_worker_error(id, err, "update"))
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_update_finished(self, result: dict):
+        """
+        [NEW] Handles the result of the object update operation.
+        """
+        item_id = result.get("item_id")
+        if not item_id: return
+
+        self._processing_ids.discard(item_id)
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if result.get("success"):
+            self.toast_requested.emit("Object updated successfully.", "success")
+            # Request a full refresh to ensure the UI is in sync
+            self.thumbnail_service.invalidate_cache(item_id)
+            self.toast_requested.emit("Object updated successfully.", "success")
+            self.list_refresh_requested.emit()
+        else:
+            self.toast_requested.emit(f"Update failed: {result.get('error')}", "error")
+
+    def _on_generic_worker_error(self, item_id: str, error_info: tuple, action: str):
+        """Generic handler for critical worker failures."""
+        self._processing_ids.discard(item_id)
+        self.item_processing_finished.emit(item_id, False)
+
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred during '{action}' for item {item_id}: {value}\n{tb}")
+        self.toast_requested.emit(f"A critical error occurred during {action}. Please check logs.", "error")

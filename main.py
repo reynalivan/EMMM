@@ -120,6 +120,7 @@ def main():
             database_service=database_service,
             image_utils=image_utils,
             system_utils=system_utils,
+            app_path=app_path
         )
 
         workflow_service = WorkflowService(

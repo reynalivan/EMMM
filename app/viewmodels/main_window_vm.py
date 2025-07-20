@@ -357,9 +357,21 @@ class MainWindowViewModel(QObject):
                 is_new_root=True,
             )
 
-    def _on_active_object_deleted(self, deleted_item):
-        """Flow 4.2.B: Handles an active object being deleted."""
-        pass  # Checks if deleted_item matches self.active_object and calls preview_panel_vm.clear_preview()
+    def _on_active_object_deleted(self, deleted_item_id: str):
+        """
+        [IMPLEMENTED] Handles the domino effect when the currently active
+        object is deleted from the objectlist.
+        """
+        # Check if the deleted item is the one currently active
+        if self.active_object and self.active_object.id == deleted_item_id:
+            logger.info(f"Active object '{self.active_object.actual_name}' was deleted. Clearing dependent views.")
+
+            # 1. Clear active object state
+            self.active_object = None
+
+            # 2. Instruct foldergrid and preview_panel to clear themselves
+            self.foldergrid_vm.unload_items()
+            self.preview_panel_vm.clear_panel()
 
     def _process_config_update(self):
         """
