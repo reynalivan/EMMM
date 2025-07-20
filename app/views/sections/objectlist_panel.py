@@ -349,27 +349,16 @@ class ObjectListPanel(QWidget):
         """Creates and shows the new pivot-based CreateObjectDialog."""
         # Fetch all necessary data from the ViewModel first
         schema = self.view_model.get_current_game_schema()
+        existing_names = self.view_model.get_all_item_names()
         logger.info(f"schema: {schema}")
 
-        existing_names = self.view_model.get_all_item_names()
-
-        # --- Get missing objects for the sync tab ---
-        missing_objects = []
-        # make sure we have a game type to work with
-        if self.view_model.current_game and self.view_model.current_game.game_type:
-            game_type = self.view_model.current_game.game_type
-            db_objects = self.view_model.database_service.get_all_objects_for_game(game_type)
-
-            existing_names_lower = {name.lower() for name in existing_names}
-            missing_objects = [
-                obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
-            ]
+        preview_counts = self.view_model.get_reconciliation_preview()
 
         # --- Create and execute the new dialog ---
         dialog = CreateObjectDialog(
             schema=schema,
             existing_names=existing_names,
-            missing_from_db=missing_objects,
+            reconciliation_counts=preview_counts,
             parent=self.window()
         )
 
@@ -382,8 +371,8 @@ class ObjectListPanel(QWidget):
         result = dialog.get_results()
         if result["mode"] == "manual":
             self.view_model.initiate_create_objects([result["task"]])
-        elif result["mode"] == "sync":
-            self.view_model.sync_objects_from_database() # This method will now be simpler
+        elif result["mode"] == "reconcile":
+            self.view_model.initiate_reconciliation()
 
     def _handle_manual_creation(self):
         """Handles the logic for the 'Create Manually' path."""

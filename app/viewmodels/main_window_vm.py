@@ -51,6 +51,7 @@ class MainWindowViewModel(QObject):
     category_switch_requested = pyqtSignal(str) # 'character' or 'other'
     play_settings_required = pyqtSignal()
     play_button_state_changed = pyqtSignal(bool)
+    bulk_progress_updated = pyqtSignal(int, int)
 
     def __init__(
         self,
@@ -290,6 +291,7 @@ class MainWindowViewModel(QObject):
         self.objectlist_vm.object_created.connect(self._on_object_created)
         self.objectlist_vm.list_refresh_requested.connect(self._on_list_refresh_requested)
         self.foldergrid_vm.list_refresh_requested.connect(self._on_list_refresh_requested)
+        self.objectlist_vm.reconciliation_progress_updated.connect(self.bulk_progress_updated)
         # Flow 3.1a & 4.2.A: An active object was modified/renamed
         self.objectlist_vm.active_object_modified.connect(
             self._on_active_object_modified

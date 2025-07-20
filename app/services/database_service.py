@@ -95,7 +95,7 @@ class DatabaseService:
             # Boost score if tags also match
             tags = db_obj.get("tags", [])
             if any(item_name_lower in tag.lower() for tag in tags):
-                score += 0.1 # Small boost for tag match
+                score += 0.2 # Small boost for tag match
 
             if score > highest_score:
                 highest_score = score

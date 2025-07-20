@@ -124,7 +124,7 @@ def main():
         )
 
         workflow_service = WorkflowService(
-            mod_service=mod_service, config_service=config_service
+            mod_service=mod_service, config_service=config_service, database_service=database_service
         )
 
         logger.info("Core services and utilities initialized.")

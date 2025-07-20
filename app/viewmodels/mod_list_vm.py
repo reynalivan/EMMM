@@ -48,7 +48,7 @@ class ModListViewModel(QObject):
     filter_state_changed = pyqtSignal(bool, int)
     clear_search_text = pyqtSignal()
     manual_sync_required = pyqtSignal(str, list)
-
+    reconciliation_progress_updated = pyqtSignal(int, int)  # current, total
     # ---Signals for Panel-Specific UI ---
     path_changed = pyqtSignal(Path)
     selection_changed = pyqtSignal(bool)
@@ -490,6 +490,39 @@ class ModListViewModel(QObject):
         worker.signals.progress.connect(self._on_creation_progress_updated)
 
         QThreadPool.globalInstance().start(worker)
+
+    def get_reconciliation_preview(self) -> dict:
+        """
+        [NEW] Performs a "dry run" of the reconciliation logic to get the counts
+        of items that will be created and updated.
+        """
+        if not self.current_game or not self.current_game.game_type:
+            return {"to_create": 0, "to_update": 0}
+
+        game_type = self.current_game.game_type
+        all_local_items = self.master_list
+        all_db_objects = self.database_service.get_all_objects_for_game(game_type)
+
+        if not all_db_objects:
+            return {"to_create": 0, "to_update": 0}
+
+        # --- Logic to find matches and count updates ---
+        matched_db_names = set()
+        count_to_update = 0
+        for local_item in all_local_items:
+            match_info = self.database_service.find_best_object_match(game_type, local_item.actual_name)
+            if match_info and match_info.get("score", 0) > 0.8:
+                best_match = match_info["match"]
+                count_to_update += 1
+                matched_db_names.add(best_match.get("name", "").lower())
+
+        # --- Logic to count creations ---
+        count_to_create = 0
+        for db_obj in all_db_objects:
+            if db_obj.get("name", "").lower() not in matched_db_names:
+                count_to_create += 1
+
+        return {"to_create": count_to_create, "to_update": count_to_update}
 
     def initiate_randomize(self):
         """Flow 6.2.B: Starts the randomization workflow for the current group."""
@@ -1200,11 +1233,10 @@ class ModListViewModel(QObject):
             "A critical error occurred during creation. Please check the logs.", "error"
         )
 
-    def sync_objects_from_database(self):
+    def initiate_reconciliation(self):
         """
-        [REVISED] Gets all objects for the current game from the database,
-        finds which ones are missing from the local folder, and initiates
-        the creation workflow for them.
+        [NEW in Step 2] Gathers all local and database objects and starts the
+        background reconciliation workflow in WorkflowService.
         """
         # 1. Validate that there is an active game with a valid game_type
         if not self.current_game or not self.current_game.game_type:
@@ -1214,46 +1246,60 @@ class ModListViewModel(QObject):
             return
 
         game_type = self.current_game.game_type
-        logger.info(f"Starting database sync for game_type: '{game_type}'")
+        game_path = self.current_game.path
+        logger.info(f"Initiating database reconciliation for game_type: '{game_type}'")
 
-        # 2. Get all objects for this game_type from the database service
-        db_objects = self.database_service.get_all_objects_for_game(game_type)
-        if not db_objects:
-            self.toast_requested.emit(f"No objects defined in the database for '{game_type}'.", "info")
+        # 2. Gather all required data
+        all_local_items = self.master_list
+        all_db_objects = self.database_service.get_all_objects_for_game(game_type)
+
+        if not all_db_objects:
+            self.toast_requested.emit(f"No objects defined in the database for '{game_type}'. Nothing to sync.", "info")
             return
 
-        # 3. Get currently existing object names
-        existing_names_lower = {name.lower() for name in self.get_all_item_names()}
+        # 3. Start the background worker targeting the new WorkflowService method
+        self.bulk_operation_started.emit()
+        worker = Worker(
+            self.workflow_service.reconcile_objects_with_database,
+            game_path,
+            game_type,
+            all_local_items,
+            all_db_objects
+        )
+        worker.signals.result.connect(self._on_reconciliation_finished)
+        worker.signals.error.connect(
+            lambda err: self._on_generic_worker_error(None, err, "reconciliation")
+        )
+        # You can also connect the progress signal if your service emits it
+        worker.signals.progress.connect(self.reconciliation_progress_updated)
 
-        # 4. Find which objects are missing
-        missing_objects = [
-            obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
-        ]
+        QThreadPool.globalInstance().start(worker)
 
-        if not missing_objects:
-            self.toast_requested.emit("All database objects already exist.", "success")
-            return
-
-        # 5. Create tasks and delegate to the existing creation workflow
-        # The user has already confirmed this action via the CreateObjectDialog.
-        logger.info(f"Proceeding with sync. Creating {len(missing_objects)} tasks.")
-        sync_tasks = [{"type": "sync", "data": obj} for obj in missing_objects]
-
-        self.initiate_create_objects(sync_tasks)
-
-    def proceed_with_sync(self, confirmed_missing_objects: list):
+    # --- ADD a new slot to handle the result of the new workflow ---
+    def _on_reconciliation_finished(self, result: dict):
         """
-        Called by the View after the user
-        confirms the sync dialog. This method proceeds with the creation workflow.
+        [NEW in Step 2] Handles the summary result from the reconciliation workflow.
         """
-        if not confirmed_missing_objects:
-            return
+        self.bulk_operation_finished.emit(result.get("failures", []))
 
-        logger.info(f"User confirmed sync. Creating {len(confirmed_missing_objects)} tasks.")
+        if result.get("success"):
+            created = result.get("created", 0)
+            updated = result.get("updated", 0)
+            failed = result.get("failed", 0)
 
-        # Create tasks and delegate to the existing creation workflow
-        sync_tasks = [{"type": "sync", "data": obj} for obj in confirmed_missing_objects]
-        self.initiate_create_objects(sync_tasks)
+            # Build a summary message
+            summary = f"Reconciliation complete: {created} created, {updated} updated."
+            if failed > 0:
+                summary += f" ({failed} failed)."
+                self.toast_requested.emit(summary, "warning")
+            else:
+                self.toast_requested.emit(summary, "success")
+        else:
+            self.toast_requested.emit("Reconciliation process failed to run.", "error")
+
+        # Always refresh the list to show the final state
+        self.list_refresh_requested.emit()
+
 
     def get_current_game_schema(self) -> dict | None:
         """

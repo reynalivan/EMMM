@@ -1,6 +1,8 @@
+from difflib import SequenceMatcher
 from pathlib import Path
-
+from PyQt6.QtCore import pyqtSignal
 from app.services.config_service import ConfigService
+from app.services.database_service import DatabaseService
 from app.services.mod_service import ModService
 from app.utils.logger_utils import logger
 from app.models.mod_item_model import ModStatus
@@ -12,10 +14,11 @@ class WorkflowService:
     multiple items or multiple services.
     """
 
-    def __init__(self, mod_service: ModService, config_service: ConfigService):
+    def __init__(self, mod_service: ModService, config_service: ConfigService, database_service: DatabaseService):
         # --- Injected Services ---
         self.mod_service = mod_service
         self.config_service = config_service
+        self.database_service = database_service
 
     # --- Bulk Modification Workflows ---
     def execute_bulk_action(self, items: list, action_type: str, **kwargs) -> dict:
@@ -154,3 +157,72 @@ class WorkflowService:
             # Rollback logic would go here if needed, for now we just report the error
             self._execute_rollback(undo_log)
             return {"success": False, "error": str(e)}
+
+    def reconcile_objects_with_database(self, game_path: Path, game_type: str, all_local_items: list, all_db_objects: list, progress_callback=None) -> dict:
+        """
+        [NEW] The core reconciliation engine. It compares local items with the database,
+        creates a plan to create missing items and update existing ones, and then
+        executes that plan.
+        """
+        logger.info(f"Starting reconciliation for game '{game_type}'. Local items: {len(all_local_items)}, DB objects: {len(all_db_objects)}")
+
+        tasks_to_create = []
+        tasks_to_update = []
+        matched_db_names = set()
+
+        # --- STAGE 1: Match Existing Local Items ---
+        for local_item in all_local_items:
+            # Call the existing, centralized matching method
+            match_info = self.database_service.find_best_object_match(game_type, local_item.actual_name)
+
+            # If a confident match is found, plan an update
+            if match_info and match_info.get("score", 0) > 0.8:
+                best_match = match_info["match"]
+                tasks_to_update.append({"local_item": local_item, "db_data": best_match})
+                # Keep track of the DB object that has been matched
+                matched_db_names.add(best_match.get("name").lower())
+
+        # --- STAGE 2: Plan Creation for Unmatched DB Objects ---
+        for db_obj in all_db_objects:
+            if db_obj.get("name").lower() not in matched_db_names:
+                tasks_to_create.append({"type": "sync", "data": db_obj})
+
+        logger.info(f"Reconciliation plan: {len(tasks_to_create)} to create, {len(tasks_to_update)} to update.")
+
+        # --- STAGE 3: Execute the Plan ---
+        successful_creates = 0
+        successful_updates = 0
+        failures = []
+        total_tasks = len(tasks_to_create) + len(tasks_to_update)
+        parent_path_for_creation = game_path
+
+        # Execute creation tasks
+        for idx, task in enumerate(tasks_to_create):
+            if parent_path_for_creation:
+                result = self.mod_service.create_manual_object(parent_path_for_creation, task['data'])
+                if result.get("success"):
+                    successful_creates += 1
+                else:
+                    failures.append({"item_name": task['data'].get('name'), "reason": result.get('error')})
+            if progress_callback:
+                progress_callback.emit(idx + 1, total_tasks)
+
+        # Execute update tasks
+        for idx, task in enumerate(tasks_to_update, start=len(tasks_to_create)):
+            result = self.mod_service.update_object_properties_from_db(task['local_item'], task['db_data'])
+            if result.get("success"):
+                successful_updates += 1
+            else:
+                failures.append({"item_name": task['local_item'].actual_name, "reason": result.get('error')})
+            if progress_callback:
+                progress_callback.emit(idx + 1, total_tasks)
+
+        payload = {
+            "game_type": game_type,
+            "created": successful_creates,
+            "updated": successful_updates,
+            "failed": len(failures),
+            "failures": failures
+        }
+        logger.info("Reconciliation finished. Summary: %s", payload)
+        return payload

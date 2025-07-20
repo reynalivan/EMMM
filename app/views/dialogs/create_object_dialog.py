@@ -25,12 +25,12 @@ class CreateObjectDialog(QDialog):
     """
     ILLEGAL_CHAR_PATTERN = re.compile(r'[\\/:*?"<>|]')
 
-    def __init__(self, schema: dict | None, existing_names: List[str], missing_from_db: List[dict], parent: QWidget | None = None):
+    def __init__(self, schema: dict | None, existing_names: List[str], reconciliation_counts: dict,parent: QWidget | None = None):
         super().__init__(parent)
         # If schema is None, default to an empty dict to prevent errors.
         self.schema = schema or {}
         self.existing_names = [name.lower() for name in existing_names]
-        self.missing_from_db = missing_from_db
+        self.reconciliation_counts = reconciliation_counts or {}
 
         # Internal state to track the dialog's result
         self.accepted_mode = None
@@ -158,32 +158,46 @@ class CreateObjectDialog(QDialog):
 
 
     def _create_sync_page(self) -> QWidget:
-        """Creates the info page for database sync, handling a missing schema."""
+        """
+        [REVISED] Creates a simplified info page for the database reconciliation feature.
+        """
         sync_page = QWidget()
         layout = QVBoxLayout(sync_page)
-        layout.setContentsMargins(2, 15, 2, 5)
+        layout.setContentsMargins(15, 20, 15, 5)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setSpacing(15)
 
         if not self.schema:
             # Case 1: Schema is missing. Sync is impossible.
-            info_text = "Database file (`database_object.json`) is missing or corrupted. Sync feature is disabled."
+            info_text = "Database file (schema.json) is missing or corrupted. Sync feature is disabled."
             info_label = BodyLabel(info_text, self)
             info_label.setWordWrap(True)
-            info_label.setStyleSheet("color: #f97171;") # Error color
+            info_label.setStyleSheet("color: #f97171;")
             self.sync_button = PrimaryPushButton("Sync Unavailable")
             self.sync_button.setEnabled(False)
         else:
-            # Case 2: Schema exists. Proceed as before.
-            count = len(self.missing_from_db)
-            info_text = f"Found {count} new object(s) in the database." if count > 0 else "All database objects already exist."
+            # Case 2: Schema exists. Show the reconciliation info.
+            to_create = self.reconciliation_counts.get("to_create", 0)
+            to_update = self.reconciliation_counts.get("to_update", 0)
+            total_actions = to_create + to_update
+
+            info_text = (
+                "This action will reconcile your local folders with the database.\n\n"
+                f"• {to_create} new folder(s) will be created.\n"
+                f"• {to_update} existing folder(s) will be updated."
+            )
+
             info_label = BodyLabel(info_text, self)
             info_label.setWordWrap(True)
-            self.sync_button = PrimaryPushButton(f"Sync {count} Objects")
-            self.sync_button.setEnabled(count > 0)
+
+            self.sync_button = PrimaryPushButton(f"Start Sync ({total_actions} Actions)")
+            self.sync_button.setEnabled(total_actions > 0)
 
         layout.addWidget(info_label)
-        layout.addSpacing(15)
-        layout.addWidget(self.sync_button, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.sync_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(1)
+
+        # (Logika untuk menambahkan ke stack dan pivot tetap sama)
         self.stack.addWidget(sync_page)
         self.pivot.addItem(
             routeKey="sync",
@@ -191,6 +205,7 @@ class CreateObjectDialog(QDialog):
             onClick=lambda: self.stack.setCurrentWidget(sync_page),
             icon=FluentIcon.SYNC,
         )
+
 
     def _connect_signals(self):
         """Connect all signals to their slots."""
@@ -253,8 +268,28 @@ class CreateObjectDialog(QDialog):
 
     def _on_sync_clicked(self):
         """Handles the click of the 'Sync Objects' button."""
-        self.accepted_mode = "sync"
-        self.accept()
+        # Get the latest counts for the confirmation message
+        to_create = self.reconciliation_counts.get("to_create", 0)
+        to_update = self.reconciliation_counts.get("to_update", 0)
+
+        # Build a clear confirmation message
+        title = "Confirm Full Sync"
+        content = (
+            "You are about to start a full synchronization with the database.\n\n"
+            f"• Up to {to_create} new object(s) will be created.\n"
+            f"• Up to {to_update} existing object(s) will be updated.\n\n"
+            "This action will modify your local mod folders. Are you sure you want to proceed?"
+        )
+
+        # Show the confirmation dialog
+        # Using UiUtils.show_confirm_dialog is a good practice for consistency
+        if UiUtils.show_confirm_dialog(self.window(), title, content, "Yes, Start Sync", "Cancel"):
+            # If the user confirms, set the accepted mode and accept the dialog
+            self.accepted_mode = "reconcile"
+            self.accept()
+        else:
+            # If the user cancels, do nothing.
+            logger.info("User cancelled the sync operation.")
 
     def _get_manual_data(self) -> Dict[str, Any]:
         """Gathers data from the manual creation form."""
@@ -287,8 +322,8 @@ class CreateObjectDialog(QDialog):
         """Public method to get the result after the dialog is accepted."""
         if self.accepted_mode == "manual":
             return {"mode": "manual", "task": self.manual_data}
-        elif self.accepted_mode == "sync":
-            return {"mode": "sync"}
+        elif self.accepted_mode == "reconcile":
+            return {"mode": "reconcile"}
         return {"mode": None}
 
     def _on_object_type_changed(self, text: str | None):

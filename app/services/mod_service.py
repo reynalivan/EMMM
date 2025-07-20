@@ -735,36 +735,46 @@ class ModService:
             folder_path.mkdir(exist_ok=False) # Fails if folder already exists, which is correct
 
             # --- Thumbnail Processing Logic ---
+            # Prioritize a manually selected source (from dialog) over a DB source.
             thumbnail_source = object_data.get("thumbnail_source")
-            logger.info(f"Processing thumbnail for '{folder_name}' from source: {thumbnail_source}")
-            final_thumb_name = ""  # The final filename to be stored in properties.json
+            db_thumb_path_str = object_data.get("thumbnail_path")
+            final_thumb_name = ""
 
-            if thumbnail_source:
+            if thumbnail_source or db_thumb_path_str:
                 try:
-                    # Use a consistent name for the destination thumbnail
                     dest_thumb_path = folder_path / "_thumb.png"
 
-                    if isinstance(thumbnail_source, Path):
-                        # Case 1: The source is a file Path from the "Browse..." button
-                        logger.info(f"Copying thumbnail from path: {thumbnail_source}")
-                        # Optional: Add image compression via ImageUtils here before copying
-                        shutil.copy(thumbnail_source, dest_thumb_path)
-                        final_thumb_name = dest_thumb_path.name
+                    if thumbnail_source:
+                        if isinstance(thumbnail_source, Path):
+                            # Case 1: The source is a file Path from the "Browse..." button
+                            logger.info(f"Copying thumbnail from path: {thumbnail_source}")
+                            # Optional: Add image compression via ImageUtils here before copying
+                            shutil.copy(thumbnail_source, dest_thumb_path)
+                            final_thumb_name = dest_thumb_path.name
 
-                    elif isinstance(thumbnail_source, Image.Image):
-                        # Case 2: Source is a PIL Image object from "Paste"
-                        logger.info("Saving thumbnail from clipboard (PIL Image) data.")
-                        thumbnail_source.save(dest_thumb_path, "PNG")
-                        final_thumb_name = dest_thumb_path.name
+                        elif isinstance(thumbnail_source, Image.Image):
+                            # Case 2: Source is a PIL Image object from "Paste"
+                            logger.info("Saving thumbnail from clipboard (PIL Image) data.")
+                            thumbnail_source.save(dest_thumb_path, "PNG")
+                            final_thumb_name = dest_thumb_path.name
 
-                    elif isinstance(thumbnail_source, QImage):
-                        # Case 2: The source is QImage data from the "Paste" button
-                        logger.info("Saving thumbnail from clipboard image data.")
-                        # QImage has a built-in save method
-                        if thumbnail_source.save(str(dest_thumb_path), "PNG"):
+                        elif isinstance(thumbnail_source, QImage):
+                            # Case 3: The source is QImage data from "Paste"
+                            logger.info("Saving thumbnail from clipboard image data.")
+                            # QImage has a built-in save method
+                            if thumbnail_source.save(str(dest_thumb_path), "PNG"):
+                                final_thumb_name = dest_thumb_path.name
+                            else:
+                                logger.error(f"Failed to save QImage to {dest_thumb_path}")
+                    elif db_thumb_path_str:
+                        # Case 2: Source is a path string from a database sync task
+                        source_thumb_path = self._app_path / Path(db_thumb_path_str)
+                        if source_thumb_path.is_file():
+                            logger.info(f"Copying database thumbnail from path: {source_thumb_path}")
+                            shutil.copy(source_thumb_path, dest_thumb_path)
                             final_thumb_name = dest_thumb_path.name
                         else:
-                            logger.error(f"Failed to save QImage to {dest_thumb_path}")
+                            logger.warning(f"Database thumbnail not found, skipping copy: {source_thumb_path}")
 
                 except Exception as e:
                     logger.error(f"Failed to process thumbnail for '{folder_name}': {e}", exc_info=True)
