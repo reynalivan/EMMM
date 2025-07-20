@@ -4,9 +4,10 @@
 from pathlib import Path
 from typing import Dict
 from app.utils.logger_utils import logger
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QUrl
+from app.views.dialogs.confirmation_list_dialog import ConfirmationListDialog
 from PyQt6.QtWidgets import (
-    QListWidgetItem,
+    QFileDialog,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -38,6 +39,7 @@ from app.views.components.breadcrumb_widget import BreadcrumbWidget
 from app.views.components.common.shimmer_frame import ShimmerFrame
 from app.views.components.common.flow_grid_widget import FlowGridWidget
 from app.views.components.foldergrid_widget import FolderGridItemWidget
+from app.views.dialogs.progress_dialog import ProgressDialog
 
 
 class FolderGridPanel(QWidget):
@@ -216,7 +218,8 @@ class FolderGridPanel(QWidget):
             self._on_breadcrumb_navigation
         )
         self.search_bar.textChanged.connect(self.view_model.on_search_query_changed)
-        # self.create_button.clicked.connect(self._on_create_mod_requested)
+        self.create_btn.clicked.connect(self._on_create_mod_requested)
+        self.view_model.creation_tasks_prepared.connect(self._on_creation_tasks_prepared)
         # self.randomize_button.clicked.connect(self.view_model.initiate_randomize)
         # (Connections for filter button, bulk action buttons, preset combobox, etc.)
 
@@ -504,17 +507,71 @@ class FolderGridPanel(QWidget):
 
     # ---UI EVENT HANDLERS (Forwarding to ViewModel) ---
 
-    def _on_create_mod_requested(self):
-        """Flow 4.1.A: Shows the creation dialog and forwards to the ViewModel."""
-        # Open CreateModDialog, get the task details.
-        # self.view_model.initiate_create_mods([task])
-
-        pass
+    def dragEnterEvent(self, event):
+        """Accepts drags that contain local file paths."""
+        if event.mimeData().hasUrls():
+            # Check if all URLs are local files/folders
+            if all(url.isLocalFile() for url in event.mimeData().urls()):
+                event.acceptProposedAction()
 
     def dropEvent(self, event):
-        """Flow 4.1.A: Handles dropped files and forwards them to the ViewModel."""
-        # Filter for .zip files from the event's mime data.
-        # Create a list of creation tasks.
-        # self.view_model.initiate_create_mods(tasks)
+        """Handles dropped files/folders by sending their paths to the ViewModel."""
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls()]
+        logger.info(f"User dropped {len(paths)} item(s).")
+        self.view_model.prepare_creation_tasks(paths)
 
-        pass
+    def _on_create_mod_requested(self):
+        """Opens a file dialog for multi-selection and sends paths to the ViewModel."""
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Mod Archives or Folders",
+            "", # Start directory
+            "All Supported Files (*.zip *.rar *.7z);;Archives (*.zip *.rar *.7z);;All files (*)"
+        )
+        # NOTE: To select folders as well, you would typically use QFileDialog.getExistingDirectory,
+        # but it doesn't support multi-selection. A custom dialog would be needed for mixed selection.
+        # For now, we'll focus on files.
+
+        if not file_paths:
+            return
+
+        paths = [Path(p) for p in file_paths]
+        self.view_model.prepare_creation_tasks(paths)
+
+    def _on_creation_tasks_prepared(self, tasks: list):
+        """
+        [REVISED] Receives analyzed tasks, creates and shows the ProgressDialog,
+        and then tells the ViewModel to start the background work.
+        """
+        if not tasks:
+            logger.warning("Analysis resulted in no valid tasks to create.")
+            return
+
+        dialog = ConfirmationListDialog(tasks, self.window())
+        # ... (posisi dialog)
+
+        if dialog.exec():
+            final_tasks = dialog.get_final_tasks()
+            logger.info(f"User confirmed creation of {len(final_tasks)} mods.")
+
+            # --- KOREKSI INTI: View sekarang mengelola ProgressDialog ---
+            # 1. Buat ProgressDialog
+            progress_dialog = ProgressDialog(self.window())
+
+            # 2. Buat cancel flag
+            cancel_flag = [False]
+
+            # 3. Hubungkan tombol "Cancel" di dialog ke flag
+            progress_dialog.cancel_requested.connect(lambda: cancel_flag.__setitem__(0, True))
+
+            # 4. Panggil metode ViewModel yang baru, teruskan flag dan sinyal
+            self.view_model.start_background_creation(
+                tasks=final_tasks,
+                cancel_flag=cancel_flag,
+                progress_signal=progress_dialog.update_progress,
+                finished_signal=progress_dialog.close # Tutup dialog saat selesai
+            )
+
+            # 5. Tampilkan dialog setelah semuanya terhubung
+            progress_dialog.exec()
+            # --- END KOREKSI ---

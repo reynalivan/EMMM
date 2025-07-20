@@ -4,13 +4,16 @@ import time
 import uuid
 import os
 import json
+import patoolib
+import tempfile
 import hashlib
 import dataclasses
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List
 from app.utils.system_utils import SystemUtils
 from PyQt6.QtGui import QImage
 from PIL import Image
+
 
 # Import models
 from app.models.mod_item_model import (
@@ -965,3 +968,162 @@ class ModService:
             if needs_rename and current_path.exists() and not original_path.exists():
                 os.rename(current_path, original_path)
             return {"success": False, "error": error_msg, "item_id": item.id}
+
+    def _find_ini_recursively(self, root_path: Path, max_depth: int) -> bool:
+        """
+        [NEW HELPER] Recursively searches for any .ini file within a directory
+        up to a specified maximum depth.
+        """
+        # We check from depth 0 (the root itself) to max_depth
+        for i in range(max_depth + 1):
+            # Create a glob pattern for the current depth
+            # '*/' * i creates things like '', '*/', '*/*/', etc.
+            pattern = '*/' * i + '*.ini'
+            try:
+                # Check if any file matches the pattern at this depth
+                if next(root_path.glob(pattern), None):
+                    return True # Found an .ini file, no need to search further
+            except Exception as e:
+                # This can happen with very long paths or permission issues
+                logger.warning(f"Error while scanning for .ini files at depth {i}: {e}")
+                return False # Stop searching on error
+        return False # No .ini file found within the depth limit
+
+    def analyze_source_path(self, path: Path) -> dict:
+        """
+        [NEW] Performs a quick, non-blocking analysis of a source path
+        (folder or archive) to propose a creation task.
+        """
+        proposed_name = ""
+        has_ini_warning = False
+        is_valid = False
+        error_message = ""
+
+        try:
+            if path.is_dir():
+                is_valid = True
+                proposed_name = path.name
+                # Check for .ini files in the top level of the folder
+                if not self._find_ini_recursively(path, max_depth=5):
+                    has_ini_warning = True
+
+            elif path.is_file() and patoolib.is_archive(str(path)):
+                is_valid = True
+                proposed_name = path.stem # Name without extension
+                # Safely extract to a temporary directory to check for .ini files
+                with tempfile.TemporaryDirectory(prefix="EMM_analyze_") as temp_dir:
+                    temp_path = Path(temp_dir)
+                    patoolib.extract_archive(str(path), outdir=str(temp_path), verbosity=-1)
+
+                    # Check for .ini files in the extracted contents
+                    if not self._find_ini_recursively(temp_path, max_depth=5):
+                        has_ini_warning = True
+                # The temporary directory is automatically cleaned up here
+            else:
+                error_message = "Unsupported file type."
+
+        except patoolib.util.PatoolError as e:
+            logger.warning(f"Could not analyze archive {path.name}: {e}")
+            error_message = "Corrupt or encrypted archive."
+        except Exception as e:
+            logger.error(f"Unexpected error analyzing path {path}: {e}")
+            error_message = "An unexpected error occurred."
+
+        return {
+            "source_path": path,
+            "proposed_name": proposed_name,
+            "has_ini_warning": has_ini_warning,
+            "is_valid": is_valid,
+            "error_message": error_message,
+        }
+
+    def create_mod_from_source(self, source_path: Path, output_name: str, parent_path: Path, cancel_flag: List[bool]) -> dict:
+        """
+        [NEW] Creates a new mod folder by either copying a directory or
+        extracting an archive. This operation is cancellable.
+        """
+        if cancel_flag:
+            return {"status": "cancelled"}
+
+        output_path = parent_path / output_name
+        if output_path.exists():
+            return {"success": False, "error": f"Folder '{output_name}' already exists."}
+
+        try:
+            if source_path.is_dir():
+                # --- Case 1: Source is a Folder ---
+                logger.info(f"Copying folder from '{source_path}' to '{output_path}'")
+                shutil.copytree(source_path, output_path)
+
+            elif source_path.is_file():
+                # --- Case 2: Source is an Archive ---
+                logger.info(f"Extracting archive '{source_path.name}' to '{output_path}'")
+                # Use a temporary directory for safe extraction
+                with tempfile.TemporaryDirectory(prefix="EMM_extract_") as temp_dir:
+                    temp_path = Path(temp_dir)
+                    patoolib.extract_archive(str(source_path), outdir=str(temp_path))
+
+                    # Logic to find the actual mod content within the temp folder
+                    # (This can be enhanced later, e.g., if content is in a subfolder)
+                    shutil.copytree(temp_path, output_path)
+
+            # Final check for cancellation before returning success
+            if cancel_flag:
+                logger.warning(f"Operation cancelled after processing '{output_name}'. Cleaning up...")
+                if output_path.exists():
+                    shutil.rmtree(output_path)
+                return {"status": "cancelled"}
+
+            # --- Create a default info.json ---
+            output_name_str = str(output_name)
+            self._write_json(output_path / INFO_JSON_NAME, {"actual_name": output_name_str})
+
+            return {
+                "success": True,
+                "skeleton_data": {
+                    "id": self.system_utils.generate_item_id(output_path, parent_path),
+                    "actual_name": output_name_str,
+                    "folder_path": output_path,
+                    "status": ModStatus.ENABLED, # New mods are enabled by default
+                    "is_pinned": False,
+                    "is_skeleton": True # It's a skeleton until hydrated
+                }
+            }
+
+        except patoolib.util.PatoolError as e:
+            error_msg = f"Archive is corrupt or password-protected: {source_path.name}"
+            logger.error(f"{error_msg} - {e}")
+            return {"success": False, "error": error_msg}
+        except Exception as e:
+            error_msg = f"Failed to process '{source_path.name}': {e}"
+            logger.error(error_msg, exc_info=True)
+            if output_path.exists():
+                shutil.rmtree(output_path) # Clean up partial creations
+            return {"success": False, "error": error_msg}
+
+    def cleanup_lingering_temp_folders(self):
+        """
+        [NEW] Scans the system's temporary directory for leftover folders
+        from previous sessions and removes them.
+        """
+        temp_dir = Path(tempfile.gettempdir())
+        prefix = "EMM_extract_"
+        logger.info(f"Scanning for leftover temporary folders with prefix '{prefix}' in '{temp_dir}'...")
+
+        folders_to_delete = [d for d in temp_dir.iterdir() if d.is_dir() and d.name.startswith(prefix)]
+
+        if not folders_to_delete:
+            logger.info("No leftover temporary folders found.")
+            return
+
+        deleted_count = 0
+        for folder in folders_to_delete:
+            try:
+                shutil.rmtree(folder)
+                logger.info(f"Successfully removed leftover temp folder: {folder}")
+                deleted_count += 1
+            except Exception as e:
+                logger.error(f"Failed to remove leftover temp folder {folder}: {e}")
+
+        if deleted_count > 0:
+            logger.info(f"Cleanup complete. Removed {deleted_count} leftover folder(s).")

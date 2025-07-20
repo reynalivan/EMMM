@@ -101,15 +101,6 @@ def main():
             cache_dir=cache_path, default_icons=DEFAULT_ICONS
         )
 
-        # --- Run cache cleanup in the background ---
-        logger.info("Queueing thumbnail disk cache cleanup task...")
-        cleanup_worker = Worker(thumbnail_service.cleanup_disk_cache)
-
-        thread_pool = QThreadPool.globalInstance()
-        if thread_pool:
-            thread_pool.start(cleanup_worker)
-        else:
-            logger.critical("Could not get QThreadPool instance to run cache cleanup.")
 
         # Instantiate utility classes (can be passed as dependencies if needed).
         system_utils = SystemUtils()
@@ -176,6 +167,7 @@ def main():
         preview_panel_vm=preview_panel_vm,
     )
 
+
     # ---3. Instanate the main window ---
     try:
         window = MainWindow(
@@ -186,6 +178,19 @@ def main():
     except Exception as e:
         logger.critical(f"Failed to initialize or show Main Window: {e}", exc_info=True)
         return 1
+
+    # --- Run cache cleanup in the background ---
+    logger.info("Queueing thumbnail disk cache cleanup task...")
+    cleanup_worker = Worker(thumbnail_service.cleanup_disk_cache)
+
+    thread_pool = QThreadPool.globalInstance()
+    if thread_pool:
+        thread_pool.start(cleanup_worker)
+    else:
+        logger.critical("Could not get QThreadPool instance to run cache cleanup.")
+
+    logger.info("Performing startup cleanup...")
+    mod_service.cleanup_lingering_temp_folders()
 
     # --- HIDE SPLASH SCREEN ---
     splash_screen.finish()

@@ -1,5 +1,6 @@
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import List
 from PyQt6.QtCore import pyqtSignal
 from app.core.constants import CONTEXT_OBJECTLIST
 from app.models.game_model import Game
@@ -233,6 +234,36 @@ class WorkflowService:
         logger.info("Reconciliation finished. Summary: %s", payload)
         return payload
 
+    def analyze_creation_sources(self, paths: list, progress_callback=None) -> dict:
+        """
+        [NEW] Runs the analysis of source paths in the background. This method
+        is designed to be the target of a worker thread.
+        """
+        valid_tasks = []
+        invalid_items = []
+        total = len(paths)
+
+        logger.info(f"Worker started. Analyzing {total} source path(s).")
+
+        for idx, path in enumerate(paths):
+            logger.debug(f"Analyzing path {idx + 1}/{total}: {path.name}")
+            try:
+                task_info = self.mod_service.analyze_source_path(path)
+                if task_info["is_valid"]:
+                    valid_tasks.append(task_info)
+                    logger.debug(f"Path '{path.name}' is valid.")
+                else:
+                    error_msg = task_info.get('error_message', 'Invalid item')
+                    invalid_items.append({"name": path.name, "reason": error_msg})
+                    logger.warning(f"Path '{path.name}' is invalid: {error_msg}")
+            except Exception as e:
+                # Catch unexpected errors during analysis of a single file
+                logger.error(f"Critical error analyzing '{path.name}': {e}", exc_info=True)
+                invalid_items.append({"name": path.name, "reason": "Analysis crashed."})
+
+        logger.info(f"Worker finished analysis. Valid: {len(valid_tasks)}, Invalid: {len(invalid_items)}")
+        return {"valid": valid_tasks, "invalid": invalid_items}
+
     def reconcile_single_game(self, game: Game, progress_callback=None) -> dict:
         """
         [NEW] A self-contained workflow that reconciles all objects for a
@@ -259,3 +290,47 @@ class WorkflowService:
         )
 
         return result_summary
+
+    def execute_creation_workflow(self, tasks: list, parent_path: Path, cancel_flag: List[bool], progress_callback=None) -> dict:
+        """
+        [NEW] Iterates through creation tasks, calling the mod_service to
+        copy or extract each one. Checks for cancellation between each task.
+        """
+        successful_items = []
+        failed_items = []
+        cancelled_count = 0
+        total_tasks = len(tasks)
+
+        for idx, task in enumerate(tasks):
+            # --- Cancellation Check ---
+            if cancel_flag[0]:
+                logger.info("Creation workflow cancelled by user.")
+                cancelled_count = total_tasks - idx
+                break # Exit the loop
+
+            output_name = task.get("output_name")
+            source_path = task.get("source_path")
+
+            if progress_callback:
+                progress_callback.emit(idx + 1, total_tasks)
+
+
+            result = self.mod_service.create_mod_from_source(source_path, output_name, parent_path, cancel_flag[0])
+
+            if result.get("success"):
+                successful_items.append(result.get("skeleton_data"))
+            elif result.get("status") == "cancelled":
+                cancelled_count = total_tasks - idx
+                break
+            else:
+                failed_items.append({"source": source_path.name, "reason": result.get("error")})
+
+        # Final progress update
+        if progress_callback:
+            progress_callback.emit(total_tasks, total_tasks)
+
+        return {
+            "successful_items": successful_items,
+            "failed_items": failed_items,
+            "cancelled_count": cancelled_count
+        }

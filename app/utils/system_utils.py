@@ -62,3 +62,17 @@ class SystemUtils:
         if not name:
             return "No Image"
         return name[:length].upper()
+
+    @staticmethod
+    def generate_item_id(output_path: Path, parent_path: Path) -> str:
+        """
+        Flow 4.2.C: Generates a unique item ID based on the output path and parent path.
+        This is used to ensure unique identifiers for items in the UI.
+        """
+        if not output_path or not parent_path:
+            return "unknown_item"
+
+        # Use relative path to generate a unique ID
+        relative_path = output_path.relative_to(parent_path)
+        item_id = relative_path.as_posix().replace("/", "_").replace("\\", "_")
+        return item_id

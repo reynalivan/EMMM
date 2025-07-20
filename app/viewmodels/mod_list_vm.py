@@ -3,6 +3,7 @@
 
 import dataclasses
 from pathlib import Path
+from typing import List
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 from PyQt6.QtGui import QPixmap
 from app.models.game_model import Game
@@ -32,7 +33,7 @@ class ModListViewModel(QObject):
     """
 
     # ---Signals for UI State & Feedback ---
-
+    creation_tasks_prepared = pyqtSignal(list)
     loading_started = pyqtSignal()
     loading_finished = pyqtSignal()
     items_updated = pyqtSignal(list,object)
@@ -102,6 +103,7 @@ class ModListViewModel(QObject):
         self.last_selected_item_id: str | None = None
         self.active_category_filter: ModType = ModType.CHARACTER
         self._item_to_select_after_load: str | None = None
+        self._active_workers = []
         self.thumbnail_service.thumbnail_generated.connect(self._on_thumbnail_generated)
 
     # ---Loading and Data Management ---
@@ -1223,10 +1225,8 @@ class ModListViewModel(QObject):
         exctype, value, tb = error_info
         logger.critical(f"A worker error occurred during object creation: {value}\n{tb}")
 
-        # Pastikan UI tidak terkunci
         self.bulk_operation_finished.emit([])
 
-        # Tampilkan pesan error ke pengguna
         self.toast_requested.emit(
             "A critical error occurred during creation. Please check the logs.", "error"
         )
@@ -1597,3 +1597,145 @@ class ModListViewModel(QObject):
         exctype, value, tb = error_info
         logger.critical(f"A worker error occurred during '{action}' for item {item_id}: {value}\n{tb}")
         self.toast_requested.emit(f"A critical error occurred during {action}. Please check logs.", "error")
+
+    def prepare_creation_tasks(self, paths: List[Path]):
+        """
+        [NEW] Starts a light background worker to analyze a list of source paths
+        (folders/archives) before showing the confirmation dialog.
+        """
+        if not paths:
+            return
+
+        logger.info(f"Preparing creation tasks for {len(paths)} source path(s).")
+        # For a light analysis, a global loading indicator isn't strictly necessary,
+        # but you could emit `bulk_operation_started` here if you want a visual cue.
+
+        worker = Worker(self.workflow_service.analyze_creation_sources, paths)
+        self._active_workers.append(worker)
+        worker.signals.result.connect(
+            lambda result: self._on_tasks_analyzed(result, worker)
+        )
+
+        # This will handle the result of the analysis and emit the final signal
+        # worker.signals.progress.connect(...) # If you want to show progress in the dialog
+        worker.signals.error.connect(
+            lambda err, w=worker: self._on_generic_worker_error(None, err, "analysis")
+        )
+
+
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _analyze_paths_in_worker(self, paths: List[Path]) -> list:
+        """
+        [NEW] Private method that runs in the worker thread to perform the analysis.
+        """
+        logger.info(f"Analyzing {paths} source paths for mod creation tasks.")
+        valid_tasks = []
+        invalid_items = []
+        for path in paths:
+            task_info = self.mod_service.analyze_source_path(path)
+            if task_info["is_valid"]:
+                valid_tasks.append(task_info)
+                logger.info(f"Valid task found: {path.name}")
+            else:
+                # Instead of emitting a signal, just collect the invalid items
+                error_msg = task_info.get('error_message', 'Invalid item')
+                invalid_items.append({"name": path.name, "reason": error_msg})
+                logger.warning(f"Invalid task found: {path.name} - {error_msg}")
+
+        # Return a dictionary with both lists
+        logger.info(f"Analysis complete. Valid tasks: {len(valid_tasks)}, Invalid items: {len(invalid_items)}")
+        return {"valid": valid_tasks, "invalid": invalid_items}
+
+    def _on_tasks_analyzed(self, result: dict, worker: Worker):
+        """
+        [REVISED] This slot now receives a dictionary, shows toasts for invalid
+        items, and then emits the signal for valid tasks.
+        """
+        logger.info(f"Analysis finished. Valid tasks: {len(result.get('valid', []))}, Invalid items: {len(result.get('invalid', []))}")
+        # 1. Remove the worker from the active list to prevent memory leaks
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+
+        # 2. Show toasts for any items that were skipped
+        invalid_items = result.get("invalid", [])
+        for item in invalid_items:
+            self.toast_requested.emit(f"Skipped '{item['name']}': {item['reason']}", "warning")
+
+        # 3. Emit the final signal with only the valid tasks
+        valid_tasks = result.get("valid", [])
+        self.creation_tasks_prepared.emit(valid_tasks)
+
+    def start_background_creation(self, tasks: list, cancel_flag: list, progress_signal: pyqtSignal, finished_signal: pyqtSignal):
+        """
+        [NEW] Starts the background worker for mod creation.
+        Receives a cancel_flag and progress/finished signals from the View's dialog.
+        """
+        if not tasks:
+            logger.warning("No valid tasks provided for background creation.")
+            return
+
+
+        logger.info(f"Starting background creation of {len(tasks)} mods.")
+
+        # The ViewModel emits this to tell the main window to disable itself
+        self.bulk_operation_started.emit()
+
+        worker = Worker(
+            self.workflow_service.execute_creation_workflow,
+            tasks,
+            self.current_path,
+            cancel_flag=cancel_flag
+        )
+
+        # Connect worker signals
+        worker.signals.result.connect(self._on_creation_finished)
+        worker.signals.error.connect(lambda err, t=tasks: self._on_creation_error(err))
+        # Connect worker's progress directly to the dialog's progress signal
+        worker.signals.progress.connect(progress_signal)
+        # When the worker is truly finished, also emit the dialog's finished signal
+        worker.signals.finished.connect(finished_signal)
+
+        self._active_workers.append(worker)
+        QThreadPool.globalInstance().start(worker)
+
+
+    def _on_creation_finished(self, result: dict):
+        """
+        [IMPLEMENTED] Handles the final result of the creation workflow,
+        shows a summary report, and performs a "Smart Refresh" of the UI.
+        """
+        # 1. Close the progress dialog (this signal is generic)
+        self.bulk_operation_finished.emit(result.get("failed_items", []))
+
+        # 2. Prepare and show a summary report
+        successful_count = len(result.get("successful_items", []))
+        failed_count = len(result.get("failed_items", []))
+        cancelled_count = result.get("cancelled_count", 0)
+
+        summary_title = "Creation Process Finished"
+        summary_content = f"{successful_count} mod(s) created successfully."
+        if failed_count > 0:
+            summary_content += f"\n{failed_count} failed."
+        if cancelled_count > 0:
+            summary_content += f"\n{cancelled_count} cancelled."
+
+        # We can enhance this later to show a "Details" button for failures
+        self.toast_requested.emit(summary_content, "info" if failed_count == 0 else "warning")
+
+        # 3. --- Smart Refresh Logic ---
+        if successful_count > 0:
+            logger.info(f"Performing Smart Refresh with {successful_count} new item(s).")
+            newly_created_skeletons = []
+            for item_data in result.get("successful_items", []):
+                # Convert the raw dictionary data into a proper FolderItem object
+                skeleton = FolderItem(**item_data)
+                newly_created_skeletons.append(skeleton)
+
+            # Add the new skeleton objects directly to the in-memory master list
+            self.master_list.extend(newly_created_skeletons)
+
+            # Re-apply filters and sorting, which will emit the updated list to the View
+            # This is much faster than reloading from the disk.
+            self.apply_filters_and_search()
