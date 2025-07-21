@@ -55,6 +55,7 @@ class ModListViewModel(QObject):
     selection_changed = pyqtSignal(bool)
     available_filters_changed = pyqtSignal(dict)
     password_requested = pyqtSignal(dict)
+    failure_report_requested = pyqtSignal(list)
 
     # ---Signals for Bulk Operations ---
     bulk_operation_started = pyqtSignal()
@@ -1017,12 +1018,17 @@ class ModListViewModel(QObject):
         [REVISED] Handles the creation result with intelligent logic for both
         single (manual) and bulk (sync) creation scenarios.
         """
-        successful_items = result.get("success", [])
-        failed_items = result.get("failed", [])
+        self.bulk_operation_finished.emit([])
 
-        # --- NEW: Password Handling Logic ---
+        successful_items = result.get("successful_items", [])
+        failed_items = result.get("failed_items", [])
+        cancelled_count = result.get("cancelled_count", 0)
+
+        # --- STAGE 1: Check for Password-Protected Files ---
+        # This is the highest priority action after a workflow finishes.
         password_tasks = []
         other_failures = []
+
         for failure in failed_items:
             # Check if the reason for failure was a password request
             if failure.get("reason") == "Archive is password-protected.":
@@ -1036,39 +1042,50 @@ class ModListViewModel(QObject):
             # We stop here and wait for the user to provide a password
             return
 
-        # If there are no password issues, proceed with the normal flow
-        self.bulk_operation_finished.emit(failed_items)
+        # --- STAGE 2: Final Reporting & UI Unlocking ---
+        self.bulk_operation_finished.emit(other_failures)
 
-        # --- Smart UX Logic ---
+        # --- STAGE 3: Smart UX Logic for Toasts ---
+        successful_count = len(successful_items)
+        failed_count = len(other_failures)
+        cancelled_count = result.get("cancelled_count", 0)
+
+        # Handle the special case for a single, perfect manual creation
+        if successful_count == 1 and failed_count == 0 and cancelled_count == 0 and tasks_info[0].get("type") == "manual":
+            created_object_data = tasks_info[0].get("data", {})
+            object_name = created_object_data.get("name", "New Mod")
+            self.toast_requested.emit(f"Successfully created '{object_name}'.", "success")
+            self.object_created.emit(created_object_data)
+            self._item_to_select_after_load = object_name
+        else:
+            # 1. Build the summary message
+            summary_parts = []
+            if successful_count > 0:
+                summary_parts.append(f"{successful_count} created")
+            if failed_count > 0:
+                summary_parts.append(f"{failed_count} failed")
+            if cancelled_count > 0:
+                summary_parts.append(f"{cancelled_count} cancelled")
+
+            logger.info(f"Creation Summary: {', '.join(summary_parts)}")
+            summary_content = "Process finished: " + ", ".join(summary_parts) + "."
+            level = "success" if failed_count == 0 and cancelled_count == 0 else "warning"
+
+            # 2. ALWAYS show the summary toast
+            self.toast_requested.emit(summary_content, level)
+
+            # 3. If there were failures, ALSO request the details dialog
+            if failed_count > 0:
+                self.failure_report_requested.emit(other_failures)
+
+
+        # --- STAGE 4: Smart UI Refresh ---
+        # Only perform the smart refresh if items were actually created.
         if successful_items:
-            # Check if this was a single, manual creation
-            if len(tasks_info) == 1 and tasks_info[0].get("type") == "manual":
-                # SINGLE CREATION UX
-                created_object_task = tasks_info[0]
-                created_object_data = created_object_task.get("data", {})
-                object_name = created_object_data.get("name", "New Object")
-
-                # 1. Show a specific success toast
-                self.toast_requested.emit(f"Successfully created '{object_name}'.", "success")
-
-                # 2. Emit signal to switch the main sidebar category
-                self.object_created.emit(created_object_data)
-
-                # 3. Set the item to be auto-selected after the list reloads
-                self._item_to_select_after_load = object_name
-
-            else: # BULK CREATION (SYNC) UX
-                # For bulk operations, just show a summary toast.
-                # Do not switch sidebar or auto-select.
-                success_count = len(successful_items)
-                plural = "s" if success_count > 1 else ""
-                self.toast_requested.emit(f"Successfully synced {success_count} new object{plural}.", "success")
-
-        # --- UI Update ---
-        # Reloading the list is necessary in both cases to show the new item(s).
-        if self.navigation_root:
-            logger.info("Creation task finished, reloading object list...")
-            self.load_items(self.navigation_root, self.current_game, is_new_root=True)
+            logger.info(f"Performing Smart Refresh with {len(successful_items)} new item(s).")
+            newly_created_skeletons = [FolderItem(**item_data) for item_data in successful_items]
+            self.master_list.extend(newly_created_skeletons)
+            self.apply_filters_and_search()
 
 
     def retry_creation_with_password(self, task: dict, password: str):
@@ -1644,9 +1661,8 @@ class ModListViewModel(QObject):
         if not paths:
             return
 
+        self.toast_requested.emit(f"Analyzing {len(paths)} item(s)...", "info")
         logger.info(f"Preparing creation tasks for {len(paths)} source path(s).")
-        # For a light analysis, a global loading indicator isn't strictly necessary,
-        # but you could emit `bulk_operation_started` here if you want a visual cue.
 
         worker = Worker(self.workflow_service.analyze_creation_sources, paths)
         self._active_workers.append(worker)
@@ -1655,7 +1671,6 @@ class ModListViewModel(QObject):
         )
 
         # This will handle the result of the analysis and emit the final signal
-        # worker.signals.progress.connect(...) # If you want to show progress in the dialog
         worker.signals.error.connect(
             lambda err, w=worker: self._on_generic_worker_error(None, err, "analysis")
         )
@@ -1728,7 +1743,9 @@ class ModListViewModel(QObject):
         )
 
         # Connect worker signals
-        worker.signals.result.connect(self._on_creation_finished)
+        worker.signals.result.connect(
+            lambda result, tasks_info=tasks: self._on_creation_finished(result, tasks_info)
+        )
         worker.signals.error.connect(lambda err, t=tasks: self._on_creation_error(err))
         # Connect worker's progress directly to the dialog's progress signal
         worker.signals.progress.connect(progress_signal)
@@ -1739,41 +1756,3 @@ class ModListViewModel(QObject):
         QThreadPool.globalInstance().start(worker)
 
 
-    def _on_creation_finished(self, result: dict):
-        """
-        [IMPLEMENTED] Handles the final result of the creation workflow,
-        shows a summary report, and performs a "Smart Refresh" of the UI.
-        """
-        # 1. Close the progress dialog (this signal is generic)
-        self.bulk_operation_finished.emit(result.get("failed_items", []))
-
-        # 2. Prepare and show a summary report
-        successful_count = len(result.get("successful_items", []))
-        failed_count = len(result.get("failed_items", []))
-        cancelled_count = result.get("cancelled_count", 0)
-
-        summary_title = "Creation Process Finished"
-        summary_content = f"{successful_count} mod(s) created successfully."
-        if failed_count > 0:
-            summary_content += f"\n{failed_count} failed."
-        if cancelled_count > 0:
-            summary_content += f"\n{cancelled_count} cancelled."
-
-        # We can enhance this later to show a "Details" button for failures
-        self.toast_requested.emit(summary_content, "info" if failed_count == 0 else "warning")
-
-        # 3. --- Smart Refresh Logic ---
-        if successful_count > 0:
-            logger.info(f"Performing Smart Refresh with {successful_count} new item(s).")
-            newly_created_skeletons = []
-            for item_data in result.get("successful_items", []):
-                # Convert the raw dictionary data into a proper FolderItem object
-                skeleton = FolderItem(**item_data)
-                newly_created_skeletons.append(skeleton)
-
-            # Add the new skeleton objects directly to the in-memory master list
-            self.master_list.extend(newly_created_skeletons)
-
-            # Re-apply filters and sorting, which will emit the updated list to the View
-            # This is much faster than reloading from the disk.
-            self.apply_filters_and_search()

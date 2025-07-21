@@ -16,7 +16,7 @@ class ConfirmationListDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Confirm Mod Creation")
         self.setMinimumWidth(500)
-
+        self.existing_names_lower = [name.lower() for name in existing_names]
         self.task_widgets: List[CreationTaskWidget] = []
 
         # --- UI Components ---
@@ -24,6 +24,9 @@ class ConfirmationListDialog(QDialog):
         info = BodyLabel("The following mods will be created. You can edit the output folder names below.", self)
 
         self.list_widget = ListWidget(self)
+        self.start_button = PrimaryPushButton("Start Process")
+        cancel_button = PushButton("Cancel")
+
         for task in tasks:
             list_item = QListWidgetItem(self.list_widget)
             widget = CreationTaskWidget(task)
@@ -34,9 +37,6 @@ class ConfirmationListDialog(QDialog):
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, widget)
             self.task_widgets.append(widget)
-
-        self.start_button = PrimaryPushButton("Start Process")
-        cancel_button = PushButton("Cancel")
 
         # --- Layout ---
         main_layout = QVBoxLayout(self)
@@ -59,6 +59,16 @@ class ConfirmationListDialog(QDialog):
 
     def _on_validation_changed(self):
         """Checks if all task names are valid and enables/disables the start button."""
+        # Get all currently proposed names from the line edits
+        proposed_names = [widget.get_current_name().lower() for widget in self.task_widgets]
+
+        # Update each widget with the list of *other* proposed names
+        for widget in self.task_widgets:
+            current_name = widget.get_current_name().lower()
+            other_names = [name for name in proposed_names if name != current_name]
+            widget.set_validation_lists(self.existing_names_lower, other_names)
+
+        # The final check: enable the button only if every single widget is valid
         all_valid = all(widget.is_valid() for widget in self.task_widgets)
         self.start_button.setEnabled(all_valid)
 

@@ -42,6 +42,7 @@ from app.views.components.breadcrumb_widget import BreadcrumbWidget
 from app.views.components.common.shimmer_frame import ShimmerFrame
 from app.views.components.common.flow_grid_widget import FlowGridWidget
 from app.views.components.foldergrid_widget import FolderGridItemWidget
+from app.views.dialogs.failure_report_dialog import FailureReportDialog
 from app.views.dialogs.password_dialog import PasswordDialog
 from app.views.dialogs.progress_dialog import ProgressDialog
 
@@ -209,6 +210,7 @@ class FolderGridPanel(QWidget):
         self.view_model.selection_changed.connect(self._on_selection_changed)
         self.view_model.bulk_operation_started.connect(self._on_bulk_action_started)
         self.view_model.bulk_operation_finished.connect(self._on_bulk_action_completed)
+        self.view_model.failure_report_requested.connect(self._on_failure_report_requested)
 
         # --- Connections for UI feedback ---
         self.view_model.exclusive_activation_confirmation_requested.connect(
@@ -516,6 +518,17 @@ class FolderGridPanel(QWidget):
         # Re-enable all controls disabled in the method above.
 
         pass
+
+    def _on_failure_report_requested(self, failed_items: list):
+        """
+        [NEW] Creates and shows the FailureReportDialog with the list
+        of items that failed during the operation.
+        """
+        if not failed_items:
+            return
+
+        dialog = FailureReportDialog(failed_items, self.window())
+        dialog.exec()
 
     # ---UI EVENT HANDLERS (Forwarding to ViewModel) ---
 
