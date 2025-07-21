@@ -394,10 +394,58 @@ class ModService:
             logger.critical(error_msg, exc_info=True)
             return {"success": False, "error": error_msg}
 
-    def toggle_pin_status(self, item: object) -> dict:
-        """Flow 6.3: Pins/unpins a mod by renaming its folder with a suffix."""
-        # TODO: Implement actual pin/unpin logic
-        return {}
+    def toggle_pin_status(self, item: BaseModItem) -> dict:
+        """
+        [NEW] Toggles the pinned state of an item by renaming its folder
+        and updating the 'is_pinned' flag in its JSON file.
+        """
+        # Determine the correct JSON file based on the item's context
+        is_objectlist_item = isinstance(item, ObjectItem)
+        json_filename = PROPERTIES_JSON_NAME if is_objectlist_item else INFO_JSON_NAME
+
+        original_path = item.folder_path
+
+        try:
+            # 1. Determine the new state and construct the new folder name
+            new_pin_status = not item.is_pinned
+            prefix = DEFAULT_DISABLED_PREFIX if item.status == ModStatus.DISABLED else ""
+            suffix = PIN_SUFFIX if new_pin_status else "" # Add or remove the _pin suffix
+
+            new_folder_name = f"{prefix}{item.actual_name}{suffix}"
+            new_path = original_path.with_name(new_folder_name)
+
+            # 2. Rename the folder
+            logger.info(f"Toggling pin status: Renaming '{original_path.name}' to '{new_path.name}'")
+            os.rename(original_path, new_path)
+
+            # 3. Update the JSON file inside the newly renamed folder
+            json_file_path = new_path / json_filename
+            properties = {}
+            if json_file_path.is_file():
+                with open(json_file_path, "r", encoding="utf-8") as f:
+                    properties = json.load(f)
+
+            properties['is_pinned'] = new_pin_status
+            self._write_json(json_file_path, properties)
+
+            # 4. Return the new state
+            updated_data = {
+                "folder_path": new_path,
+                "is_pinned": new_pin_status
+            }
+            new_item = dataclasses.replace(item, **updated_data)
+            return {"success": True, "data": new_item, "item_id": item.id}
+
+        except FileExistsError:
+            error_msg = f"A folder named '{new_path.name}' already exists."
+            return {"success": False, "error": error_msg, "item_id": item.id}
+        except Exception as e:
+            error_msg = f"Failed to toggle pin status for '{item.actual_name}': {e}"
+            logger.error(error_msg, exc_info=True)
+            # Attempt to roll back if rename was successful but JSON update failed
+            if new_path.exists() and not original_path.exists():
+                os.rename(new_path, original_path)
+            return {"success": False, "error": error_msg, "item_id": item.id}
 
     def rename_item(self, item: BaseModItem, new_name: str) -> dict:
         """

@@ -320,8 +320,56 @@ class ModListViewModel(QObject):
             self._on_toggle_status_error(item_id, (None, "Thread pool unavailable", ""))
 
     def toggle_pin_status(self, item_id: str):
-        """Flow 6.3: Handles pinning/unpinning a single item."""
-        pass
+        """
+        [IMPLEMENTED] Initiates the background process for pinning or unpinning an item.
+        """
+        if item_id in self._processing_ids:
+            return
+
+        item_to_pin = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_pin:
+            logger.error(f"Cannot toggle pin: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to toggle pin for '{item_to_pin.actual_name}'.")
+        self._processing_ids.add(item_id)
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(self.mod_service.toggle_pin_status, item_to_pin)
+        worker.signals.result.connect(self._on_pin_status_finished)
+        worker.signals.error.connect(
+            lambda err, id=item_id: self._on_generic_worker_error(id, err, "pin toggle")
+        )
+
+        QThreadPool.globalInstance().start(worker)
+
+
+    # --- Ganti slot _on_pin_status_finished yang sebelumnya kosong ---
+    def _on_pin_status_finished(self, result: dict):
+        """
+        [IMPLEMENTED] Handles the result of the pin/unpin operation.
+        Updates the item in the model and triggers a re-sort of the UI.
+        """
+        item_id = result.get("item_id")
+        if not item_id: return
+
+        self._processing_ids.discard(item_id)
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if result.get("success"):
+            new_item = result.get("data")
+
+            # Update the item in the master list
+            self.update_item_in_list(new_item)
+
+            # Re-apply filters AND sorting. The sorting logic will automatically
+            # move the pinned item to the top.
+            self.apply_filters_and_search()
+
+            self.toast_requested.emit("Pin status updated.", "success")
+        else:
+            self.toast_requested.emit(f"Failed to update pin status: {result.get('error')}", "error")
+
 
     def rename_item(self, item_id: str, new_name: str):
         """
@@ -968,11 +1016,6 @@ class ModListViewModel(QObject):
         self.toast_requested.emit(
             "A critical error occurred. Please check the logs.", "error"
         )
-
-    def _on_pin_status_finished(self, item_id: str, result: dict):
-        """Handles the result of a single item pin/unpin operation (Flow 6.3)."""
-        pass
-
 
     def _on_delete_finished(self, result: dict):
         """

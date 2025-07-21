@@ -96,7 +96,14 @@ class FolderGridItemWidget(CardWidget):
         self.selection_checkbox.move(8, 8)
         self.selection_checkbox.hide()
 
-        # ---2. Bottom Area: Info (Name and Status) ---
+        self.pin_icon = IconWidget(FluentIcon.PIN, self)
+        self.pin_icon.setFixedSize(24, 24)
+        self.pin_icon.setToolTip("Pinned")
+        pin_x = self._thumb_size.width() - self.pin_icon.width() - 8
+        pin_y = 8
+        self.pin_icon.move(pin_x, pin_y)
+        self.pin_icon.hide() # Hide by default, show via set_data
+
 
         info_area = QWidget(self)
 
@@ -113,16 +120,12 @@ class FolderGridItemWidget(CardWidget):
         status_layout.setContentsMargins(0, 4, 0, 0)
         status_layout.setHorizontalSpacing(6)
 
-        self.pin_icon = IconWidget(FluentIcon.PIN, self)
-        self.pin_icon.setToolTip("Pinned")
-        self.pin_icon.hide()
 
         self.status_switch = SwitchButton(self)
         self.status_switch.setOnText("Enabled")
         self.status_switch.setOffText("Disabled")
         self.status_switch.setToolTip("Toggle mod status")
 
-        status_layout.addWidget(self.pin_icon)
         status_layout.addWidget(self.status_switch)
 
         info_layout.addWidget(self.name_label)
@@ -145,7 +148,8 @@ class FolderGridItemWidget(CardWidget):
 
         # --- Update basic UI elements ---
         self.name_label.setText(self.item_data.get("actual_name", "N/A"))
-        self.pin_icon.setVisible(self.item_data.get("is_pinned", False))
+        is_pinned = item_data.get("is_pinned", False)
+        self.pin_icon.setVisible(is_pinned)
 
         with QSignalBlocker(self.status_switch):
             is_enabled = self.item_data.get("is_enabled", False)
@@ -237,7 +241,6 @@ class FolderGridItemWidget(CardWidget):
         if not item_id:
             return
 
-
         is_enabled = self.item_data.get("is_enabled", False)
 
         if not is_enabled:
@@ -265,6 +268,7 @@ class FolderGridItemWidget(CardWidget):
 
         pin_action_text = "Unpin" if self.item_data.get("is_pinned") else "Pin"
         pin_action = QAction(FluentIcon.PIN.icon(), pin_action_text, self)
+        pin_action.triggered.connect(lambda: self.view_model.toggle_pin_status(item_id))
         menu.addAction(pin_action)
 
         rename_action = QAction(FluentIcon.EDIT.icon(), "Rename...", self)

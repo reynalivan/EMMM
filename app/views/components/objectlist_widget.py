@@ -115,6 +115,7 @@ class ObjectListItemWidget(QWidget):
         # ---4. Pin Icon ---
 
         self.pin_icon = IconWidget(FluentIcon.PIN, self)
+        self.pin_icon.setFixedSize(16, 16)
         self.pin_icon.setToolTip("Pinned")
         self.pin_icon.hide()
         main_layout.addWidget(self.pin_icon)
@@ -199,7 +200,9 @@ class ObjectListItemWidget(QWidget):
 
         pin_action_text = "Unpin" if self.item_data.get("is_pinned") else "Pin"
         pin_action = QAction(FluentIcon.PIN.icon(), pin_action_text, self)
-        # Pin action.triggered.connect(...)
+        pin_action.triggered.connect(
+            lambda: self.view_model.toggle_pin_status(item_id)
+        )
 
         menu.addAction(pin_action)
 
@@ -249,8 +252,6 @@ class ObjectListItemWidget(QWidget):
 
     def mousePressEvent(self, event):
         """Flow 2.3: Notifies the parent panel that this item was clicked."""
-        # This signal will be caught by ObjectListPanel, which then orchestrates
-        # the call to the main view model to set the active object.
 
         self.item_selected.emit(self.item_data)
         super().mousePressEvent(event)
