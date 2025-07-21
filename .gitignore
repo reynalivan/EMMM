@@ -15,6 +15,10 @@
 **/__pycache__/
 *.py[cod]
 *$py.class
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
 
 # Environment & tools
 .env
@@ -132,3 +136,4 @@ target_wrapper.*
 # Project-specific
 app/logs/
 config.json
+config.json.backup

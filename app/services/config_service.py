@@ -68,10 +68,10 @@ class ConfigService:
 
             # --- Parse [ui] object ---
             ui_prefs = data.get("ui", {})
-            geometry = tuple(ui_prefs.get("window_geometry")) if "window_geometry" in ui_prefs else None
-            splitter_sizes = tuple(ui_prefs.get("splitter_sizes")) if "splitter_sizes" in ui_prefs else None
+            geometry = tuple(ui_prefs.get("window_geometry")) if "window_geometry" in ui_prefs and ui_prefs.get("window_geometry") is not None else None
+            splitter_sizes = tuple(ui_prefs.get("splitter_sizes")) if "splitter_sizes" in ui_prefs and ui_prefs.get("splitter_sizes") is not None else None
 
-            # Validasi tambahan untuk geometry dan splitter
+            # Validate geometry and splitter_sizes
             if geometry and len(geometry) != 4:
                 logger.warning(f"window_geometry has {len(geometry)} values, expected 4. Ignoring.")
                 geometry = None

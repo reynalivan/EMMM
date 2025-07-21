@@ -551,6 +551,7 @@ class ModListViewModel(QObject):
         if not self.current_game or not self.current_game.game_type:
             return {"to_create": 0, "to_update": 0}
 
+        logger.info("Starting reconciliation preview for current game.")
         game_type = self.current_game.game_type
         all_local_items = self.master_list
         all_db_objects = self.database_service.get_all_objects_for_game(game_type)

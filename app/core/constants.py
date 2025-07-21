@@ -4,7 +4,7 @@ import re
 # --- Application Info ---
 APP_NAME: str = "EMM Manager"
 ORG_NAME: str = "reynalivan"
-APP_ICON_PATH: str = "app/assets/icons/logo.png"
+APP_ICON_PATH: str = "app/assets/images/icon.jpeg"
 APP_VERSION: str = "0.0.1"
 
 # --- Folder Naming Conventions ---

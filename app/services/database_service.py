@@ -64,6 +64,7 @@ class DatabaseService:
             return []
 
         try:
+            logger.info(f"Loading object data from: {file_path}")
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             # Each file is expected to have a top-level "objects" key
@@ -136,11 +137,13 @@ class DatabaseService:
         and combines data from all linked JSON files (e.g., char and other).
         """
         self._ensure_schema_is_loaded()
-        game_key = game_type
+        game_key = game_type.lower()
 
         if not self._schema_cache or game_key not in self._schema_cache:
-            return []
+            logger.warning(f"Schema for game '{game_key}' not found in the database.")
+            return None
 
+        logger.info(f"Loading all objects for game type: {game_type}")
         game_schema_data = self._schema_cache.get(game_key.lower(), {})
         object_links = game_schema_data.get("object_link", {})
 
@@ -158,6 +161,7 @@ class DatabaseService:
             logger.info(f"Loading '{category}' objects for '{game_type}' from: {full_path}")
 
             # Load objects from the file and extend the main list
+            logger.debug(f"Loading objects from: {full_path}")
             objects_from_file = self._load_objects_from_file(full_path)
             all_objects.extend(objects_from_file)
 
@@ -167,6 +171,7 @@ class DatabaseService:
         """
         [REVISED] Finds metadata for a specific object, case-insensitively.
         """
+        logger.info(f"Searching for metadata for object '{object_name}' in game '{game_type}'")
         all_objects = self.get_all_objects_for_game(game_type)
         object_name_lower = object_name.lower()
 

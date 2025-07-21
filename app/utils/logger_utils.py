@@ -85,9 +85,36 @@ class ColoredFormatter(logging.Formatter):
         return log_entry
 
 
-def setup_logger():
+# Global variable to store the logger instance
+_logger_instance = None
+_custom_log_dir = None
+
+
+def set_log_directory(log_dir):
+    """
+    Set custom log directory. Must be called before first use of logger.
+    This allows main.py to set the correct log directory.
+    """
+    global _custom_log_dir
+    _custom_log_dir = log_dir
+
+
+def get_logger():
+    """
+    Get the logger instance. This ensures all modules get the same logger instance.
+    Uses lazy initialization - logger is only created when first accessed.
+    """
+    global _logger_instance
+    if _logger_instance is None:
+        _logger_instance = setup_logger(_custom_log_dir)
+    return _logger_instance
+
+
+def setup_logger(log_dir=None):
     # === Setup log folder & file name ===
-    log_dir = Path(__file__).resolve().parent.parent / "logs"
+    if log_dir is None:
+        log_dir = Path(__file__).resolve().parent.parent / "logs"
+    log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H-%M-%S")
@@ -140,9 +167,39 @@ def setup_logger():
     return logger
 
 
-# Initialize once for global use
-logger = setup_logger()
-__all__ = ["logger"]
+def reconfigure_logger(log_dir):
+    """
+    Reconfigure the existing logger with a new log directory.
+    This function should be called from main.py after the log_path is available.
+    """
+    global _logger_instance, _custom_log_dir
+    _custom_log_dir = log_dir
+    # Force recreation of logger with new directory
+    _logger_instance = setup_logger(log_dir)
+    return _logger_instance
+
+
+# Create a logger proxy that uses lazy initialization
+class LoggerProxy:
+    """
+    A proxy class that forwards all logging calls to the actual logger instance.
+    This ensures lazy initialization while maintaining the same interface.
+    """
+
+    def __getattr__(self, name):
+        # Forward all attribute access to the actual logger
+        actual_logger = get_logger()
+        return getattr(actual_logger, name)
+
+    def __call__(self, *args, **kwargs):
+        # Allow the proxy to be called like a function if needed
+        actual_logger = get_logger()
+        return actual_logger(*args, **kwargs)
+
+
+# Create the logger proxy instance - this doesn't create the actual logger yet
+logger = LoggerProxy()
+__all__ = ["logger", "reconfigure_logger", "set_log_directory"]
 
 # Example usage (can be removed if not needed in this file)
 if __name__ == "__main__":
