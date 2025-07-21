@@ -1044,28 +1044,52 @@ class ModService:
         """
         if cancel_flag:
             return {"status": "cancelled"}
+        final_output_name = f"{DEFAULT_DISABLED_PREFIX}{output_name}"
+        output_path = parent_path / final_output_name
 
-        output_path = parent_path / output_name
         if output_path.exists():
             return {"success": False, "error": f"Folder '{output_name}' already exists."}
 
         try:
+            # --- Case 1: Source is a standard Folder ---
             if source_path.is_dir():
-                # --- Case 1: Source is a Folder ---
                 logger.info(f"Copying folder from '{source_path}' to '{output_path}'")
                 shutil.copytree(source_path, output_path)
 
+            # --- Case 2: Source is an Archive ---
             elif source_path.is_file():
-                # --- Case 2: Source is an Archive ---
-                logger.info(f"Extracting archive '{source_path.name}' to '{output_path}'")
-                # Use a temporary directory for safe extraction
+                logger.info(f"Extracting archive '{source_path.name}'...")
+
                 with tempfile.TemporaryDirectory(prefix="EMM_extract_") as temp_dir:
                     temp_path = Path(temp_dir)
-                    patoolib.extract_archive(str(source_path), outdir=str(temp_path))
 
-                    # Logic to find the actual mod content within the temp folder
-                    # (This can be enhanced later, e.g., if content is in a subfolder)
-                    shutil.copytree(temp_path, output_path)
+                    # 1. Initial Extraction (This will catch password errors)
+                    patoolib.extract_archive(str(source_path), outdir=str(temp_path), verbosity=-1, interactive=False)
+
+                    # 2. Analyze the contents of the temporary directory
+                    extracted_contents = os.listdir(temp_path)
+
+                    # --- Handle Empty Archive ---
+                    if not extracted_contents:
+                        raise ValueError("The provided archive is empty.")
+
+                    # --- Smart Extraction Logic ---
+                    source_for_copy = temp_path
+                    if len(extracted_contents) == 1:
+                        single_item_path = temp_path / extracted_contents[0]
+                        if single_item_path.is_dir():
+                            # Case 2a: Single root folder inside the archive.
+                            # We'll copy the *contents* of this folder.
+                            logger.info(f"Archive contains a single root folder ('{extracted_contents[0]}'). Copying its contents.")
+                            source_for_copy = single_item_path
+
+                    # Case 2b (else): Multiple items at the root.
+                    # We'll copy everything from the temp directory root.
+                    if source_for_copy == temp_path:
+                        logger.info("Archive contains multiple root items. Copying all extracted content.")
+
+                    # 3. Final Copy Operation
+                    shutil.copytree(source_for_copy, output_path)
 
             # Final check for cancellation before returning success
             if cancel_flag:
@@ -1074,26 +1098,30 @@ class ModService:
                     shutil.rmtree(output_path)
                 return {"status": "cancelled"}
 
-            # --- Create a default info.json ---
-            output_name_str = str(output_name)
-            self._write_json(output_path / INFO_JSON_NAME, {"actual_name": output_name_str})
+            # Create a default info.json
+            self._write_json(output_path / INFO_JSON_NAME, {"actual_name": output_name})
 
             return {
                 "success": True,
                 "skeleton_data": {
                     "id": self.system_utils.generate_item_id(output_path, parent_path),
-                    "actual_name": output_name_str,
+                    "actual_name": output_name,
                     "folder_path": output_path,
-                    "status": ModStatus.ENABLED, # New mods are enabled by default
+                    "status": ModStatus.DISABLED, # New mods are disabled by default
                     "is_pinned": False,
                     "is_skeleton": True # It's a skeleton until hydrated
                 }
             }
 
         except patoolib.util.PatoolError as e:
-            error_msg = f"Archive is corrupt or password-protected: {source_path.name}"
-            logger.error(f"{error_msg} - {e}")
-            return {"success": False, "error": error_msg}
+            error_str = str(e).lower()
+            if "password" in error_str or "incorrect password" in error_str:
+                logger.warning(f"Archive '{source_path.name}' is password-protected.")
+                return {"status": "password_required", "error": "Archive is password-protected."}
+            else:
+                error_msg = f"Archive Error: {source_path.name}. It may be corrupt."
+                logger.error(f"{error_msg} - Details: {e}")
+                return {"success": False, "error": error_msg}
         except Exception as e:
             error_msg = f"Failed to process '{source_path.name}': {e}"
             logger.error(error_msg, exc_info=True)

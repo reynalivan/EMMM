@@ -54,6 +54,7 @@ class ModListViewModel(QObject):
     path_changed = pyqtSignal(Path)
     selection_changed = pyqtSignal(bool)
     available_filters_changed = pyqtSignal(dict)
+    password_requested = pyqtSignal(dict)
 
     # ---Signals for Bulk Operations ---
     bulk_operation_started = pyqtSignal()
@@ -1016,10 +1017,26 @@ class ModListViewModel(QObject):
         [REVISED] Handles the creation result with intelligent logic for both
         single (manual) and bulk (sync) creation scenarios.
         """
-        failed_items = result.get("failed", [])
         successful_items = result.get("success", [])
+        failed_items = result.get("failed", [])
 
-        # Always unlock the UI first
+        # --- NEW: Password Handling Logic ---
+        password_tasks = []
+        other_failures = []
+        for failure in failed_items:
+            # Check if the reason for failure was a password request
+            if failure.get("reason") == "Archive is password-protected.":
+                password_tasks.append(failure['task'])
+            else:
+                other_failures.append(failure)
+
+        # If any tasks require a password, emit a signal for the first one
+        if password_tasks:
+            self.password_requested.emit(password_tasks[0])
+            # We stop here and wait for the user to provide a password
+            return
+
+        # If there are no password issues, proceed with the normal flow
         self.bulk_operation_finished.emit(failed_items)
 
         # --- Smart UX Logic ---
@@ -1053,6 +1070,27 @@ class ModListViewModel(QObject):
             logger.info("Creation task finished, reloading object list...")
             self.load_items(self.navigation_root, self.current_game, is_new_root=True)
 
+
+    def retry_creation_with_password(self, task: dict, password: str):
+        """
+        [NEW] Re-runs a single creation task, this time providing the password.
+        """
+        if not self.current_path: return
+
+        logger.info(f"Retrying creation for '{task['source_path'].name}' with a password.")
+        self.bulk_operation_started.emit()
+
+        # The workflow service will now need to accept an optional password
+        worker = Worker(
+            self.workflow_service.execute_creation_workflow,
+            [task], # Pass as a list with one item
+            self.current_path,
+            [False], # New cancel flag
+            password=password # Pass the password as a keyword argument
+        )
+        worker.signals.result.connect(self._on_creation_finished)
+        # ... (connect other signals)
+        QThreadPool.globalInstance().start(worker)
 
     def _on_randomize_finished(self, result: dict):
         """Handles the result of a randomize operation (Flow 6.2.B)."""

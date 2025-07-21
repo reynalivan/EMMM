@@ -291,7 +291,7 @@ class WorkflowService:
 
         return result_summary
 
-    def execute_creation_workflow(self, tasks: list, parent_path: Path, cancel_flag: List[bool], progress_callback=None) -> dict:
+    def execute_creation_workflow(self, tasks: list, parent_path: Path, cancel_flag: List[bool], progress_callback=None, **kwargs) -> dict:
         """
         [NEW] Iterates through creation tasks, calling the mod_service to
         copy or extract each one. Checks for cancellation between each task.
@@ -315,7 +315,7 @@ class WorkflowService:
                 progress_callback.emit(idx + 1, total_tasks)
 
 
-            result = self.mod_service.create_mod_from_source(source_path, output_name, parent_path, cancel_flag[0])
+            result = self.mod_service.create_mod_from_source(source_path, output_name, parent_path, cancel_flag[0], **kwargs)
 
             if result.get("success"):
                 successful_items.append(result.get("skeleton_data"))

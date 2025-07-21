@@ -15,6 +15,7 @@ class CreationTaskWidget(QWidget):
         super().__init__(parent)
         self.task_data = task_data
         self._is_valid = True
+        self.existing_names_lower: list[str] = []
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
@@ -36,17 +37,37 @@ class CreationTaskWidget(QWidget):
         self.name_edit.textChanged.connect(self.validate)
 
     def validate(self):
-        # This is a simplified validation. A more robust one would check for duplicates.
+        """
+        [REVISED] Validates the input name against illegal characters
+        and the list of existing names.
+        """
         name = self.name_edit.text().strip()
+        is_currently_valid = True
+
         if not name or self.ILLEGAL_CHAR_PATTERN.search(name):
-            self._is_valid = False
-            self.name_edit.setProperty('state', 'error') # Visual feedback
+            is_currently_valid = False
+            self.name_edit.setProperty('state', 'error')
+        elif name.lower() in self.existing_names_lower:
+            # Check for duplicates
+            is_currently_valid = False
+            self.name_edit.setProperty('state', 'error')
+            self.name_edit.setToolTip("This name already exists in the destination folder.")
         else:
-            self._is_valid = True
+            is_currently_valid = True
             self.name_edit.setProperty('state', '')
+            self.name_edit.setToolTip("")
+
+        # Only emit the signal if the validity state has actually changed
+        if self._is_valid != is_currently_valid:
+            self._is_valid = is_currently_valid
+            self.validation_changed.emit()
 
         self.name_edit.setStyle(QApplication.style())
-        self.validation_changed.emit()
+
+    def set_existing_names(self, names: list[str]):
+        """Receives the list of existing names from the parent dialog."""
+        self.existing_names_lower = [name.lower() for name in names]
+        self.validate() # Re-validate with the new list
 
     def is_valid(self) -> bool:
         return self._is_valid

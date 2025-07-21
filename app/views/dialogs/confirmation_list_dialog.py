@@ -12,7 +12,7 @@ class ConfirmationListDialog(QDialog):
     to edit names and confirm before starting the main process.
     """
 
-    def __init__(self, tasks: List[dict], parent=None):
+    def __init__(self, tasks: List[dict], existing_names: List[str], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Confirm Mod Creation")
         self.setMinimumWidth(500)
@@ -27,6 +27,7 @@ class ConfirmationListDialog(QDialog):
         for task in tasks:
             list_item = QListWidgetItem(self.list_widget)
             widget = CreationTaskWidget(task)
+            widget.set_existing_names(existing_names)
             widget.validation_changed.connect(self._on_validation_changed)
 
             list_item.setSizeHint(widget.sizeHint())
