@@ -1,12 +1,19 @@
 # app/services/mod_service.py
+import shutil
+import time
 import uuid
 import os
 import json
+import patoolib
+import tempfile
 import hashlib
 import dataclasses
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List
 from app.utils.system_utils import SystemUtils
+from PyQt6.QtGui import QImage
+from PIL import Image
+
 
 # Import models
 from app.models.mod_item_model import (
@@ -48,11 +55,13 @@ class ModService:
         database_service: DatabaseService,
         image_utils: ImageUtils,
         system_utils: SystemUtils,
+        app_path: Path
     ):
         # --- Injected Services & Utilities ---
         self.database_service = database_service
         self.image_utils = image_utils
         self.system_utils = system_utils
+        self._app_path = app_path
 
     # --- Loading & Hydration ---
     def _parse_folder_name(self, folder_name: str) -> Tuple[str, ModStatus, bool]:
@@ -171,17 +180,16 @@ class ModService:
                 properties = {}
                 needs_json_update = False
 
+                # 1. Load local properties.json first
                 if props_path.is_file():
                     try:
                         with open(props_path, "r", encoding="utf-8") as f:
                             properties = json.load(f)
                     except json.JSONDecodeError:
-                        logger.warning(
-                            f"{PROPERTIES_JSON_NAME} for '{skeleton_item.actual_name}' is corrupted. Overwriting."
-                        )
-                        needs_json_update = True
-                else:
-                    needs_json_update = True
+                        logger.warning(f"{PROPERTIES_JSON_NAME} for '{skeleton_item.actual_name}' is corrupted. Rebuilding.")
+                        properties = {} # Treat as empty if corrupt
+
+                # 2. Check if essential data is missing for this type
 
                 # --- Reality Check (Suffix Logic) ---
                 found_thumb_path: Path | None = None
@@ -207,44 +215,31 @@ class ModService:
                     properties["thumbnail_path"] = found_thumb_path.name
                     needs_json_update = True
 
+                # 5. If data was supplemented or thumbnail path changed, save the complete properties.json
                 if needs_json_update:
                     self._write_json(props_path, properties)
 
-                # Get other metadata
-                metadata = (
-                    self.database_service.get_metadata_for_object(
-                        game_name, skeleton_item.actual_name
-                    )
-                    or {}
-                )
-
+                # 6. Build the final payload using the finalized 'properties' dictionary
                 data_payload = {
+                    "is_skeleton": False,
                     "tags": properties.get("tags", []),
                     "thumbnail_path": (
                         skeleton_item.folder_path / p
                         if (p := properties.get("thumbnail_path"))
                         else None
                     ),
-                    "is_skeleton": False,
                 }
 
-                # Add attributes specific to Character or Generic types
                 if isinstance(skeleton_item, CharacterObjectItem):
-                    data_payload.update(
-                        {
-                            "gender": metadata.get("gender"),
-                            "rarity": metadata.get("rarity"),
-                            "element": metadata.get("element"),
-                            "weapon": metadata.get("weapon"),
-                            "region": metadata.get("region"),
-                        }
-                    )
+                    data_payload.update({
+                        "rarity": properties.get("rarity"),
+                        "element": properties.get("element"),
+                        "gender": properties.get("gender"),
+                        "weapon": properties.get("weapon"),
+                        "region": properties.get("region"),
+                    })
                 elif isinstance(skeleton_item, GenericObjectItem):
-                    data_payload.update(
-                        {
-                            "subtype": metadata.get("subtype"),
-                        }
-                    )
+                    data_payload.update({"subtype": properties.get("subtype")})
 
                 return dataclasses.replace(skeleton_item, **data_payload)
 
@@ -399,20 +394,142 @@ class ModService:
             logger.critical(error_msg, exc_info=True)
             return {"success": False, "error": error_msg}
 
-    def toggle_pin_status(self, item: object) -> dict:
-        """Flow 6.3: Pins/unpins a mod by renaming its folder with a suffix."""
-        # TODO: Implement actual pin/unpin logic
-        return {}
+    def toggle_pin_status(self, item: BaseModItem) -> dict:
+        """
+        [NEW] Toggles the pinned state of an item by renaming its folder
+        and updating the 'is_pinned' flag in its JSON file.
+        """
+        # Determine the correct JSON file based on the item's context
+        is_objectlist_item = isinstance(item, ObjectItem)
+        json_filename = PROPERTIES_JSON_NAME if is_objectlist_item else INFO_JSON_NAME
 
-    def rename_item(self, item: object, new_name: str) -> dict:
-        """Flow 4.2.A: Renames a mod folder and updates its internal 'actual_name' in JSON."""
-        # TODO: Implement actual rename logic
-        return {}
+        original_path = item.folder_path
 
-    def delete_item(self, item: object) -> dict:
-        """Flow 4.2.B: Moves a mod folder to the system's recycle bin."""
-        # TODO: Implement actual delete logic
-        return {}
+        try:
+            # 1. Determine the new state and construct the new folder name
+            new_pin_status = not item.is_pinned
+            prefix = DEFAULT_DISABLED_PREFIX if item.status == ModStatus.DISABLED else ""
+            suffix = PIN_SUFFIX if new_pin_status else "" # Add or remove the _pin suffix
+
+            new_folder_name = f"{prefix}{item.actual_name}{suffix}"
+            new_path = original_path.with_name(new_folder_name)
+
+            # 2. Rename the folder
+            logger.info(f"Toggling pin status: Renaming '{original_path.name}' to '{new_path.name}'")
+            os.rename(original_path, new_path)
+
+            # 3. Update the JSON file inside the newly renamed folder
+            json_file_path = new_path / json_filename
+            properties = {}
+            if json_file_path.is_file():
+                with open(json_file_path, "r", encoding="utf-8") as f:
+                    properties = json.load(f)
+
+            properties['is_pinned'] = new_pin_status
+            self._write_json(json_file_path, properties)
+
+            # 4. Return the new state
+            updated_data = {
+                "folder_path": new_path,
+                "is_pinned": new_pin_status
+            }
+            new_item = dataclasses.replace(item, **updated_data)
+            return {"success": True, "data": new_item, "item_id": item.id}
+
+        except FileExistsError:
+            error_msg = f"A folder named '{new_path.name}' already exists."
+            return {"success": False, "error": error_msg, "item_id": item.id}
+        except Exception as e:
+            error_msg = f"Failed to toggle pin status for '{item.actual_name}': {e}"
+            logger.error(error_msg, exc_info=True)
+            # Attempt to roll back if rename was successful but JSON update failed
+            if new_path.exists() and not original_path.exists():
+                os.rename(new_path, original_path)
+            return {"success": False, "error": error_msg, "item_id": item.id}
+
+    def rename_item(self, item: BaseModItem, new_name: str) -> dict:
+        """
+        [REVISED] Renames a mod folder and its internal JSON file using a safer
+        'read -> rename -> write' sequence to avoid file lock issues.
+        """
+        is_objectlist_item = isinstance(item, ObjectItem)
+        json_filename = PROPERTIES_JSON_NAME if is_objectlist_item else INFO_JSON_NAME
+
+        original_path = item.folder_path
+        json_file_path_original = original_path / json_filename
+
+        # --- THE CORE FIX: Read data BEFORE any file system modifications ---
+        try:
+            if json_file_path_original.is_file():
+                with open(json_file_path_original, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            else:
+                # If the JSON doesn't exist, start with an empty dictionary
+                data = {}
+        except Exception as e:
+            error_msg = f"Failed to read JSON file before renaming: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}
+        # --- By this point, the file handle is closed and released ---
+
+        # Update the name in memory
+        data["actual_name"] = new_name
+
+        # Construct the new path
+        prefix = DEFAULT_DISABLED_PREFIX if item.status == ModStatus.DISABLED else ""
+        suffix = PIN_SUFFIX if item.is_pinned else ""
+        new_folder_name = f"{prefix}{new_name}{suffix}"
+        new_path = original_path.with_name(new_folder_name)
+
+        try:
+            logger.info(f"Renaming folder from '{original_path.name}' to '{new_path.name}'")
+
+            # Add a tiny delay to give the OS time to release any lingering handles
+            time.sleep(0.05)
+
+            # 1. Rename the folder on the filesystem
+            os.rename(original_path, new_path)
+
+            # 2. Write the modified data (already in memory) to the new location
+            json_file_path_new = new_path / json_filename
+            self._write_json(json_file_path_new, data)
+
+            # Return the new state
+            updated_data = {"folder_path": new_path, "actual_name": new_name}
+            new_item = dataclasses.replace(item, **updated_data)
+            return {"success": True, "data": new_item, "item_id": item.id}
+
+        except FileExistsError:
+            error_msg = f"A folder named '{new_path.name}' already exists."
+            logger.warning(error_msg)
+            return {"success": False, "error": str(e), "item_id": item.id}
+        except Exception as e:
+            # Attempt to roll back if something went wrong
+            if new_path.exists() and not original_path.exists():
+                logger.error(f"Error during rename process. Attempting to roll back folder rename...")
+                os.rename(new_path, original_path)
+
+            error_msg = f"Failed to rename item: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": str(e), "item_id": item.id}
+
+    def delete_item(self, item: BaseModItem) -> dict:
+        """
+        [NEW] Moves an item's folder to the system's recycle bin
+        by delegating to SystemUtils.
+        """
+        logger.info(f"Request to move folder to recycle bin: {item.folder_path}")
+        try:
+            self.system_utils.move_to_recycle_bin(item.folder_path)
+
+            logger.info(f"Successfully moved '{item.actual_name}' to recycle bin.")
+            return {"success": True, "item_id": item.id, "item_name": item.actual_name}
+
+        except Exception as e:
+            error_msg = f"Failed to move '{item.actual_name}' to recycle bin: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg, "item_id": item.id}
+
 
     # --- Creation Actions ---
     def create_foldergrid_item(self, parent_path: Path, task: dict) -> dict:
@@ -654,47 +771,94 @@ class ModService:
 
     def create_manual_object(self, parent_path: Path, object_data: dict) -> dict:
         """
-        Flow 4.1.B Step 5: Creates a new object folder and its properties.json file.
-        This is the core filesystem operation for manual object creation.
+        [FINAL REVISION] Creates a new object folder, populates properties.json,
+        and correctly processes a thumbnail from either a file path or clipboard image data.
         """
+        folder_name = object_data.get("name")
+        if not folder_name:
+            # This case should be prevented by the dialog's validation, but as a safeguard:
+            return {"success": False, "error": "Folder name cannot be empty."}
+
+        folder_path = parent_path / folder_name
+
         try:
-            folder_name = object_data.get("name")
-            if not folder_name:
-                raise ValueError("Folder name is missing in object data.")
+            logger.info(f"Ensuring object folder exists at: {folder_path}")
+            folder_path.mkdir(exist_ok=True)
 
-            folder_path = parent_path / folder_name
-            logger.info(f"Attempting to create new object folder at: {folder_path}")
+            # --- Thumbnail Processing Logic ---
+            # Prioritize a manually selected source (from dialog) over a DB source.
+            thumbnail_source = object_data.get("thumbnail_source")
+            db_thumb_path_str = object_data.get("thumbnail_path")
+            final_thumb_name = ""
 
-            # Create the main folder
-            folder_path.mkdir(exist_ok=False)  # Fails if folder already exists
+            if thumbnail_source or db_thumb_path_str:
+                try:
+                    dest_thumb_path = folder_path / "_thumb.png"
 
-            # Prepare data for properties.json
+                    if thumbnail_source:
+                        if isinstance(thumbnail_source, Path):
+                            # Case 1: The source is a file Path from the "Browse..." button
+                            logger.info(f"Copying thumbnail from path: {thumbnail_source}")
+                            # Optional: Add image compression via ImageUtils here before copying
+                            shutil.copy(thumbnail_source, dest_thumb_path)
+                            final_thumb_name = dest_thumb_path.name
+
+                        elif isinstance(thumbnail_source, Image.Image):
+                            # Case 2: Source is a PIL Image object from "Paste"
+                            logger.info("Saving thumbnail from clipboard (PIL Image) data.")
+                            thumbnail_source.save(dest_thumb_path, "PNG")
+                            final_thumb_name = dest_thumb_path.name
+
+                        elif isinstance(thumbnail_source, QImage):
+                            # Case 3: The source is QImage data from "Paste"
+                            logger.info("Saving thumbnail from clipboard image data.")
+                            # QImage has a built-in save method
+                            if thumbnail_source.save(str(dest_thumb_path), "PNG"):
+                                final_thumb_name = dest_thumb_path.name
+                            else:
+                                logger.error(f"Failed to save QImage to {dest_thumb_path}")
+                    elif db_thumb_path_str:
+                        # Case 2: Source is a path string from a database sync task
+                        source_thumb_path = self._app_path / Path(db_thumb_path_str)
+                        if source_thumb_path.is_file():
+                            logger.info(f"Copying database thumbnail from path: {source_thumb_path}")
+                            shutil.copy(source_thumb_path, dest_thumb_path)
+                            final_thumb_name = dest_thumb_path.name
+                        else:
+                            logger.warning(f"Database thumbnail not found, skipping copy: {source_thumb_path}")
+
+                except Exception as e:
+                    logger.error(f"Failed to process thumbnail for '{folder_name}': {e}", exc_info=True)
+                    # Continue without a thumbnail if processing fails
+            # --- End of Thumbnail Processing ---
+
+            # --- Prepare properties.json data ---
             properties = {
-                "id": f"emm_generated_{folder_name.lower().replace(' ', '_')}", # Example ID
-                "object_type": object_data.get("object_type", "Other"),
+                "id": f"emm-obj-{uuid.uuid4()}",
                 "actual_name": folder_name,
                 "is_pinned": False,
-                "thumbnail_path": "", # Initially no thumbnail
+                "object_type": object_data.get("object_type", "Other"),
+                "thumbnail_path": final_thumb_name, # Use the final, processed thumbnail name
                 "tags": object_data.get("tags", []),
-                "gender": object_data.get("gender"),
+                # Get all other potential metadata from the creation task
                 "rarity": object_data.get("rarity"),
                 "element": object_data.get("element"),
+                "gender": object_data.get("gender"),
+                "weapon": object_data.get("weapon"),
                 "subtype": object_data.get("subtype"),
+                "region": object_data.get("region"),
+                "release_date": object_data.get("release_date"),
             }
 
-            # Write properties.json
-            json_path = folder_path / "properties.json"
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(properties, f, indent=4)
+            # Remove keys with None values to keep the JSON file clean
+            properties = {k: v for k, v in properties.items() if v is not None}
 
-            logger.info(f"Successfully created object '{folder_name}'.")
-            # Return success with the path to the newly created folder
+            # Write the final properties.json file
+            self._write_json(folder_path / PROPERTIES_JSON_NAME, properties)
+
+            logger.info(f"Successfully created object '{folder_name}' with full metadata.")
             return {"success": True, "data": {"folder_path": folder_path}}
 
-        except FileExistsError:
-            error_msg = f"Folder '{folder_name}' already exists."
-            logger.warning(error_msg)
-            return {"success": False, "error": error_msg}
         except PermissionError:
             error_msg = "Permission denied. Could not create folder."
             logger.error(error_msg, exc_info=True)
@@ -703,3 +867,339 @@ class ModService:
             error_msg = f"An unexpected error occurred: {e}"
             logger.critical(error_msg, exc_info=True)
             return {"success": False, "error": error_msg}
+
+    def convert_object_type(self, item_id: str, item_path: Path, new_type_str: str) -> dict:
+        """
+        Changes the 'object_type' within an item's properties.json file.
+        This is an atomic file operation.
+        """
+        props_path = item_path / PROPERTIES_JSON_NAME
+
+        try:
+            # 1. Read the existing properties.json
+            if not props_path.is_file():
+                # If the file doesn't exist, create a basic structure
+                logger.warning(f"'{PROPERTIES_JSON_NAME}' not found for item at '{item_path}'. Creating a new one.")
+                properties = {}
+            else:
+                with open(props_path, "r", encoding="utf-8") as f:
+                    properties = json.load(f)
+
+            # 2. Update the object_type value
+            logger.info(f"Converting object '{item_path.name}' to type '{new_type_str}'.")
+            properties["object_type"] = new_type_str
+
+            # 3. Write the changes back to the file
+            self._write_json(props_path, properties)
+
+            # Return success
+            return {"success": True, "item_id": item_id}
+
+        except (IOError, json.JSONDecodeError) as e:
+            error_msg = f"Failed to read or write {props_path}: {e}"
+            logger.error(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during type conversion: {e}"
+            logger.critical(error_msg, exc_info=True)
+            return {"success": False, "error": error_msg}
+
+    def update_object_properties_from_db(self, item: ObjectItem, db_data: dict) -> dict:
+        """
+        [NEW] Updates an object's local properties.json with data from a
+        matched database entry and copies the thumbnail.
+        """
+        props_path = item.folder_path / PROPERTIES_JSON_NAME
+        properties = {}
+
+        # 1. Read existing local data
+        if props_path.is_file():
+            with open(props_path, "r", encoding="utf-8") as f:
+                properties = json.load(f)
+
+        # 2. Merge data: DB data is the base, local data overwrites it
+        # This preserves local settings like 'is_pinned'
+        final_data = db_data.copy()
+        final_data.update(properties)
+
+        # 3. Handle thumbnail copy
+        source_thumb_path_str = db_data.get("thumbnail_path")
+        if source_thumb_path_str:
+            try:
+                source_thumb_path = self._app_path / Path(source_thumb_path_str) # Assuming self._app_path exists
+                dest_thumb_filename = f"_thumb{source_thumb_path.suffix}"
+                dest_thumb_path = item.folder_path / dest_thumb_filename
+
+                if source_thumb_path.is_file():
+                    shutil.copy(source_thumb_path, dest_thumb_path)
+                    final_data["thumbnail_path"] = dest_thumb_filename
+                else:
+                    logger.warning(f"DB thumbnail not found: {source_thumb_path}")
+            except Exception as e:
+                logger.error(f"Failed to copy DB thumbnail for '{item.actual_name}': {e}")
+
+        # 4. Write the updated and merged data back to properties.json
+        try:
+            self._write_json(props_path, final_data)
+            return {"success": True, "item_id": item.id}
+        except Exception as e:
+            error_msg = f"Failed to write updated properties for '{item.actual_name}': {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg, "item_id": item.id}
+
+    def update_object(self, item: ObjectItem, update_data: dict) -> dict:
+        """
+        [NEW] Updates an object's folder and properties.json file based on
+        the provided data from the edit dialog.
+        """
+        original_path = item.folder_path
+        new_name = update_data.get("name", item.actual_name)
+
+        current_path = original_path
+        needs_rename = new_name != item.actual_name
+
+        try:
+            # --- 1. Handle Folder Rename (if name changed) ---
+            if needs_rename:
+                prefix = DEFAULT_DISABLED_PREFIX if item.status == ModStatus.DISABLED else ""
+                suffix = PIN_SUFFIX if item.is_pinned else ""
+                new_folder_name = f"{prefix}{new_name}{suffix}"
+                new_path = original_path.with_name(new_folder_name)
+
+                logger.info(f"Renaming object folder from '{original_path.name}' to '{new_path.name}'")
+                os.rename(original_path, new_path)
+                current_path = new_path # Use the new path for subsequent operations
+
+            # --- 2. Read existing JSON data ---
+            json_filename = PROPERTIES_JSON_NAME
+            props_path = current_path / json_filename
+            properties = {}
+            if props_path.is_file():
+                with open(props_path, "r", encoding="utf-8") as f:
+                    properties = json.load(f)
+
+            # --- 3. Update properties with new data ---
+            properties.update({
+                "actual_name": new_name,
+                "object_type": update_data.get("object_type"),
+                "rarity": update_data.get("rarity"),
+                "element": update_data.get("element"),
+                "gender": update_data.get("gender"),
+                "weapon": update_data.get("weapon"),
+                "subtype": update_data.get("subtype"),
+                "tags": update_data.get("tags", []),
+            })
+
+            # --- 4. Process new thumbnail if provided ---
+            thumbnail_source = update_data.get("thumbnail_source")
+            if thumbnail_source:
+                dest_thumb_path = current_path / "_thumb.png"
+                if isinstance(thumbnail_source, Path):
+                    shutil.copy(thumbnail_source, dest_thumb_path)
+                elif isinstance(thumbnail_source, (Image.Image, QImage)):
+                    thumbnail_source.save(str(dest_thumb_path), "PNG")
+
+                properties["thumbnail_path"] = dest_thumb_path.name
+                logger.info(f"Updated thumbnail for '{new_name}'.")
+
+            # --- 5. Write updated JSON back to disk ---
+            properties = {k: v for k, v in properties.items() if v is not None}
+            self._write_json(props_path, properties)
+
+            logger.info(f"Successfully updated object '{new_name}'.")
+            return {"success": True, "item_id": item.id}
+
+        except Exception as e:
+            error_msg = f"Failed to update object '{item.actual_name}': {e}"
+            logger.error(error_msg, exc_info=True)
+            # Attempt to roll back rename if it happened
+            if needs_rename and current_path.exists() and not original_path.exists():
+                os.rename(current_path, original_path)
+            return {"success": False, "error": error_msg, "item_id": item.id}
+
+    def _find_ini_recursively(self, root_path: Path, max_depth: int) -> bool:
+        """
+        [NEW HELPER] Recursively searches for any .ini file within a directory
+        up to a specified maximum depth.
+        """
+        # We check from depth 0 (the root itself) to max_depth
+        for i in range(max_depth + 1):
+            # Create a glob pattern for the current depth
+            # '*/' * i creates things like '', '*/', '*/*/', etc.
+            pattern = '*/' * i + '*.ini'
+            try:
+                # Check if any file matches the pattern at this depth
+                if next(root_path.glob(pattern), None):
+                    return True # Found an .ini file, no need to search further
+            except Exception as e:
+                # This can happen with very long paths or permission issues
+                logger.warning(f"Error while scanning for .ini files at depth {i}: {e}")
+                return False # Stop searching on error
+        return False # No .ini file found within the depth limit
+
+    def analyze_source_path(self, path: Path) -> dict:
+        """
+        [NEW] Performs a quick, non-blocking analysis of a source path
+        (folder or archive) to propose a creation task.
+        """
+        proposed_name = ""
+        has_ini_warning = False
+        is_valid = False
+        error_message = ""
+
+        try:
+            if path.is_dir():
+                is_valid = True
+                proposed_name = path.name
+                # Check for .ini files in the top level of the folder
+                if not self._find_ini_recursively(path, max_depth=5):
+                    has_ini_warning = True
+
+            elif path.is_file() and patoolib.is_archive(str(path)):
+                is_valid = True
+                proposed_name = path.stem # Name without extension
+                # Safely extract to a temporary directory to check for .ini files
+                with tempfile.TemporaryDirectory(prefix="EMM_analyze_") as temp_dir:
+                    temp_path = Path(temp_dir)
+                    patoolib.extract_archive(str(path), outdir=str(temp_path), verbosity=-1)
+
+                    # Check for .ini files in the extracted contents
+                    if not self._find_ini_recursively(temp_path, max_depth=5):
+                        has_ini_warning = True
+                # The temporary directory is automatically cleaned up here
+            else:
+                error_message = "Unsupported file type."
+
+        except patoolib.util.PatoolError as e:
+            logger.warning(f"Could not analyze archive {path.name}: {e}")
+            error_message = "Corrupt or encrypted archive."
+        except Exception as e:
+            logger.error(f"Unexpected error analyzing path {path}: {e}")
+            error_message = "An unexpected error occurred."
+
+        return {
+            "source_path": path,
+            "proposed_name": proposed_name,
+            "has_ini_warning": has_ini_warning,
+            "is_valid": is_valid,
+            "error_message": error_message,
+        }
+
+    def create_mod_from_source(self, source_path: Path, output_name: str, parent_path: Path, cancel_flag: List[bool]) -> dict:
+        """
+        [NEW] Creates a new mod folder by either copying a directory or
+        extracting an archive. This operation is cancellable.
+        """
+        if cancel_flag:
+            return {"status": "cancelled"}
+        final_output_name = f"{DEFAULT_DISABLED_PREFIX}{output_name}"
+        output_path = parent_path / final_output_name
+
+        if output_path.exists():
+            return {"success": False, "error": f"Folder '{output_name}' already exists."}
+
+        try:
+            # --- Case 1: Source is a standard Folder ---
+            if source_path.is_dir():
+                logger.info(f"Copying folder from '{source_path}' to '{output_path}'")
+                shutil.copytree(source_path, output_path)
+
+            # --- Case 2: Source is an Archive ---
+            elif source_path.is_file():
+                logger.info(f"Extracting archive '{source_path.name}'...")
+
+                with tempfile.TemporaryDirectory(prefix="EMM_extract_") as temp_dir:
+                    temp_path = Path(temp_dir)
+
+                    # 1. Initial Extraction (This will catch password errors)
+                    patoolib.extract_archive(str(source_path), outdir=str(temp_path), verbosity=-1, interactive=False)
+
+                    # 2. Analyze the contents of the temporary directory
+                    extracted_contents = os.listdir(temp_path)
+
+                    # --- Handle Empty Archive ---
+                    if not extracted_contents:
+                        raise ValueError("The provided archive is empty.")
+
+                    # --- Smart Extraction Logic ---
+                    source_for_copy = temp_path
+                    if len(extracted_contents) == 1:
+                        single_item_path = temp_path / extracted_contents[0]
+                        if single_item_path.is_dir():
+                            # Case 2a: Single root folder inside the archive.
+                            # We'll copy the *contents* of this folder.
+                            logger.info(f"Archive contains a single root folder ('{extracted_contents[0]}'). Copying its contents.")
+                            source_for_copy = single_item_path
+
+                    # Case 2b (else): Multiple items at the root.
+                    # We'll copy everything from the temp directory root.
+                    if source_for_copy == temp_path:
+                        logger.info("Archive contains multiple root items. Copying all extracted content.")
+
+                    # 3. Final Copy Operation
+                    shutil.copytree(source_for_copy, output_path)
+
+            # Final check for cancellation before returning success
+            if cancel_flag:
+                logger.warning(f"Operation cancelled after processing '{output_name}'. Cleaning up...")
+                if output_path.exists():
+                    shutil.rmtree(output_path)
+                return {"status": "cancelled"}
+
+            # Create a default info.json
+            self._write_json(output_path / INFO_JSON_NAME, {"actual_name": output_name})
+
+            return {
+                "success": True,
+                "skeleton_data": {
+                    "id": self.system_utils.generate_item_id(output_path, parent_path),
+                    "actual_name": output_name,
+                    "folder_path": output_path,
+                    "status": ModStatus.DISABLED, # New mods are disabled by default
+                    "is_pinned": False,
+                    "is_skeleton": True # It's a skeleton until hydrated
+                }
+            }
+
+        except patoolib.util.PatoolError as e:
+            error_str = str(e).lower()
+            if "password" in error_str or "incorrect password" in error_str:
+                logger.warning(f"Archive '{source_path.name}' is password-protected.")
+                return {"status": "password_required", "error": "Archive is password-protected."}
+            else:
+                error_msg = f"Archive Error: {source_path.name}. It may be corrupt."
+                logger.error(f"{error_msg} - Details: {e}")
+                return {"success": False, "error": error_msg}
+        except Exception as e:
+            error_msg = f"Failed to process '{source_path.name}': {e}"
+            logger.error(error_msg, exc_info=True)
+            if output_path.exists():
+                shutil.rmtree(output_path) # Clean up partial creations
+            return {"success": False, "error": error_msg}
+
+    def cleanup_lingering_temp_folders(self):
+        """
+        [NEW] Scans the system's temporary directory for leftover folders
+        from previous sessions and removes them.
+        """
+        temp_dir = Path(tempfile.gettempdir())
+        prefix = "EMM_extract_"
+        logger.info(f"Scanning for leftover temporary folders with prefix '{prefix}' in '{temp_dir}'...")
+
+        folders_to_delete = [d for d in temp_dir.iterdir() if d.is_dir() and d.name.startswith(prefix)]
+
+        if not folders_to_delete:
+            logger.info("No leftover temporary folders found.")
+            return
+
+        deleted_count = 0
+        for folder in folders_to_delete:
+            try:
+                shutil.rmtree(folder)
+                logger.info(f"Successfully removed leftover temp folder: {folder}")
+                deleted_count += 1
+            except Exception as e:
+                logger.error(f"Failed to remove leftover temp folder {folder}: {e}")
+
+        if deleted_count > 0:
+            logger.info(f"Cleanup complete. Removed {deleted_count} leftover folder(s).")

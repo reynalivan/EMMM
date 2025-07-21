@@ -63,13 +63,15 @@ class ConfigService:
             last_active_game_id = settings.get("last_active_game_id")
             safe_mode_enabled = bool(settings.get("safe_mode_enabled", False))
 
+            launcher_path = settings.get("launcher_path")
+            auto_play_on_startup = bool(settings.get("auto_play_on_startup", False))
 
             # --- Parse [ui] object ---
             ui_prefs = data.get("ui", {})
-            geometry = tuple(ui_prefs.get("window_geometry")) if "window_geometry" in ui_prefs else None
-            splitter_sizes = tuple(ui_prefs.get("splitter_sizes")) if "splitter_sizes" in ui_prefs else None
+            geometry = tuple(ui_prefs.get("window_geometry")) if "window_geometry" in ui_prefs and ui_prefs.get("window_geometry") is not None else None
+            splitter_sizes = tuple(ui_prefs.get("splitter_sizes")) if "splitter_sizes" in ui_prefs and ui_prefs.get("splitter_sizes") is not None else None
 
-            # Validasi tambahan untuk geometry dan splitter
+            # Validate geometry and splitter_sizes
             if geometry and len(geometry) != 4:
                 logger.warning(f"window_geometry has {len(geometry)} values, expected 4. Ignoring.")
                 geometry = None
@@ -82,6 +84,8 @@ class ConfigService:
                 games=games,
                 last_active_game_id=last_active_game_id,
                 safe_mode_enabled=safe_mode_enabled,
+                launcher_path=launcher_path,
+                auto_play_on_startup=auto_play_on_startup,
                 window_geometry=geometry,
                 splitter_sizes=splitter_sizes,
                 # preset will be handled later
@@ -107,6 +111,8 @@ class ConfigService:
                 "settings": {
                     "last_active_game_id": config.last_active_game_id,
                     "safe_mode_enabled": config.safe_mode_enabled,
+                    "launcher_path": config.launcher_path,
+                    "auto_play_on_startup": config.auto_play_on_startup,
                 },
                 "ui": {
                     "window_geometry": config.window_geometry,

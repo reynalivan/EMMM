@@ -1,0 +1,48 @@
+{
+    "settings": {
+        "last_active_game_id": "b14deeaa-99eb-40f7-b05c-2ef1048f97fd",
+        "safe_mode_enabled": false,
+        "launcher_path": "E:\\Data\\XXMI Launcher\\Resources\\Bin\\XXMI Launcher.exe",
+        "auto_play_on_startup": false
+    },
+    "ui": {
+        "window_geometry": [
+            100,
+            100,
+            1440,
+            760
+        ],
+        "splitter_sizes": [
+            300,
+            600,
+            300
+        ]
+    },
+    "games": [
+        {
+            "id": "b14deeaa-99eb-40f7-b05c-2ef1048f97fd",
+            "name": "example",
+            "path": "E:\\Data\\XXMI Launcher\\Backups\\example",
+            "game_type": "gimi"
+        },
+        {
+            "id": "91cbaaf4-d025-49aa-b524-37aabe27a9b8",
+            "name": "GIMI",
+            "path": "E:\\Data\\XXMI Launcher\\GIMI\\Mods\\character",
+            "game_type": "gimi"
+        },
+        {
+            "id": "e4696499-6ea0-41e9-b22a-17b3a11961ae",
+            "name": "SRMI",
+            "path": "E:\\Data\\XXMI Launcher\\SRMI\\Mods\\SkinSelectImpact",
+            "game_type": "SRMI"
+        },
+        {
+            "id": "b4fcf81b-0fec-4d16-905e-e868107c8087",
+            "name": "WWMI",
+            "path": "E:\\Data\\XXMI Launcher\\WWMI\\Mods\\SkinSelectImpact",
+            "game_type": "WWMI"
+        }
+    ],
+    "presets": {}
+}

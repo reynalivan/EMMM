@@ -5,7 +5,7 @@ from PyQt6.QtCore import QThreadPool, Qt, QSize
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 from qfluentwidgets import SplashScreen, setTheme, Theme
-from app.utils.logger_utils import logger
+from app.utils.logger_utils import logger, set_log_directory
 from app.core.constants import APP_ICON_PATH
 from app.utils.async_utils import Worker
 
@@ -14,7 +14,7 @@ from app.core.constants import (
     APP_NAME,
     CACHE_DIR_NAME,
     CONFIG_FILE_NAME,
-    DATABASE_FILE_NAME,
+    SCHEMA_FILE_NAME,
     DEFAULT_ICONS,
     LOG_DIR_NAME,
     ORG_NAME,
@@ -61,13 +61,13 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setApplicationName("Enabled Model Mods Manager")
     setTheme(Theme.DARK)
-    logger.info("Application starting...")
+    # Note: Logger will be initialized when first used after log_path is set
 
     # --- SPLASH SCREEN SETUP ---
     # 1. Create and configure the splash screen BEFORE heavy work.
     #    The splash screen doesn't need a real parent yet, it will float on top.
     app_icon = QIcon(APP_ICON_PATH)
-    app.setWindowIcon(QIcon(":/qfluentwidgets/images/logo.png"))
+    app.setWindowIcon(app_icon)
     splash_screen = SplashScreen(app.windowIcon(), None)  # Parent can be None
     splash_screen.setIconSize(QSize(128, 128))
     splash_screen.show()
@@ -78,35 +78,37 @@ def main():
 
     # ---2. Composition Root: Create and Wire All Dependencies ---
     try:
-        app_path = Path(__file__).parent.resolve()
-        config_path = app_path / CONFIG_FILE_NAME
-        db_path = app_path / "app" / "assets" / DATABASE_FILE_NAME
-        cache_path = app_path / CACHE_DIR_NAME
-        log_path = app_path / LOG_DIR_NAME
+        if getattr(sys, 'frozen', False):
+            # If the application is run as a bundle (e.g., by PyInstaller)
+            application_path = Path(sys.executable).parent.resolve()
+        else:
+            # If running in a normal Python environment
+            application_path = Path(__file__).parent.resolve()
+
+        config_path = application_path / CONFIG_FILE_NAME
+        cache_path = application_path / CACHE_DIR_NAME
+        log_path = application_path / LOG_DIR_NAME
+        schema_path = application_path / "app" / "assets" / SCHEMA_FILE_NAME
+
 
         # Ensure necessary directories exist
         cache_path.mkdir(parents=True, exist_ok=True)
         log_path.mkdir(parents=True, exist_ok=True)
 
+        # Set the correct log directory before first logger usage
+        set_log_directory(log_path)
+        logger.info("Application starting with correct log path...")
+
         # ---Instantiate Services ---
         # Services with no or minimal dependencies first.
         config_service = ConfigService(config_path)
         game_service = GameService()
-        database_service = DatabaseService(db_path)
+        database_service = DatabaseService(schema_path=schema_path, app_path=application_path)
         ini_key_parsing_service = IniKeyParsingService()
         thumbnail_service = ThumbnailService(
             cache_dir=cache_path, default_icons=DEFAULT_ICONS
         )
 
-        # --- Run cache cleanup in the background ---
-        logger.info("Queueing thumbnail disk cache cleanup task...")
-        cleanup_worker = Worker(thumbnail_service.cleanup_disk_cache)
-
-        thread_pool = QThreadPool.globalInstance()
-        if thread_pool:
-            thread_pool.start(cleanup_worker)
-        else:
-            logger.critical("Could not get QThreadPool instance to run cache cleanup.")
 
         # Instantiate utility classes (can be passed as dependencies if needed).
         system_utils = SystemUtils()
@@ -117,10 +119,11 @@ def main():
             database_service=database_service,
             image_utils=image_utils,
             system_utils=system_utils,
+            app_path= application_path,
         )
 
         workflow_service = WorkflowService(
-            mod_service=mod_service, config_service=config_service
+            mod_service=mod_service, config_service=config_service, database_service=database_service
         )
 
         logger.info("Core services and utilities initialized.")
@@ -172,6 +175,7 @@ def main():
         preview_panel_vm=preview_panel_vm,
     )
 
+
     # ---3. Instanate the main window ---
     try:
         window = MainWindow(
@@ -182,6 +186,19 @@ def main():
     except Exception as e:
         logger.critical(f"Failed to initialize or show Main Window: {e}", exc_info=True)
         return 1
+
+    # --- Run cache cleanup in the background ---
+    logger.info("Queueing thumbnail disk cache cleanup task...")
+    cleanup_worker = Worker(thumbnail_service.cleanup_disk_cache)
+
+    thread_pool = QThreadPool.globalInstance()
+    if thread_pool:
+        thread_pool.start(cleanup_worker)
+    else:
+        logger.critical("Could not get QThreadPool instance to run cache cleanup.")
+
+    logger.info("Performing startup cleanup...")
+    mod_service.cleanup_lingering_temp_folders()
 
     # --- HIDE SPLASH SCREEN ---
     splash_screen.finish()

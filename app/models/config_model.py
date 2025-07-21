@@ -31,6 +31,8 @@ class AppConfig:
     # --- Global Settings ---
     safe_mode_enabled: bool = False
     presets: dict[str, Preset] = field(default_factory=dict)
+    launcher_path: str | None = None
+    auto_play_on_startup: bool = False
 
     # --- UI Preferences ---
     window_geometry: tuple[int, int, int, int] | None = None

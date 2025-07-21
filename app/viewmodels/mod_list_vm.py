@@ -3,6 +3,7 @@
 
 import dataclasses
 from pathlib import Path
+from typing import List
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 from PyQt6.QtGui import QPixmap
 from app.models.game_model import Game
@@ -32,10 +33,10 @@ class ModListViewModel(QObject):
     """
 
     # ---Signals for UI State & Feedback ---
-
+    creation_tasks_prepared = pyqtSignal(list)
     loading_started = pyqtSignal()
     loading_finished = pyqtSignal()
-    items_updated = pyqtSignal(list)
+    items_updated = pyqtSignal(list,object)
     item_needs_update = pyqtSignal(object)
     item_processing_started = pyqtSignal(str)
     item_processing_finished = pyqtSignal(str, bool)
@@ -47,12 +48,14 @@ class ModListViewModel(QObject):
     empty_state_changed = pyqtSignal(str, str)
     filter_state_changed = pyqtSignal(bool, int)
     clear_search_text = pyqtSignal()
-
+    manual_sync_required = pyqtSignal(str, list)
+    reconciliation_progress_updated = pyqtSignal(int, int)  # current, total
     # ---Signals for Panel-Specific UI ---
-
     path_changed = pyqtSignal(Path)
     selection_changed = pyqtSignal(bool)
     available_filters_changed = pyqtSignal(dict)
+    password_requested = pyqtSignal(dict)
+    failure_report_requested = pyqtSignal(list)
 
     # ---Signals for Bulk Operations ---
     bulk_operation_started = pyqtSignal()
@@ -60,11 +63,14 @@ class ModListViewModel(QObject):
 
     # ---Signals for Cross-ViewModel Communication ("Efek Domino") ---
     active_object_modified = pyqtSignal(object)
-    active_object_deleted = pyqtSignal()
+    active_object_deleted = pyqtSignal(str)
     foldergrid_item_modified = pyqtSignal(object)
     load_completed = pyqtSignal(bool)
     sync_confirmation_requested = pyqtSignal(list)
     game_type_setup_required = pyqtSignal(str)
+    object_created = pyqtSignal(dict)
+    list_refresh_requested = pyqtSignal()
+    exclusive_activation_confirmation_requested = pyqtSignal(dict)
 
     def __init__(
         self,
@@ -98,7 +104,8 @@ class ModListViewModel(QObject):
         self._processing_ids = set()
         self.last_selected_item_id: str | None = None
         self.active_category_filter: ModType = ModType.CHARACTER
-
+        self._item_to_select_after_load: str | None = None
+        self._active_workers = []
         self.thumbnail_service.thumbnail_generated.connect(self._on_thumbnail_generated)
 
     # ---Loading and Data Management ---
@@ -153,15 +160,12 @@ class ModListViewModel(QObject):
         self.current_load_token += 1  # Invalidate any ongoing loads
 
         # Emit signal with empty list to clear the UI
-
-        self.items_updated.emit([])
+        self.items_updated.emit([], None)
 
         # Reset navigation root
-
         self.navigation_root = None
 
         # If this is foldergrid, also clear the breadcrumb
-
         if self.context == "foldergrid":
             self.path_changed.emit(Path())
 
@@ -316,16 +320,156 @@ class ModListViewModel(QObject):
             self._on_toggle_status_error(item_id, (None, "Thread pool unavailable", ""))
 
     def toggle_pin_status(self, item_id: str):
-        """Flow 6.3: Handles pinning/unpinning a single item."""
-        pass
+        """
+        [IMPLEMENTED] Initiates the background process for pinning or unpinning an item.
+        """
+        if item_id in self._processing_ids:
+            return
+
+        item_to_pin = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_pin:
+            logger.error(f"Cannot toggle pin: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to toggle pin for '{item_to_pin.actual_name}'.")
+        self._processing_ids.add(item_id)
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(self.mod_service.toggle_pin_status, item_to_pin)
+        worker.signals.result.connect(self._on_pin_status_finished)
+        worker.signals.error.connect(
+            lambda err, id=item_id: self._on_generic_worker_error(id, err, "pin toggle")
+        )
+
+        QThreadPool.globalInstance().start(worker)
+
+
+    # --- Ganti slot _on_pin_status_finished yang sebelumnya kosong ---
+    def _on_pin_status_finished(self, result: dict):
+        """
+        [IMPLEMENTED] Handles the result of the pin/unpin operation.
+        Updates the item in the model and triggers a re-sort of the UI.
+        """
+        item_id = result.get("item_id")
+        if not item_id: return
+
+        self._processing_ids.discard(item_id)
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if result.get("success"):
+            new_item = result.get("data")
+
+            # Update the item in the master list
+            self.update_item_in_list(new_item)
+
+            # Re-apply filters AND sorting. The sorting logic will automatically
+            # move the pinned item to the top.
+            self.apply_filters_and_search()
+
+            self.toast_requested.emit("Pin status updated.", "success")
+        else:
+            self.toast_requested.emit(f"Failed to update pin status: {result.get('error')}", "error")
+
 
     def rename_item(self, item_id: str, new_name: str):
-        """Flow 4.2.A: Handles renaming an item."""
-        pass
+        """
+        Flow 6.3: Initiates the background process for renaming an item.
+        """
+        if item_id in self._processing_ids:
+            return
+
+        item_to_rename = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_rename:
+            logger.error(f"Cannot rename: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to rename '{item_to_rename.actual_name}' to '{new_name}'.")
+        self._processing_ids.add(item_id)
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(self.mod_service.rename_item, item_to_rename, new_name)
+        worker.signals.result.connect(self._on_rename_finished)
+        worker.signals.error.connect(
+            lambda error_info, id=item_id: self._on_rename_error(id, error_info)
+        )
+        QThreadPool.globalInstance().start(worker)
+
+
+    def _on_rename_finished(self, result: dict):
+        """
+        [REVISED] Handles the result of the rename operation.
+        The item_id is now retrieved from the result dictionary.
+        """
+        # The service should also return the item_id for context
+        item_id = result.get("item_id")
+        if not item_id:
+            logger.error("Rename finished but result dictionary is missing 'item_id'.")
+            # Fallback: attempt to stop all processing animations
+            self.item_processing_finished.emit("", False)
+            return
+
+        self._processing_ids.discard(item_id)
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if not result.get("success"):
+            self.toast_requested.emit(result.get("error", "An unknown error occurred."), "error")
+            return
+
+        new_item = result.get("data")
+        self.update_item_in_list(new_item)
+        self.toast_requested.emit(f"Renamed to '{new_item.actual_name}' successfully.", "success")
+
+        if self.context == CONTEXT_OBJECTLIST and self.last_selected_item_id == item_id:
+            self.active_object_modified.emit(new_item)
+
+    def _on_rename_error(self, item_id: str, error_info: tuple):
+        """
+        Handles critical failures from the rename worker thread.
+        """
+        self._processing_ids.discard(item_id)
+        # Ensure the UI is unblocked
+        self.item_processing_finished.emit(item_id, False)
+
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred while renaming item {item_id}: {value}\n{tb}")
+        self.toast_requested.emit("A critical error occurred during rename. Please check the logs.", "error")
 
     def delete_item(self, item_id: str):
-        """Flow 4.2.B: Handles deleting an item to the recycle bin."""
-        pass
+        """
+        [IMPLEMENTED] Initiates the background process for moving an item
+        to the recycle bin.
+        """
+        if item_id in self._processing_ids:
+            return
+
+        item_to_delete = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_delete:
+            logger.error(f"Cannot delete: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to delete '{item_to_delete.actual_name}'. Starting worker.")
+        self._processing_ids.add(item_id)
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(self.mod_service.delete_item, item_to_delete)
+        worker.signals.result.connect(self._on_delete_finished)
+        worker.signals.error.connect(
+            lambda error_info, id=item_id: self._on_delete_error(id, error_info)
+        )
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_delete_error(self, item_id: str, error_info: tuple):
+        """
+        [NEW] Handles critical failures from the delete worker thread.
+        """
+        self._processing_ids.discard(item_id)
+        # Ensure the UI is unblocked
+        self.item_processing_finished.emit(item_id, False)
+
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred while deleting item {item_id}: {value}\n{tb}")
+        self.toast_requested.emit("A critical error occurred during deletion. Please check the logs.", "error")
 
     def open_in_explorer(self, item_id: str):
         """
@@ -391,14 +535,47 @@ class ModListViewModel(QObject):
             tasks,
             parent_path
         )
-
-        # --- HUBUNGKAN SINYAL DI SINI ---
-        worker.signals.result.connect(self._on_creation_finished)
+        worker.signals.result.connect(
+            lambda result, tasks_info=tasks: self._on_creation_finished(result, tasks_info)
+        )
         worker.signals.error.connect(self._on_creation_error)
         worker.signals.progress.connect(self._on_creation_progress_updated)
-        # --------------------------------
 
         QThreadPool.globalInstance().start(worker)
+
+    def get_reconciliation_preview(self) -> dict:
+        """
+        [NEW] Performs a "dry run" of the reconciliation logic to get the counts
+        of items that will be created and updated.
+        """
+        if not self.current_game or not self.current_game.game_type:
+            return {"to_create": 0, "to_update": 0}
+
+        logger.info("Starting reconciliation preview for current game.")
+        game_type = self.current_game.game_type
+        all_local_items = self.master_list
+        all_db_objects = self.database_service.get_all_objects_for_game(game_type)
+
+        if not all_db_objects:
+            return {"to_create": 0, "to_update": 0}
+
+        # --- Logic to find matches and count updates ---
+        matched_db_names = set()
+        count_to_update = 0
+        for local_item in all_local_items:
+            match_info = self.database_service.find_best_object_match(all_db_objects, local_item.actual_name)
+            if match_info and match_info.get("score", 0) > 0.8:
+                best_match = match_info["match"]
+                count_to_update += 1
+                matched_db_names.add(best_match.get("name", "").lower())
+
+        # --- Logic to count creations ---
+        count_to_create = 0
+        for db_obj in all_db_objects:
+            if db_obj.get("name", "").lower() not in matched_db_names:
+                count_to_create += 1
+
+        return {"to_create": count_to_create, "to_update": count_to_update}
 
     def initiate_randomize(self):
         """Flow 6.2.B: Starts the randomization workflow for the current group."""
@@ -453,7 +630,7 @@ class ModListViewModel(QObject):
 
     # ---Private/Internal Logic ---
 
-    def apply_filters_and_search(self):
+    def apply_filters_and_search(self, item_id_to_select: str = None):
         """
         Filters and sorts the master list based on all active criteria,
         then emits the result for the view to render.
@@ -475,19 +652,21 @@ class ModListViewModel(QObject):
                 for item in filtered_items:
                     match = True
                     for key, value in self.active_filters.items():
-                        # --- MODIFIKASI Logika Filter ---
-                        # Handle multi-select for tags
+                        item_value = getattr(item, key, None)
+
+                        # Add logging to see the comparison
+                        logger.debug(f"Filtering '{item.actual_name}': Attr '{key}' (Value: {item_value}) vs Filter (Value: {value})")
+
                         if key == 'tags' and isinstance(value, list):
-                            if not hasattr(item, 'tags') or not item.tags or not set(value).issubset(set(item.tags)):
+                            # Handle multi-select for tags
+                            if not isinstance(item_value, list) or not set(value).issubset(set(item_value)):
                                 match = False
                                 break
-                        # Handle single-select for other fields
                         else:
-                            item_value = getattr(item, key.lower(), None)
+                            # Handle single-select for other fields
                             if item_value != value:
                                 match = False
                                 break
-                        # --------------------------------
                     if match:
                         items_after_detail_filter.append(item)
                 filtered_items = items_after_detail_filter
@@ -581,7 +760,7 @@ class ModListViewModel(QObject):
 
         # --- STAGE 7: Prepare and emit data for the view ---
         view_data = [self._create_dict_from_item(item) for item in self.displayed_items]
-        self.items_updated.emit(view_data)
+        self.items_updated.emit(view_data, item_id_to_select)
 
     # ---Private Slots for Async Results ---
     def _on_skeletons_loaded(self, result: dict, received_token: int):
@@ -603,8 +782,31 @@ class ModListViewModel(QObject):
 
         logger.info(f"Successfully loaded {len(result['items'])} skeletons.")
         self.master_list = result["items"]
+
+        # --- Selection logic ---
+        item_id_to_select = None
+
+        # check if there is a newly created item to select
+        if self._item_to_select_after_load:
+            item = next((i for i in self.master_list if i.actual_name == self._item_to_select_after_load), None)
+            if item:
+                logger.info(f"Identified newly created item to select: '{item.actual_name}'")
+                item_id_to_select = item.id
+            self._item_to_select_after_load = None # Reset state
+
+        # if no new item to select, check if there is a previously selected item to restore
+        elif self.last_selected_item_id:
+            item = next((i for i in self.master_list if i.id == self.last_selected_item_id), None)
+            if item:
+                logger.info(f"Identified previously selected item to restore: '{item.actual_name}'")
+                item_id_to_select = item.id
+            else:
+                self.selection_invalidated.emit()
+        # -----------------------------------------------------------------
+
+
         self._update_available_filters()
-        self.apply_filters_and_search()
+        self.apply_filters_and_search(item_id_to_select=item_id_to_select)
         self.load_completed.emit(True)
 
         # --- FIX: Add logic to restore selection after loading is complete ---
@@ -816,43 +1018,140 @@ class ModListViewModel(QObject):
             "A critical error occurred. Please check the logs.", "error"
         )
 
-    def _on_pin_status_finished(self, item_id: str, result: dict):
-        """Handles the result of a single item pin/unpin operation (Flow 6.3)."""
-        pass
+    def _on_delete_finished(self, result: dict):
+        """
+        [IMPLEMENTED] Handles the result of the delete operation.
+        Removes the item from the internal lists and refreshes the UI.
+        """
+        item_id = result.get("item_id")
+        if not item_id:
+            return
 
-    def _on_rename_finished(self, item_id: str, result: dict):
-        """Handles the result of a single item rename operation (Flow 4.2.A)."""
-        pass
+        self._processing_ids.discard(item_id)
+        # signal to UI that processing is finished
+        self.item_processing_finished.emit(item_id, result.get("success", False))
 
-    def _on_delete_finished(self, item_id: str, result: dict):
-        """Handles the result of a single item delete operation (Flow 4.2.B)."""
-        pass
+        if result.get("success"):
+            item_name = result.get("item_name", "Item")
+            self.toast_requested.emit(f"'{item_name}' moved to Recycle Bin.", "success")
+
+            # Delete the item from both master and displayed lists
+            self.master_list = [item for item in self.master_list if item.id != item_id]
+            self.displayed_items = [item for item in self.displayed_items if item.id != item_id]
+
+            # Call apply_filters_and_search to refresh the UI correctly
+            self.apply_filters_and_search()
+
+            # --- Domino Effect Logic (if the active item is deleted) ---
+            if self.context == CONTEXT_FOLDERGRID and self.last_selected_item_id == item_id:
+                self.selection_invalidated.emit() # Notify PreviewPanel to clear itself
+
+            elif self.context == CONTEXT_OBJECTLIST and self.last_selected_item_id == item_id:
+                self.active_object_deleted.emit(item_id) # Notify MainWindowViewModel to clear foldergrid
+
+        else:
+            self.toast_requested.emit(f"Failed to delete item: {result.get('error')}", "error")
+
 
     def _on_bulk_action_finished(self, result: dict):
         """Handles the result of a bulk action like enable, disable, or tag (Flow 3.2)."""
         pass
 
-    def _on_creation_finished(self, result: dict):
+    def _on_creation_finished(self, result: dict, tasks_info: list):
         """
-        Flow 4.1.B Step 6: Handles the result of the object creation workflow.
+        [REVISED] Handles the creation result with intelligent logic for both
+        single (manual) and bulk (sync) creation scenarios.
         """
-        failed_items = result.get("failed", [])
+        self.bulk_operation_finished.emit([])
 
-        # Emit signal to unlock the UI and report any failures
-        self.bulk_operation_finished.emit(failed_items)
+        successful_items = result.get("successful_items", [])
+        failed_items = result.get("failed_items", [])
+        cancelled_count = result.get("cancelled_count", 0)
 
-        if not failed_items:
-            # If everything was successful, show a success toast.
-            success_count = len(result.get("success", []))
-            plural = "s" if success_count > 1 else ""
-            self.toast_requested.emit(f"Successfully created {success_count} object{plural}.", "success")
+        # --- STAGE 1: Check for Password-Protected Files ---
+        # This is the highest priority action after a workflow finishes.
+        password_tasks = []
+        other_failures = []
 
-        # --- UI Update ---
-        # Reload all items from the current path. This is the simplest and most
-        # robust way to ensure the new item appears correctly in the list.
-        if self.navigation_root:
-            logger.info("Creation task finished, reloading object list...")
-            self.load_items(self.navigation_root, self.current_game, is_new_root=True)
+        for failure in failed_items:
+            # Check if the reason for failure was a password request
+            if failure.get("reason") == "Archive is password-protected.":
+                password_tasks.append(failure['task'])
+            else:
+                other_failures.append(failure)
+
+        # If any tasks require a password, emit a signal for the first one
+        if password_tasks:
+            self.password_requested.emit(password_tasks[0])
+            # We stop here and wait for the user to provide a password
+            return
+
+        # --- STAGE 2: Final Reporting & UI Unlocking ---
+        self.bulk_operation_finished.emit(other_failures)
+
+        # --- STAGE 3: Smart UX Logic for Toasts ---
+        successful_count = len(successful_items)
+        failed_count = len(other_failures)
+        cancelled_count = result.get("cancelled_count", 0)
+
+        # Handle the special case for a single, perfect manual creation
+        if successful_count == 1 and failed_count == 0 and cancelled_count == 0 and tasks_info[0].get("type") == "manual":
+            created_object_data = tasks_info[0].get("data", {})
+            object_name = created_object_data.get("name", "New Mod")
+            self.toast_requested.emit(f"Successfully created '{object_name}'.", "success")
+            self.object_created.emit(created_object_data)
+            self._item_to_select_after_load = object_name
+        else:
+            # 1. Build the summary message
+            summary_parts = []
+            if successful_count > 0:
+                summary_parts.append(f"{successful_count} created")
+            if failed_count > 0:
+                summary_parts.append(f"{failed_count} failed")
+            if cancelled_count > 0:
+                summary_parts.append(f"{cancelled_count} cancelled")
+
+            logger.info(f"Creation Summary: {', '.join(summary_parts)}")
+            summary_content = "Process finished: " + ", ".join(summary_parts) + "."
+            level = "success" if failed_count == 0 and cancelled_count == 0 else "warning"
+
+            # 2. ALWAYS show the summary toast
+            self.toast_requested.emit(summary_content, level)
+
+            # 3. If there were failures, ALSO request the details dialog
+            if failed_count > 0:
+                self.failure_report_requested.emit(other_failures)
+
+
+        # --- STAGE 4: Smart UI Refresh ---
+        # Only perform the smart refresh if items were actually created.
+        if successful_items:
+            logger.info(f"Performing Smart Refresh with {len(successful_items)} new item(s).")
+            newly_created_skeletons = [FolderItem(**item_data) for item_data in successful_items]
+            self.master_list.extend(newly_created_skeletons)
+            self.apply_filters_and_search()
+
+
+    def retry_creation_with_password(self, task: dict, password: str):
+        """
+        [NEW] Re-runs a single creation task, this time providing the password.
+        """
+        if not self.current_path: return
+
+        logger.info(f"Retrying creation for '{task['source_path'].name}' with a password.")
+        self.bulk_operation_started.emit()
+
+        # The workflow service will now need to accept an optional password
+        worker = Worker(
+            self.workflow_service.execute_creation_workflow,
+            [task], # Pass as a list with one item
+            self.current_path,
+            [False], # New cancel flag
+            password=password # Pass the password as a keyword argument
+        )
+        worker.signals.result.connect(self._on_creation_finished)
+        # ... (connect other signals)
+        QThreadPool.globalInstance().start(worker)
 
     def _on_randomize_finished(self, result: dict):
         """Handles the result of a randomize operation (Flow 6.2.B)."""
@@ -880,9 +1179,7 @@ class ModListViewModel(QObject):
         Receives a signal from ThumbnailService when a new thumbnail is ready on disk.
         Updates the internal item model and triggers a targeted UI refresh.
         """
-        logger.debug(
-            f"Received generated thumbnail for item '{item_id}' at '{cache_path}'"
-        )
+
         try:
             # 1. Find the appropriate item in Master_list
 
@@ -950,46 +1247,54 @@ class ModListViewModel(QObject):
         self.apply_filters_and_search()
 
     def _update_available_filters(self):
-        """Generates available filter options based on the active context and emits them."""
-        if not self.current_game:
+        """
+        [REVISED for ALIAS] Generates available filter options and their
+        display names (aliases) based on the game's schema.
+        """
+        if not self.current_game or not self.current_game.game_type:
             self.available_filters_changed.emit({})
             return
 
+        game_type = self.current_game.game_type
+        # The new structure for available_options will be:
+        # { 'internal_key': ('DisplayName', [option1, option2]), ... }
         available_options = {}
 
         if self.context == CONTEXT_OBJECTLIST:
-            # For objectlist, use the schema directly for reliability
-            schema = self.database_service.get_schema_for_game(self.current_game.name)
+            schema = self.database_service.get_schema_for_game(game_type)
             if not schema:
                 self.available_filters_changed.emit({})
                 return
 
-            logger.info("Generating filter options for 'objectlist' from schema.")
+            logger.info(f"Generating aliased filter options for 'objectlist' (Game: {game_type}).")
+
             if self.active_category_filter == ModType.CHARACTER:
-                available_options['Rarity'] = schema.get('rarity', [])
-                available_options['Element'] = schema.get('element', [])
-                available_options['Gender'] = schema.get('gender', [])
-                available_options['Weapon'] = schema.get('weapon_types', [])
-            else:
+                # Define which keys from the schema we want to create filters for
+                filter_keys = ["rarity", "element", "gender", "weapon_types"]
+                for key in filter_keys:
+                    options = schema.get(key, [])
+                    if options:
+                        # Get the alias for the key, e.g., 'element' -> 'Combat Type'
+                        display_name = self.database_service.get_alias_for_game(game_type, key)
+                        available_options[key] = (display_name, options)
+            else: # For 'Other' categories
+                # You can add similar alias logic for subtypes if needed
                 all_subtypes = set(i.subtype for i in self.master_list if isinstance(i, GenericObjectItem) and i.subtype)
                 if all_subtypes:
-                    available_options['Subtype'] = sorted(list(all_subtypes))
-
+                    display_name = self.database_service.get_alias_for_game(game_type, "subtype", fallback="Subtype")
+                    available_options['subtype'] = (display_name, sorted(list(all_subtypes)))
 
         elif self.context == CONTEXT_FOLDERGRID:
-            # --- Logic for foldergrid ---
-            logger.info("Generating filter options for 'FolderGrid' context.")
+            # (Logika untuk foldergrid tetap sama karena tidak menggunakan alias dari schema)
             all_authors = set(i.author for i in self.master_list if isinstance(i, FolderItem) and i.author)
             all_tags = set()
             for item in self.master_list:
                 if isinstance(item, FolderItem) and item.tags:
                     all_tags.update(item.tags)
-
             if all_authors:
-                available_options['Author'] = sorted(list(all_authors))
+                available_options['author'] = ("Author", sorted(list(all_authors)))
             if all_tags:
-                available_options['Tags'] = sorted(list(all_tags))
-            # ---------------------------------
+                available_options['tags'] = ("Tags", sorted(list(all_tags)))
 
         self.available_filters_changed.emit(available_options)
 
@@ -1019,58 +1324,79 @@ class ModListViewModel(QObject):
         exctype, value, tb = error_info
         logger.critical(f"A worker error occurred during object creation: {value}\n{tb}")
 
-        # Pastikan UI tidak terkunci
         self.bulk_operation_finished.emit([])
 
-        # Tampilkan pesan error ke pengguna
         self.toast_requested.emit(
             "A critical error occurred during creation. Please check the logs.", "error"
         )
 
-    def sync_objects_from_database(self):
+    def initiate_reconciliation(self):
         """
-        Step 2 Part 1: Finds missing objects and emits a signal
-        to request confirmation from the View, instead of creating a dialog itself.
+        [NEW in Step 2] Gathers all local and database objects and starts the
+        background reconciliation workflow in WorkflowService.
         """
-        if not self.current_game:
-            self.toast_requested.emit("No active game selected.", "warning")
+        # 1. Validate that there is an active game with a valid game_type
+        if not self.current_game or not self.current_game.game_type:
+            self.toast_requested.emit(
+                "Cannot sync: Active game has no Database Key (Type) set.", "warning"
+            )
             return
 
-        game_name = self.current_game.name
-        logger.info(f"Starting database sync for game: {game_name}")
+        game_type = self.current_game.game_type
+        game_path = self.current_game.path
+        logger.info(f"Initiating database reconciliation for game_type: '{game_type}'")
 
-        db_objects = self.database_service.get_all_objects_for_game(game_name)
-        if not db_objects:
-            self.toast_requested.emit("No objects defined in the database for this game.", "info")
+        # 2. Gather all required data
+        all_local_items = self.master_list
+        all_db_objects = self.database_service.get_all_objects_for_game(game_type)
+
+        if not all_db_objects:
+            self.toast_requested.emit(f"No objects defined in the database for '{game_type}'. Nothing to sync.", "info")
             return
 
-        existing_names_lower = {name.lower() for name in self.get_all_item_names()}
-        missing_objects = [
-            obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
-        ]
+        # 3. Start the background worker targeting the new WorkflowService method
+        self.bulk_operation_started.emit()
+        worker = Worker(
+            self.workflow_service.reconcile_objects_with_database,
+            game_path,
+            game_type,
+            all_local_items,
+            all_db_objects
+        )
+        worker.signals.result.connect(self._on_reconciliation_finished)
+        worker.signals.error.connect(
+            lambda err: self._on_generic_worker_error(None, err, "reconciliation")
+        )
+        # You can also connect the progress signal if your service emits it
+        worker.signals.progress.connect(self.reconciliation_progress_updated)
 
-        if not missing_objects:
-            self.toast_requested.emit("All database objects already exist.", "success")
-            return
+        QThreadPool.globalInstance().start(worker)
 
-        # No more confirmation here. Just create tasks and go.
-        logger.info(f"Proceeding with sync. Creating {len(missing_objects)} tasks.")
-        sync_tasks = [{"type": "sync", "data": obj} for obj in missing_objects]
-        self.initiate_create_objects(sync_tasks)
-
-    def proceed_with_sync(self, confirmed_missing_objects: list):
+    # --- ADD a new slot to handle the result of the new workflow ---
+    def _on_reconciliation_finished(self, result: dict):
         """
-        Called by the View after the user
-        confirms the sync dialog. This method proceeds with the creation workflow.
+        [NEW in Step 2] Handles the summary result from the reconciliation workflow.
         """
-        if not confirmed_missing_objects:
-            return
+        self.bulk_operation_finished.emit(result.get("failures", []))
 
-        logger.info(f"User confirmed sync. Creating {len(confirmed_missing_objects)} tasks.")
+        if result.get("success"):
+            created = result.get("created", 0)
+            updated = result.get("updated", 0)
+            failed = result.get("failed", 0)
 
-        # Create tasks and delegate to the existing creation workflow
-        sync_tasks = [{"type": "sync", "data": obj} for obj in confirmed_missing_objects]
-        self.initiate_create_objects(sync_tasks)
+            # Build a summary message
+            summary = f"Reconciliation complete: {created} created, {updated} updated."
+            if failed > 0:
+                summary += f" ({failed} failed)."
+                self.toast_requested.emit(summary, "warning")
+            else:
+                self.toast_requested.emit(summary, "success")
+        else:
+            self.toast_requested.emit("Reconciliation process failed to run.", "error")
+
+        # Always refresh the list to show the final state
+        self.list_refresh_requested.emit()
+
 
     def get_current_game_schema(self) -> dict | None:
         """
@@ -1099,3 +1425,378 @@ class ModListViewModel(QObject):
         # --- STAGE 3: Fetch schema using the valid game_type ---
         logger.info(f"Requesting schema for game_type: '{game_type_to_lookup}'")
         return self.database_service.get_schema_for_game(game_type_to_lookup)
+
+    def convert_object_type(self, item_id: str, new_type: ModType):
+        """
+        Initiates the background process to convert an object's type.
+        """
+        item_to_convert = next((item for item in self.master_list if item.id == item_id), None)
+
+        if not item_to_convert:
+            logger.error(f"Cannot convert type: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to convert '{item_to_convert.actual_name}' to type '{new_type.value}'.")
+
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(
+            self.mod_service.convert_object_type,
+            item_id,
+            item_to_convert.folder_path,
+            new_type.value
+        )
+
+        # --- FINAL STEP: Connect signals to handle the result ---
+        worker.signals.result.connect(self._on_conversion_finished)
+        worker.signals.error.connect(
+            lambda error_info, id=item_id: self._on_conversion_error(error_info, id)
+        )
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_conversion_finished(self, result: dict):
+        """
+        [IMPLEMENTED] Handles the result of the conversion process.
+        Reloads the entire object list on success to reflect model changes.
+        """
+        item_id = result.get("item_id")
+
+        # Always signal that processing is finished for this item
+        if item_id:
+            self.item_processing_finished.emit(item_id, result["success"])
+
+        if result.get("success"):
+            logger.info(f"Type conversion successful for item {item_id}. Reloading object list.")
+            self.toast_requested.emit("Object type converted successfully.", "success")
+
+            # TODO: 1. Find the name of the item to re-select after the refresh
+            item_to_reselect = next((item for item in self.master_list if item.id == item_id), None)
+            item_id_to_select = item_to_reselect.id if item_to_reselect else None
+            if item_id_to_select:
+                logger.info(f"Item to re-select after reload: {item_to_reselect.actual_name}")
+
+            # 2. Emit a signal requesting the parent ViewModel to handle the reload
+            self.list_refresh_requested.emit()
+
+        else:
+            # On failure, show an error toast
+            self.toast_requested.emit(f"Failed to convert type: {result.get('error')}", "error")
+
+    def _on_conversion_error(self, error_info: tuple, item_id: str):
+        """
+        [NEW] Handles a critical failure during the conversion worker thread.
+        """
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred during type conversion for item {item_id}: {value}\n{tb}")
+
+        # Ensure the UI is unblocked
+        self.item_processing_finished.emit(item_id, False)
+
+        # Show a generic error message to the user
+        self.toast_requested.emit("A critical error occurred. Please check the logs.", "error")
+
+
+    def activate_mod_exclusively(self, item_id_to_activate: str):
+        """
+        [NEW] Starts the "Enable Only This" workflow. It finds which mods
+        need to be disabled and requests confirmation from the user via a signal.
+        """
+        if self.context != CONTEXT_FOLDERGRID:
+            return
+
+        item_to_enable = next((i for i in self.master_list if i.id == item_id_to_activate), None)
+        if not item_to_enable or item_to_enable.status == ModStatus.ENABLED:
+            return
+
+        # Find all other mods in the current list that are already enabled
+        items_to_disable = [
+            item for item in self.master_list
+            if item.id != item_id_to_activate and item.status == ModStatus.ENABLED
+        ]
+
+        # Create an action plan
+        action_plan = {
+            "enable": item_to_enable,
+            "disable": items_to_disable,
+            "enable_name": item_to_enable.actual_name,
+            "disable_names": [i.actual_name for i in items_to_disable]
+        }
+
+        # If there's nothing to disable, we don't need to ask for confirmation.
+        # We can proceed directly.
+        if not items_to_disable:
+            logger.info(f"No other mods to disable. Proceeding to enable '{item_to_enable.actual_name}'.")
+            self.proceed_with_exclusive_activation(action_plan)
+        else:
+            # If there are mods to disable, ask the user for confirmation first.
+            logger.info("Requesting user confirmation for exclusive activation.")
+            self.exclusive_activation_confirmation_requested.emit(action_plan)
+
+    def proceed_with_exclusive_activation(self, plan: dict):
+        """
+        [NEW] Called by the View after the user confirms the action.
+        This method starts the background worker.
+        """
+        item_to_enable = plan.get("enable")
+        if not item_to_enable:
+            return
+
+        logger.info(f"User confirmed. Starting exclusive activation for '{item_to_enable.actual_name}'.")
+
+        # Emit a signal to show a global loading indicator/lock the UI
+        self.bulk_operation_started.emit()
+
+        worker = Worker(self.workflow_service.execute_exclusive_activation, plan)
+        worker.signals.result.connect(self._on_exclusive_activation_finished)
+        # We can create a generic error handler for these workers later
+        # worker.signals.error.connect(...)
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_exclusive_activation_finished(self, result: dict):
+        """
+        [NEW] Handles the result from the exclusive activation workflow.
+        """
+        # Unlock the UI
+        self.bulk_operation_finished.emit([]) # Send empty list for no failures
+
+        if result.get("success"):
+            self.toast_requested.emit("Mod successfully activated.", "success")
+            # Request a full refresh to ensure the UI is in sync
+            self.list_refresh_requested.emit()
+        else:
+            self.toast_requested.emit(f"Operation failed: {result.get('error')}", "error")
+            # Also request a refresh in case of partial failure, to show the real state
+            self.list_refresh_requested.emit()
+
+    def force_sync_with_selection(self, item_id: str, selected_db_data: dict):
+        """
+        [NEW] Initiates a sync operation with a specific database entry
+        chosen manually by the user.
+        """
+        item_to_sync = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_sync:
+            logger.error(f"Cannot force sync: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"User forced sync for '{item_to_sync.actual_name}' with DB entry '{selected_db_data.get('name')}'.")
+
+        self.item_processing_started.emit(item_id)
+        worker = Worker(self.mod_service.update_object_properties_from_db, item_to_sync, selected_db_data)
+        worker.signals.result.connect(self._on_sync_finished)
+        QThreadPool.globalInstance().start(worker)
+
+    def initiate_sync_for_item(self, item_id: str):
+        """
+        [NEW] Starts the sync workflow for a single item. It finds the best
+        match and decides whether to sync automatically or ask for user input.
+        """
+        if not self.current_game or not self.current_game.game_type:
+            self.toast_requested.emit("Cannot sync: Active game has no Database Key (Type) set.", "error")
+            return
+
+        item_to_sync = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_sync:
+            logger.error(f"Cannot sync: Item with ID '{item_id}' not found.")
+            return
+
+        game_type = self.current_game.game_type
+        item_name = item_to_sync.actual_name
+
+        logger.info(f"Initiating sync for '{item_name}'. Finding best match in database...")
+
+        # --- THE CORE FIX ---
+        # 1. Fetch the list of all DB objects ONCE.
+        all_db_objects = self.database_service.get_all_objects_for_game(game_type)
+
+        # 2. Pass the pre-fetched list to the matching method.
+        best_match_info = self.database_service.find_best_object_match(all_db_objects, item_name)
+        # --- END OF FIX ---
+
+        # 2. Core Logic: Decide what to do
+        if best_match_info and best_match_info.get("score", 0) > 0.75:
+            # High confidence match: Proceed with auto-sync
+            db_data = best_match_info["match"]
+            logger.info(f"High confidence match found: '{db_data.get('name')}' with score {best_match_info['score']:.2f}. Proceeding with auto-sync.")
+            self.item_processing_started.emit(item_id)
+            worker = Worker(self.mod_service.update_object_properties_from_db, item_to_sync, db_data)
+            worker.signals.result.connect(self._on_sync_finished)
+            QThreadPool.globalInstance().start(worker)
+        else:
+            # Low confidence match or no match: Request manual user selection
+            logger.info("Low confidence match or no match found. Requesting manual user selection.")
+            all_candidates = self.database_service.get_all_objects_for_game(game_type)
+            self.manual_sync_required.emit(item_id, all_candidates)
+
+    def _on_sync_finished(self, result: dict):
+        """
+        [NEW] Handles the result of a sync operation.
+        """
+        item_id = result.get("item_id")
+        if not item_id: return
+
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if result.get("success"):
+            self.toast_requested.emit("Sync with database successful.", "success")
+            self.thumbnail_service.invalidate_cache(item_id)
+            self.list_refresh_requested.emit()
+        else:
+            self.toast_requested.emit(f"Sync failed: {result.get('error')}", "error")
+
+
+    def update_object_item(self, item_id: str, update_data: dict):
+        """
+        [NEW] Initiates the background process to update an object's properties.
+        """
+        if item_id in self._processing_ids:
+            return
+
+        item_to_update = next((item for item in self.master_list if item.id == item_id), None)
+        if not item_to_update:
+            logger.error(f"Cannot update: Item with ID '{item_id}' not found.")
+            return
+
+        logger.info(f"Request to update object '{item_to_update.actual_name}'.")
+        self._processing_ids.add(item_id)
+        self.item_processing_started.emit(item_id)
+
+        worker = Worker(self.mod_service.update_object, item_to_update, update_data)
+        worker.signals.result.connect(self._on_update_finished)
+        # Tambahkan penanganan error untuk robusta
+        worker.signals.error.connect(lambda err, id=item_id: self._on_generic_worker_error(id, err, "update"))
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_update_finished(self, result: dict):
+        """
+        [NEW] Handles the result of the object update operation.
+        """
+        item_id = result.get("item_id")
+        if not item_id: return
+
+        self._processing_ids.discard(item_id)
+        self.item_processing_finished.emit(item_id, result.get("success", False))
+
+        if result.get("success"):
+            self.toast_requested.emit("Object updated successfully.", "success")
+            # Request a full refresh to ensure the UI is in sync
+            self.thumbnail_service.invalidate_cache(item_id)
+            self.toast_requested.emit("Object updated successfully.", "success")
+            self.list_refresh_requested.emit()
+        else:
+            self.toast_requested.emit(f"Update failed: {result.get('error')}", "error")
+
+    def _on_generic_worker_error(self, item_id: str, error_info: tuple, action: str):
+        """Generic handler for critical worker failures."""
+        self._processing_ids.discard(item_id)
+        self.item_processing_finished.emit(item_id, False)
+
+        exctype, value, tb = error_info
+        logger.critical(f"A worker error occurred during '{action}' for item {item_id}: {value}\n{tb}")
+        self.toast_requested.emit(f"A critical error occurred during {action}. Please check logs.", "error")
+
+    def prepare_creation_tasks(self, paths: List[Path]):
+        """
+        [NEW] Starts a light background worker to analyze a list of source paths
+        (folders/archives) before showing the confirmation dialog.
+        """
+        if not paths:
+            return
+
+        self.toast_requested.emit(f"Analyzing {len(paths)} item(s)...", "info")
+        logger.info(f"Preparing creation tasks for {len(paths)} source path(s).")
+
+        worker = Worker(self.workflow_service.analyze_creation_sources, paths)
+        self._active_workers.append(worker)
+        worker.signals.result.connect(
+            lambda result: self._on_tasks_analyzed(result, worker)
+        )
+
+        # This will handle the result of the analysis and emit the final signal
+        worker.signals.error.connect(
+            lambda err, w=worker: self._on_generic_worker_error(None, err, "analysis")
+        )
+
+
+
+        QThreadPool.globalInstance().start(worker)
+
+    def _analyze_paths_in_worker(self, paths: List[Path]) -> list:
+        """
+        [NEW] Private method that runs in the worker thread to perform the analysis.
+        """
+        logger.info(f"Analyzing {paths} source paths for mod creation tasks.")
+        valid_tasks = []
+        invalid_items = []
+        for path in paths:
+            task_info = self.mod_service.analyze_source_path(path)
+            if task_info["is_valid"]:
+                valid_tasks.append(task_info)
+                logger.info(f"Valid task found: {path.name}")
+            else:
+                # Instead of emitting a signal, just collect the invalid items
+                error_msg = task_info.get('error_message', 'Invalid item')
+                invalid_items.append({"name": path.name, "reason": error_msg})
+                logger.warning(f"Invalid task found: {path.name} - {error_msg}")
+
+        # Return a dictionary with both lists
+        logger.info(f"Analysis complete. Valid tasks: {len(valid_tasks)}, Invalid items: {len(invalid_items)}")
+        return {"valid": valid_tasks, "invalid": invalid_items}
+
+    def _on_tasks_analyzed(self, result: dict, worker: Worker):
+        """
+        [REVISED] This slot now receives a dictionary, shows toasts for invalid
+        items, and then emits the signal for valid tasks.
+        """
+        logger.info(f"Analysis finished. Valid tasks: {len(result.get('valid', []))}, Invalid items: {len(result.get('invalid', []))}")
+        # 1. Remove the worker from the active list to prevent memory leaks
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+
+        # 2. Show toasts for any items that were skipped
+        invalid_items = result.get("invalid", [])
+        for item in invalid_items:
+            self.toast_requested.emit(f"Skipped '{item['name']}': {item['reason']}", "warning")
+
+        # 3. Emit the final signal with only the valid tasks
+        valid_tasks = result.get("valid", [])
+        self.creation_tasks_prepared.emit(valid_tasks)
+
+    def start_background_creation(self, tasks: list, cancel_flag: list, progress_signal: pyqtSignal, finished_signal: pyqtSignal):
+        """
+        [NEW] Starts the background worker for mod creation.
+        Receives a cancel_flag and progress/finished signals from the View's dialog.
+        """
+        if not tasks:
+            logger.warning("No valid tasks provided for background creation.")
+            return
+
+
+        logger.info(f"Starting background creation of {len(tasks)} mods.")
+
+        # The ViewModel emits this to tell the main window to disable itself
+        self.bulk_operation_started.emit()
+
+        worker = Worker(
+            self.workflow_service.execute_creation_workflow,
+            tasks,
+            self.current_path,
+            cancel_flag=cancel_flag
+        )
+
+        # Connect worker signals
+        worker.signals.result.connect(
+            lambda result, tasks_info=tasks: self._on_creation_finished(result, tasks_info)
+        )
+        worker.signals.error.connect(lambda err, t=tasks: self._on_creation_error(err))
+        # Connect worker's progress directly to the dialog's progress signal
+        worker.signals.progress.connect(progress_signal)
+        # When the worker is truly finished, also emit the dialog's finished signal
+        worker.signals.finished.connect(finished_signal)
+
+        self._active_workers.append(worker)
+        QThreadPool.globalInstance().start(worker)
+
+

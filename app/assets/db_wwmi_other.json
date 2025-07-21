@@ -1,0 +1,46 @@
+{
+"objects": [
+    {
+      "object_type": "Weapon",
+      "thumbnail_path": "app/assets/thumbnails/wwmi/weapon.png",
+      "name": "Weapon",
+      "tags": [""]
+    },
+    {
+      "object_type": "UI",
+      "thumbnail_path": "app/assets/thumbnails/wwmi/ui.png",
+      "name": "User Interface",
+      "tags": [""]
+    },
+    {
+      "object_type": "Other",
+      "thumbnail_path": "app/assets/thumbnails/wwmi/enemy.png",
+      "name": "Enemy",
+      "tags": [""]
+    },
+    {
+      "object_type": "Other",
+      "thumbnail_path": "app/assets/thumbnails/wwmi/npc.png",
+      "name": "NPC",
+      "tags": [""]
+    },
+    {
+      "object_type": "Other",
+      "thumbnail_path": "app/assets/thumbnails/wwmi/collectibles.png",
+      "name": "Collectibles",
+      "tags": [""]
+    },
+    {
+      "object_type": "Other",
+      "thumbnail_path": "app/assets/thumbnails/wwmi/object.png",
+      "name": "World Objects",
+      "tags": [""]
+    },
+    {
+      "object_type": "Other",
+      "thumbnail_path": "app/assets/thumbnails/wwmi/object.png",
+      "name": "VFX",
+      "tags": [""]
+    }
+]
+}

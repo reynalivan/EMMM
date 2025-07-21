@@ -4,7 +4,7 @@ import re
 # --- Application Info ---
 APP_NAME: str = "EMM Manager"
 ORG_NAME: str = "reynalivan"
-APP_ICON_PATH: str = "app/assets/icons/logo.png"
+APP_ICON_PATH: str = "app/assets/images/icon.jpeg"
 APP_VERSION: str = "0.0.1"
 
 # --- Folder Naming Conventions ---
@@ -14,7 +14,7 @@ PIN_SUFFIX: str = "_pin"
 
 # --- File & Directory Names ---
 CONFIG_FILE_NAME: str = "config.json"
-DATABASE_FILE_NAME: str = "database_object.json"
+SCHEMA_FILE_NAME: str = "schema.json"
 CACHE_DIR_NAME: str = "cache"
 LOG_DIR_NAME: str = "logs"
 PROPERTIES_JSON_NAME: str = "properties.json"  # For objectlist items

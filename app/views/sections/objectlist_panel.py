@@ -4,7 +4,7 @@ from typing import Dict
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QListWidgetItem,
-    QSizePolicy,
+    QDialog,
     QWidget,
     QStackedWidget,
     QListWidget,
@@ -40,6 +40,9 @@ from app.views.components.common.shimmer_frame import ShimmerFrame
 from app.services.thumbnail_service import ThumbnailService
 from pathlib import Path
 from PyQt6.QtWidgets import QStyle
+
+from app.views.dialogs.edit_object_dialog import EditObjectDialog
+from app.views.dialogs.sync_selection_dialog import SyncSelectionDialog
 # Import other necessary components...
 
 
@@ -168,11 +171,11 @@ class ObjectListPanel(QWidget):
         # ViewModel -> View connections
         self.view_model.items_updated.connect(self._on_items_updated)
         self.view_model.load_completed.connect(self._on_load_completed)
+        self.view_model.manual_sync_required.connect(self._on_manual_sync_required)
 
         # --- Connect ViewModel signals to this panel's slots ---
         self.view_model.loading_started.connect(self._on_loading_started)
         self.view_model.loading_finished.connect(self._on_loading_finished)
-        self.view_model.items_updated.connect(self._on_items_updated)
         self.view_model.item_needs_update.connect(self._on_item_needs_update)
         self.view_model.item_processing_started.connect(
             self._on_item_processing_started
@@ -219,7 +222,7 @@ class ObjectListPanel(QWidget):
         # self.shimmer_frame.stop_shimmer()
         pass
 
-    def _on_items_updated(self, items_data: dict):
+    def _on_items_updated(self, items_data: list, item_id_to_select: str | None):
         """
         Repopulates the list view and intelligently updates the view state
         (list, empty, or no results).
@@ -236,6 +239,7 @@ class ObjectListPanel(QWidget):
         # If there are items, show the list widget.
         self.stack.setCurrentWidget(self.list_widget)
 
+        # --- Populate the QListWidget with ObjectListItemWidgets ---
         for item_data in items_data:
             list_item = QListWidgetItem(self.list_widget)
             item_widget = ObjectListItemWidget(
@@ -249,6 +253,16 @@ class ObjectListPanel(QWidget):
             self.list_widget.setItemWidget(list_item, item_widget)
 
             self._item_widgets[item_data["id"]] = list_item
+
+        # ---- Handle Programmatic Selection ----
+        if item_id_to_select:
+            list_item_to_select = self._item_widgets.get(item_id_to_select)
+            if list_item_to_select:
+                logger.info(f"Programmatically selecting item ID: {item_id_to_select}")
+                self.list_widget.setCurrentItem(list_item_to_select)
+
+                # Beri tahu ViewModel bahwa seleksi sudah diatur di UI
+                self.view_model.set_active_selection(item_id_to_select)
 
     def _on_list_item_clicked(self, item_data: dict):
         """Forwards the item selection event upwards to the main window."""
@@ -335,22 +349,16 @@ class ObjectListPanel(QWidget):
         """Creates and shows the new pivot-based CreateObjectDialog."""
         # Fetch all necessary data from the ViewModel first
         schema = self.view_model.get_current_game_schema()
+        existing_names = self.view_model.get_all_item_names()
         logger.info(f"schema: {schema}")
 
-        existing_names = self.view_model.get_all_item_names()
-
-        # --- Get missing objects for the sync tab ---
-        db_objects = self.view_model.database_service.get_all_objects_for_game(self.view_model.current_game.name)
-        existing_names_lower = {name.lower() for name in existing_names}
-        missing_objects = [
-            obj for obj in db_objects if obj.get("name", "").lower() not in existing_names_lower
-        ]
+        preview_counts = self.view_model.get_reconciliation_preview()
 
         # --- Create and execute the new dialog ---
         dialog = CreateObjectDialog(
             schema=schema,
             existing_names=existing_names,
-            missing_from_db=missing_objects,
+            reconciliation_counts=preview_counts,
             parent=self.window()
         )
 
@@ -363,8 +371,8 @@ class ObjectListPanel(QWidget):
         result = dialog.get_results()
         if result["mode"] == "manual":
             self.view_model.initiate_create_objects([result["task"]])
-        elif result["mode"] == "sync":
-            self.view_model.sync_objects_from_database() # This method will now be simpler
+        elif result["mode"] == "reconcile":
+            self.view_model.initiate_reconciliation()
 
     def _handle_manual_creation(self):
         """Handles the logic for the 'Create Manually' path."""
@@ -379,7 +387,6 @@ class ObjectListPanel(QWidget):
             parent=self.window()
         )
 
-        # (Logika untuk memposisikan dialog di tengah tetap sama)
         dialog.setGeometry(
             QStyle.alignedRect(Qt.LayoutDirection.LeftToRight, Qt.AlignmentFlag.AlignCenter, dialog.sizeHint(), self.window().geometry())
         )
@@ -421,21 +428,21 @@ class ObjectListPanel(QWidget):
         layout.setSpacing(10)
 
         # Create filter controls dynamically
-        for name, options in filter_options.items():
-            layout.addWidget(BodyLabel(name))
+        for key, (display_name, options) in filter_options.items():
+            # Use the internal key for state persistence
+            layout.addWidget(BodyLabel(display_name))
+
             combo = ComboBox()
             combo.addItems(["All"] + options)
 
-            # --- State Persistence Logic ---
-            # Check if there is an active filter for this combobox
-            # The key in active_filters is lowercase (e.g., 'rarity')
-            active_value = self.view_model.active_filters.get(name.lower())
+            # Use the internal key ('rarity') for state persistence and apply
+            active_value = self.view_model.active_filters.get(key)
             if active_value:
                 combo.setCurrentText(active_value)
-            # -----------------------------
 
             layout.addWidget(combo)
-            self.filter_widgets[name] = combo
+            self.filter_widgets[key] = combo # Save widget with internal key
+        # ------------------------------------------------
 
         layout.addSpacing(10)
         button_layout = QHBoxLayout()
@@ -510,3 +517,72 @@ class ObjectListPanel(QWidget):
             self.view_model.proceed_with_sync(missing_objects)
         else:
             self.view_model.toast_requested.emit("Sync operation cancelled.", "info")
+
+    def _on_manual_sync_required(self, item_id: str, candidates: list):
+        """
+        [NEW] Handles the signal from the ViewModel when a sync match is not
+        confident, showing a selection dialog to the user.
+        """
+        item_widget = self._item_widgets.get(item_id)
+        if not item_widget or not isinstance(item_widget, QListWidgetItem):
+            return
+
+        item_name = self.list_widget.itemWidget(item_widget).item_data.get("actual_name", "Unknown")
+
+        dialog = SyncSelectionDialog(
+            item_name=item_name,
+            candidates=candidates,
+            game_type=self.view_model.current_game.game_type,
+            thumbnail_service=self.view_model.thumbnail_service,
+            database_service=self.view_model.database_service,
+            parent=self.window()
+        )
+
+        result_code = dialog.exec()
+
+        if result_code == QDialog.DialogCode.Accepted:
+            # User clicked "Sync with Selected"
+            selected_candidate = dialog.get_selected_candidate()
+            if selected_candidate:
+                self.view_model.force_sync_with_selection(item_id, selected_candidate)
+        elif result_code == SyncSelectionDialog.EditManuallyRequest:
+            # User clicked "No Match / Edit Manually..."
+            logger.info(f"User requested manual edit for item {item_id} after failed sync.")
+            # Trigger the edit dialog for the same item
+            self._on_edit_object_requested(item_id)
+        else:
+            # User clicked "Cancel" or closed the dialog
+            logger.info("Manual sync cancelled by user.")
+
+    def _on_edit_object_requested(self, item_id: str):
+        """
+        [NEW HELPER] Centralizes the logic for opening the EditObjectDialog.
+        This can be called from the context menu or from other dialog fallbacks.
+        """
+        # 1. Get all data required by the dialog from the ViewModel
+        schema = self.view_model.get_current_game_schema()
+        all_names = self.view_model.get_all_item_names()
+
+        item_to_edit_model = next((i for i in self.view_model.master_list if i.id == item_id), None)
+        if not item_to_edit_model:
+            logger.error(f"Could not find item model for ID {item_id} to edit.")
+            return
+
+        item_data_dict = self.view_model._create_dict_from_item(item_to_edit_model)
+
+        # 2. Create and show the dialog
+        dialog = EditObjectDialog(
+            item_data=item_data_dict,
+            schema=schema,
+            existing_names=all_names,
+            parent=self.window()
+        )
+        # ... (positioning logic)
+
+        # 3. Process the result
+        if dialog.exec():
+            result = dialog.get_results()
+            if result["mode"] == "save":
+                self.view_model.update_object_item(item_id, result["data"])
+            elif result["mode"] == "sync":
+                self.view_model.initiate_sync_for_item(item_id)

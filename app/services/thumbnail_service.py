@@ -62,7 +62,7 @@ class ThumbnailService(QObject):
 
         # 1. L1 Cache Check (Memory)
         if pixmap := self.memory_cache.get(item_id):
-            logger.debug(f"L1 cache HIT for item '{item_id}'")
+            # logger.debug(f"L1 cache HIT for item '{item_id}'")
             self.memory_cache.move_to_end(item_id)  # Mark as recently used
 
             return pixmap
@@ -74,7 +74,7 @@ class ThumbnailService(QObject):
                 if source_path.stat().st_mtime > cache_path.stat().st_mtime:
                     logger.info(f"Stale L2 cache for '{item_id}'. Will regenerate.")
                 else:
-                    logger.debug(f"L2 cache HIT for item '{item_id}'")
+                    #logger.debug(f"L2 cache HIT for item '{item_id}'")
                     pixmap = QPixmap(str(cache_path))
                     if not pixmap.isNull():
                         self._add_to_memory_cache(item_id, pixmap)  # Add to L1
@@ -115,7 +115,7 @@ class ThumbnailService(QObject):
         if len(self.memory_cache) >= self.L1_CACHE_MAX_SIZE:
             # popitem(last=False) removes the oldest item (FIFO)
             oldest_key, _ = self.memory_cache.popitem(last=False)
-            logger.debug(f"L1 cache full. Evicting oldest item: {oldest_key}")
+            #logger.debug(f"L1 cache full. Evicting oldest item: {oldest_key}")
 
         self.memory_cache[key] = pixmap
 

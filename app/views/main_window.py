@@ -8,26 +8,24 @@ from PyQt6.QtWidgets import (
     QFrame,
     QStyle
 )
-from app.utils import ui_utils
 from app.utils.logger_utils import logger
 from qfluentwidgets import (
     FluentWindow,
     InfoBar,
     InfoBarPosition,
-    NavigationItemPosition,
+    StrongBodyLabel,
     TitleLabel,
     ComboBox,
     SwitchButton,
     PushButton,
     FluentIcon,
-    NavigationInterface,
-    IndeterminateProgressBar
+    Flyout,
+    ProgressBar,
+    FlyoutAnimationType
 )
 
 # Import ViewModels
-
 from app.utils.ui_utils import UiUtils
-from app.viewmodels import preview_panel_vm
 from app.viewmodels.main_window_vm import MainWindowViewModel
 from app.viewmodels.settings_vm import SettingsViewModel
 
@@ -36,7 +34,7 @@ from app.viewmodels.settings_vm import SettingsViewModel
 from app.views.sections.objectlist_panel import ObjectListPanel
 from app.views.sections.foldergrid_panel import FolderGridPanel
 from app.views.sections.preview_panel import PreviewPanel
-from app.services.thumbnail_service import ThumbnailService
+
 
 # Import Dialogs (Views)
 from app.views.dialogs.edit_game_dialog import EditGameDialog
@@ -53,7 +51,7 @@ class MainWindow(FluentWindow):
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
-
+        self.progress_bar_info = None
         # Store the injected ViewModels
         self.main_window_vm = main_view_model
         self.settings_vm = settings_view_model
@@ -64,6 +62,7 @@ class MainWindow(FluentWindow):
 
         # Flow 1.1: Trigger the initial data loading sequence after setup.
         self.main_window_vm.start_initial_load()
+
 
     def _init_ui(self) -> None:
         """
@@ -97,6 +96,7 @@ class MainWindow(FluentWindow):
         self.gamelist_combo.setPlaceholderText("Select Game")
         self.gamelist_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.safe_mode_switch = SwitchButton("Safe Mode")
+        self.safe_mode_switch.setVisible(False)  # Hide for now, can be enabled later
         left.addWidget(self.gamelist_combo)
         left.addWidget(self.safe_mode_switch)
         left.addStretch(1)
@@ -133,10 +133,6 @@ class MainWindow(FluentWindow):
 
         # Assemble the content widget
         content_v_layout.addWidget(self.header_widget)
-
-        self.progress_bar = IndeterminateProgressBar(self)
-        self.progress_bar.setVisible(False)
-        content_v_layout.addWidget(self.progress_bar)
 
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
@@ -181,11 +177,13 @@ class MainWindow(FluentWindow):
         self.main_window_vm.active_game_changed.connect(self._on_active_game_changed)
         self.main_window_vm.toast_requested.connect(self._on_toast_requested)
         self.main_window_vm.objectlist_vm.bulk_operation_started.connect(self._on_bulk_operation_started)
+        self.main_window_vm.bulk_progress_updated.connect(self._on_bulk_progress_updated)
         self.main_window_vm.objectlist_vm.bulk_operation_finished.connect(self._on_bulk_operation_finished)
         self.main_window_vm.objectlist_vm.game_type_setup_required.connect(self._on_game_type_setup_required)
-
-        # self.main_window_vm.foldergrid_vm.bulk_operation_started.connect(self._on_bulk_operation_started)
-        # self.main_window_vm.foldergrid_vm.bulk_operation_finished.connect(self._on_bulk_operation_finished)
+        self.main_window_vm.category_switch_requested.connect(self._on_category_switch_requested)
+        self.play_button.clicked.connect(self.main_window_vm.on_play_button_clicked)
+        self.main_window_vm.play_settings_required.connect(self._on_play_settings_required)
+        self.main_window_vm.play_button_state_changed.connect(self.play_button.setEnabled)
 
         self.main_window_vm.settings_dialog_requested.connect(
             self._on_settings_dialog_requested
@@ -309,7 +307,7 @@ class MainWindow(FluentWindow):
             self.play_button.setEnabled(False)
         self.gamelist_combo.blockSignals(False)
 
-    def _on_settings_dialog_requested(self):
+    def _on_settings_dialog_requested(self, initial_tab: str = "games_tab"):
         """Flow 1.2: Creates and shows the SettingsDialog."""
         logger.info("Settings dialog requested.")
 
@@ -320,15 +318,17 @@ class MainWindow(FluentWindow):
 
         # 2. Create the dialog instance, passing the ViewModel
         dialog = SettingsDialog(viewmodel=self.settings_vm, parent=self)
-
+        dialog.view_model.reconciliation_finished.connect(
+            self.main_window_vm.request_main_refresh
+        )
         # 3. Load the current config into the dialog's ViewModel
         self.settings_vm.load_current_config(self.main_window_vm.config)
+        dialog._switch_to_tab(initial_tab)
 
         # 4. Execute the dialog and check the result
         if dialog.exec():
             # This block runs only if the user clicks "Save" AND
             # the save operation in the ViewModel is successful.
-
             logger.info("Settings saved. Refreshing main window state.")
             self.main_window_vm.refresh_all_from_config()
 
@@ -419,21 +419,38 @@ class MainWindow(FluentWindow):
             )
             return
 
+
     def _on_bulk_operation_started(self, message: str = "Processing..."):
         """Disables interactions and shows a progress indicator."""
         # Disable all interactive elements to prevent user actions during bulk operations
         self.object_list_panel.setEnabled(False)
         self.folder_grid_panel.setEnabled(False)
         self.preview_panel.setEnabled(False)
-        self.progress_bar.setVisible(True)
+        if self.progress_bar_info:
+            self.progress_bar_info.close()
+
+        # Create and show the new progress bar
+        self.progress_bar_info = self._create_progress_bar()
+        self.progress_bar_info.show()
+        # ---------------------
 
     def _on_bulk_operation_finished(self, failed_items: list):
         """Re-enables interactions and hides the progress indicator."""
+
+        # 1. Disconnect the progress signal to prevent any late-arriving updates.
+        try:
+            self.main_window_vm.bulk_progress_updated.disconnect(self._on_bulk_progress_updated)
+        except TypeError:
+            # This can happen if the signal was already disconnected. It's safe to ignore.
+            pass
+
         # self.navigation_interface.setEnabled(True)
         self.object_list_panel.setEnabled(True)
         self.folder_grid_panel.setEnabled(True)
         self.preview_panel.setEnabled(True)
-        self.progress_bar.setVisible(False)
+        if self.progress_bar_info:
+            self.progress_bar_info.close()
+            self.progress_bar_info = None
 
         # refresh request_main_refresh
         self.main_window_vm.request_main_refresh()
@@ -442,6 +459,72 @@ class MainWindow(FluentWindow):
             error_message = f"Bulk operation completed with {len(failed_items)} errors."
             UiUtils.show_toast(self, error_message, "error")
             logger.error(error_message)
+
+    def _on_bulk_progress_updated(self, current: int, total: int):
+        """[REVISED] Updates the progress bar inside the flyout."""
+        if self.progress_bar_info:
+            if total > 0:
+                percentage = int((current / total) * 100)
+                self.progress_bar_info.titleLabel.setText(f"Synchronizing... {percentage}%")
+                if hasattr(self.progress_bar_info, 'progressBar'):
+                    self.progress_bar_info.progressBar.setValue(percentage)
+
+    def _create_progress_bar(self) -> InfoBar:
+        """
+        [NEW] Helper method to create a custom InfoBar with a progress bar.
+        """
+        # Create a container for the progress bar and title
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 8, 0, 8)
+
+        titleLabel = StrongBodyLabel("Synchronizing...", view)
+        progressBar = ProgressBar(view)
+        progressBar.setRange(0, 100)
+        progressBar.setValue(0)
+
+        layout.addWidget(titleLabel)
+        layout.addWidget(progressBar)
+
+        # Create an InfoBar instance that is not closable by the user
+        bar = InfoBar(
+            icon=FluentIcon.SYNC,
+            title="", # Title will be inside our custom widget
+            content="",
+            isClosable=False, # User cannot close it manually
+            duration=-1,      # Stays open until we close it
+            position=InfoBarPosition.BOTTOM_RIGHT,
+            parent=self
+        )
+        # Add our custom widget to the InfoBar
+        bar.addWidget(view)
+
+        # Store a reference to the progress bar for easy access
+        bar.progressBar = progressBar
+
+        return bar
+
+    def _on_category_switch_requested(self, category_key: str):
+        """Switches the main sidebar to the specified category."""
+        self.main_window_vm.on_category_selected(category_key)
+
+        route_key = f"{category_key}_filter"
+        logger.info(f"Programmatically switching sidebar to '{route_key}'")
+        self.navigationInterface.setCurrentItem(route_key)
+
+    def _on_play_settings_required(self):
+        """
+        Shows a toast notification and opens the SettingsDialog to the
+        Launcher tab when the launcher path is not configured.
+        """
+        UiUtils.show_toast(
+            self,
+            "Launcher path not set. Please configure it first.",
+            "info",
+            duration=3000
+        )
+        # Panggil metode yang sudah ada, tetapi dengan argumen tambahan
+        self._on_settings_dialog_requested(initial_tab="launcher_tab")
 
     def closeEvent(self, event):
         super().closeEvent(event)

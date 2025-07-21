@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QFileDialog,
     QStyle,
+    QFormLayout,
 )
 from qfluentwidgets import (
     Pivot,
@@ -21,6 +22,12 @@ from qfluentwidgets import (
     FluentIcon,
     SubtitleLabel,
     Dialog,
+    MessageBox,
+    IconWidget,
+    BodyLabel,
+    TitleLabel,
+    LineEdit,
+    CheckBox,
 )
 from app.utils.ui_utils import UiUtils
 from app.utils.logger_utils import logger
@@ -37,7 +44,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
     def __init__(self, viewmodel: SettingsViewModel, parent: QWidget | None = None):
         super().__init__(parent)
         self.view_model = viewmodel
-
+        self.pages = {}
         self._init_ui()
         self._connect_signals()  # To be implemented later
 
@@ -62,6 +69,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         # ---Create and Add Tab Contents ---
         # Call these methods FIRST to populate the pivot and stack
         self._create_games_tab()
+        self._create_launcher_tab()
         self._create_presets_tab()
 
         # Set initial tab AFTER items have been added
@@ -92,6 +100,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         layout = QVBoxLayout(games_widget)
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(10)
+
         layout.addWidget(SubtitleLabel("Manage Mods Paths"))
 
         toolbar_layout = QHBoxLayout()
@@ -107,6 +116,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         self.games_table = TableWidget(self)
         self.games_table.setColumnCount(3)
         self.games_table.setHorizontalHeaderLabels(["Name", "Path", "Mods Type"])
+        self.games_table.setEditTriggers(self.games_table.EditTrigger.NoEditTriggers)
 
         # ---Apply fluent styles ---
         self.games_table.setBorderVisible(True)
@@ -126,13 +136,60 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         layout.addLayout(toolbar_layout)
         layout.addWidget(self.games_table, 1)
 
+        self.pages["games_tab"] = games_widget
+
         self.stack.addWidget(games_widget)
         self.pivot.addItem(
             routeKey="games_tab",
             text="Games",
-            onClick=lambda: self.stack.setCurrentWidget(games_widget),
+            onClick=lambda: self._switch_to_tab("games_tab"),
             icon=FluentIcon.GAME,
         )
+
+        sync_layout = QHBoxLayout()
+        self.sync_game_button = PushButton(FluentIcon.SYNC, "Sync Data with Database")
+        self.sync_game_button.setToolTip("Creates missing mod folders and updates existing ones from the database for the selected game.")
+        self.sync_game_button.setEnabled(False)
+        sync_layout.addWidget(self.sync_game_button)
+        sync_layout.addStretch(1)
+        layout.addLayout(sync_layout)
+
+
+    def _create_launcher_tab(self):
+        """Creates the UI for the 'Launcher' settings tab."""
+        launcher_widget = QWidget()
+        layout = QFormLayout(launcher_widget)
+        layout.setContentsMargins(10, 20, 10, 10)
+        layout.setSpacing(15)
+        layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+
+        # -- Widget Launcher Path --
+        path_layout = QHBoxLayout()
+        self.launcher_path_edit = LineEdit(self)
+        self.launcher_path_edit.setReadOnly(True)
+        self.launcher_path_edit.setPlaceholderText("No launcher path set")
+        browse_button = PushButton("Browse...")
+        path_layout.addWidget(self.launcher_path_edit, 1)
+        path_layout.addWidget(browse_button)
+
+        layout.addRow("Launcher Path:", path_layout)
+
+        # -- Widget Auto-play --
+        self.auto_play_checkbox = CheckBox("Auto-play launcher on application startup", self)
+        layout.addRow("", self.auto_play_checkbox)
+        self.pages["launcher_tab"] = launcher_widget
+
+        self.stack.addWidget(launcher_widget)
+        self.pivot.addItem(
+            routeKey="launcher_tab",
+            text="Launcher",
+            onClick=lambda: self._switch_to_tab("launcher_tab"),
+            icon=FluentIcon.PLAY_SOLID,
+        )
+
+        browse_button.clicked.connect(self._on_browse_launcher)
+        self.auto_play_checkbox.toggled.connect(self.view_model.set_temp_auto_play)
+
 
     def _create_presets_tab(self):
         """Creates the UI for the 'Presets' management tab."""
@@ -153,21 +210,50 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
         self.presets_list = ListWidget(self)
         self.presets_list.setObjectName("PresetsList")
 
-        layout.addWidget(SubtitleLabel("Manage Saved Presets"))
-        layout.addLayout(toolbar_layout)
-        layout.addWidget(self.presets_list, 1)
+        # Hide buttons and list until they are implemented
+        self.rename_preset_button.setVisible(False)
+        self.delete_preset_button.setVisible(False)
+        self.presets_list.setVisible(False)
 
+        # --- Widget "Coming Soon" ---
+        layout.addStretch(1)
+
+        coming_soon_icon = IconWidget(FluentIcon.DEVELOPER_TOOLS, presets_widget)
+        coming_soon_icon.setFixedSize(48, 48)
+        layout.addWidget(coming_soon_icon, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(5)
+
+        title = TitleLabel("Feature Coming Soon!", presets_widget)
+        subtitle = BodyLabel("Preset management is currently under development.", presets_widget)
+        subtitle.setTextColor("#8a8a8a") # Warna abu-abu untuk subteks
+
+        layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle, 0, Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch(1)
+
+        # -------------------------
+
+        #layout.addWidget(SubtitleLabel("Manage Saved Presets"))
+        #layout.addLayout(toolbar_layout)
+        #layout.addWidget(self.presets_list, 1)
+        self.pages["presets_tab"] = presets_widget
         self.stack.addWidget(presets_widget)
         self.pivot.addItem(
             routeKey="presets_tab",
             text="Presets",
-            onClick=lambda: self.stack.setCurrentWidget(presets_widget),
+            onClick=lambda: self._switch_to_tab("presets_tab"),
             icon=FluentIcon.SAVE,
         )
 
     def _connect_signals(self):
         """Connects UI element signals and ViewModel signals to their handlers."""
         # ---ViewModel -> View ---
+        self.games_table.itemSelectionChanged.connect(self._on_game_selection_changed)
+        self.sync_game_button.clicked.connect(self._on_sync_this_game_clicked)
+        self.view_model.bulk_operation_started.connect(self._on_long_op_started)
+        self.view_model.bulk_operation_finished.connect(self._on_long_op_finished)
+
 
         self.view_model.games_list_refreshed.connect(self._refresh_game_list)
         self.view_model.toast_requested.connect(self._on_toast_requested)
@@ -178,19 +264,15 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
 
         self.add_game_button.clicked.connect(self._on_add_game)
         self.edit_game_button.clicked.connect(self._on_edit_game)
-        # self.remove_game_button.clicked.connect(self._on_remove_game)
+        self.games_table.itemDoubleClicked.connect(self._on_edit_game)
+        self.remove_game_button.clicked.connect(self._on_remove_game)
+        self.view_model.launcher_settings_refreshed.connect(self._refresh_launcher_tab)
         # self.rename_preset_button.clicked.connect(self._on_rename_preset)
         # self.delete_preset_button.clicked.connect(self._on_delete_preset)
 
         # Connect Save and Cancel buttons
         self.save_button.clicked.connect(self._on_save)
         self.cancel_button.clicked.connect(self.reject)
-
-        # ---Connect ViewModel signals to dialog slots ---
-        # self.view_model.long_operation_started.connect(self._on_long_op_started)
-        # self.view_model.long_operation_finished.connect(self._on_long_op_finished)
-
-        pass
 
     def _on_confirmation_requested(self, params: dict):
         """Membuat dan menampilkan dialog konfirmasi fluent."""
@@ -257,19 +339,51 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
 
     # ---SLOTS (Responding to ViewModel Signals) ---
 
-    def _on_long_op_started(self, message: str):
-        """Flow 6.2.A: Shows a progress overlay when a preset is being managed."""
-        # Shows an overlay on the dialog to prevent interaction during preset rename/delete.
+    def _on_sync_this_game_clicked(self):
+        """
+        [NEW] Handles the 'Sync Data with Database' button click.
+        """
+        selected_items = self.games_table.selectedItems()
+        if not selected_items:
+            UiUtils.show_toast(self, "Please select a game to sync.", "warning")
+            return
 
-        pass
+        selected_row = selected_items[0].row()
+        game_id = self.games_table.item(selected_row, 0).data(Qt.ItemDataRole.UserRole)
+        game_name = self.games_table.item(selected_row, 0).text()
 
-    def _on_long_op_finished(self, result: dict):
-        """Flow 6.2.A: Hides the overlay and refreshes lists after a preset operation."""
-        # Hides the overlay.
-        # Refreshes the preset list to show the changes.
-        # If there were failures, shows a message box with the details from the result dict.
+        # Show a confirmation dialog
+        title = "Confirm Full Sync"
+        content = (f"This will synchronize the mods for '{game_name}' with the database.\n\n"
+                   "• Missing mod folders will be created.\n"
+                   "• Existing mod folders will be updated.\n\n"
+                   "This may take a moment. Are you sure you want to proceed?")
 
-        pass
+        if UiUtils.show_confirm_dialog(self.window(), title, content, "Yes, Start Sync", "Cancel"):
+            # If confirmed, call the ViewModel to start the process
+            self.view_model.initiate_reconciliation_for_game(game_id)
+
+    def _on_long_op_started(self):
+        """
+        [REVISED] Shows an overlay on the dialog to prevent interaction
+        during the sync process.
+        """
+        # self.overlay = ShimmerFrame(self)
+        # self.overlay.setGeometry(self.rect())
+        # self.overlay.start_shimmer()
+        self.setEnabled(False)
+        logger.info("Long operation started, dialog disabled.")
+
+
+    def _on_long_op_finished(self):
+        """
+        [REVISED] Hides the overlay and re-enables the dialog.
+        """
+        # self.overlay.stop_shimmer()
+        # self.overlay.hide()
+        self.setEnabled(True)
+        logger.info("Long operation finished, dialog enabled.")
+
 
     # ---UI EVENT HANDLERS (Calling ViewModel methods) ---
     def _on_add_game(self):
@@ -285,6 +399,7 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
     def _on_edit_game(self):
         """Flow 1.2: Opens an edit dialog for the selected game."""
         selected_items = self.games_table.selectedItems()
+
         if not selected_items:
             UiUtils.show_toast(self, "Please select a game to edit.", "warning")
             return
@@ -319,11 +434,30 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
             )
 
     def _on_remove_game(self):
-        """Flow 1.2: Tells the ViewModel to remove the selected game from the temp list."""
-        # 1. Get the selected game.
-        # 2. Call self.view_model.remove_temp_game(...) and refresh the list.
+        """
+        [IMPLEMENTED] Gets the selected game from the table, asks for confirmation,
+        and tells the ViewModel to remove it from the temporary list.
+        """
+        # 1. Get the selected game from the table
+        selected_items = self.games_table.selectedItems()
+        if not selected_items:
+            UiUtils.show_toast(self, "Please select a game to remove.", "warning")
+            return
 
-        pass
+        selected_row = selected_items[0].row()
+        game_id = self.games_table.item(selected_row, 0).data(Qt.ItemDataRole.UserRole)
+        game_name = self.games_table.item(selected_row, 0).text()
+
+        # 2. Show a confirmation dialog
+        title = "Confirm Removal"
+        content = f"Are you sure you want to remove '{game_name}'?\n\nThis change will be permanent after you click 'Save'."
+
+        # We use a standard MessageBox here for confirmation
+        confirm_dialog = MessageBox(title, content, self)
+
+        if confirm_dialog.exec(): # This returns True if the user clicks 'Yes'
+            # 3. If confirmed, call the ViewModel method
+            self.view_model.remove_temp_game(game_id)
 
     def _on_rename_preset(self):
         """Flow 6.2.A: Opens a dialog to get a new name for a selected preset."""
@@ -431,3 +565,44 @@ class SettingsDialog(QDialog):  # Inherit from fluent Dialog
             # If user confirms, get the selection and send it back to the ViewModel
             selected_type = dialog.selected_game_type()
             self.view_model.set_game_type_and_add(proposal, selected_type)
+
+    def _refresh_launcher_tab(self, launcher_path: str, auto_play: bool):
+        """Populates the launcher tab UI from the ViewModel's state."""
+        self.launcher_path_edit.setText(launcher_path)
+        self.auto_play_checkbox.setChecked(auto_play)
+
+    def _on_browse_launcher(self):
+        """Opens a file dialog to select the launcher executable."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Launcher Executable",
+            "", # Direktori awal
+            "Executable files (*.exe);;All files (*)"
+        )
+
+        if file_path:
+            # Perbarui tampilan UI
+            self.launcher_path_edit.setText(file_path)
+            # Beri tahu ViewModel tentang perubahan
+            self.view_model.set_temp_launcher_path(file_path)
+
+    def _switch_to_tab(self, routeKey: str):
+        """
+        A central method to handle tab switching. It updates both the
+        QStackedWidget and the Pivot to ensure they are in sync.
+        """
+        target_widget = self.pages.get(routeKey)
+        if target_widget:
+            self.stack.setCurrentWidget(target_widget)
+            self.pivot.setCurrentItem(routeKey)
+
+    def _on_game_selection_changed(self):
+        """
+        [NEW] Enables or disables the 'Sync' and 'Edit'/'Remove' buttons
+        based on whether a game is selected in the table.
+        """
+        is_a_game_selected = bool(self.games_table.selectedItems())
+
+        self.sync_game_button.setEnabled(is_a_game_selected)
+        self.edit_game_button.setEnabled(is_a_game_selected)
+        self.remove_game_button.setEnabled(is_a_game_selected)

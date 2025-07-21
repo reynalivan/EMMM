@@ -1,9 +1,11 @@
 # App/viewmodels/main window vm.py
 
+import os
 from pathlib import Path
+import subprocess
 from PyQt6.QtCore import QObject, pyqtSignal, QThreadPool
 from typing import Optional, List, Dict
-
+import subprocess as sp
 from app.utils.logger_utils import logger
 from app.utils.async_utils import Worker
 from app.models.mod_item_model import ModType
@@ -46,6 +48,10 @@ class MainWindowViewModel(QObject):
     # ---Signals for Game List UI ---
     game_list_updated = pyqtSignal(list)  # list[dict] instead of list[Game]
     active_game_changed = pyqtSignal(object)  # Game object or None
+    category_switch_requested = pyqtSignal(str) # 'character' or 'other'
+    play_settings_required = pyqtSignal()
+    play_button_state_changed = pyqtSignal(bool)
+    bulk_progress_updated = pyqtSignal(int, int)
 
     def __init__(
         self,
@@ -120,14 +126,33 @@ class MainWindowViewModel(QObject):
             )
 
             if refreshed_active_game:
-                # By calling set_current_game, we force an update of all child
-                # VMs and trigger a reload of the objectlist with the new game object.
-                logger.info("Re-setting active game to sync new configuration...")
-                self.set_current_game(refreshed_active_game)
+                # Update the active game reference in this ViewModel
+                self.active_game = refreshed_active_game
+
+                logger.info(f"Forcing objectlist refresh for game '{refreshed_active_game.name}' with new game_type '{refreshed_active_game.game_type}'.")
+                self.objectlist_vm.load_items(
+                    path=refreshed_active_game.path,
+                    game=refreshed_active_game,
+                    is_new_root=True # Treat this as a root change to reset filters etc.
+                )
                 # ---------------------
             else:
                 # The previously active game was deleted, clear the view
                 self.set_current_game(None)
+
+    def run_auto_play_on_startup(self):
+        """
+        Checks the config and runs the launcher if auto-play is enabled.
+        This should be called once after the initial config is loaded.
+        """
+        logger.info("Checking for auto-play on startup...")
+        if self.config and self.config.auto_play_on_startup and self.config.launcher_path:
+            launcher_path = Path(self.config.launcher_path)
+            if launcher_path.is_file():
+                logger.info(f"Auto-play is enabled. Attempting to run: {launcher_path}")
+                self.on_play_button_clicked()
+            else:
+                logger.warning("Auto-play enabled, but launcher path is invalid.")
 
     # ---Public Slots (for UI Actions) ---
 
@@ -263,6 +288,10 @@ class MainWindowViewModel(QObject):
 
     def _connect_child_vm_signals(self):
         """Connects signals from child VMs to orchestrator methods."""
+        self.objectlist_vm.object_created.connect(self._on_object_created)
+        self.objectlist_vm.list_refresh_requested.connect(self._on_list_refresh_requested)
+        self.foldergrid_vm.list_refresh_requested.connect(self._on_list_refresh_requested)
+        self.objectlist_vm.reconciliation_progress_updated.connect(self.bulk_progress_updated)
         # Flow 3.1a & 4.2.A: An active object was modified/renamed
         self.objectlist_vm.active_object_modified.connect(
             self._on_active_object_modified
@@ -330,9 +359,21 @@ class MainWindowViewModel(QObject):
                 is_new_root=True,
             )
 
-    def _on_active_object_deleted(self, deleted_item):
-        """Flow 4.2.B: Handles an active object being deleted."""
-        pass  # Checks if deleted_item matches self.active_object and calls preview_panel_vm.clear_preview()
+    def _on_active_object_deleted(self, deleted_item_id: str):
+        """
+        [IMPLEMENTED] Handles the domino effect when the currently active
+        object is deleted from the objectlist.
+        """
+        # Check if the deleted item is the one currently active
+        if self.active_object and self.active_object.id == deleted_item_id:
+            logger.info(f"Active object '{self.active_object.actual_name}' was deleted. Clearing dependent views.")
+
+            # 1. Clear active object state
+            self.active_object = None
+
+            # 2. Instruct foldergrid and preview_panel to clear themselves
+            self.foldergrid_vm.unload_items()
+            self.preview_panel_vm.clear_panel()
 
     def _process_config_update(self):
         """
@@ -387,10 +428,12 @@ class MainWindowViewModel(QObject):
         """
         logger.info("Configuration loaded. Updating view model state...")
         self.config = app_config
+        is_play_enabled = bool(app_config and app_config.launcher_path)
+        self.play_button_state_changed.emit(is_play_enabled)
 
         # Proceed to the next step in the startup flow
-
         self._process_config_update()
+        self.run_auto_play_on_startup()
 
     def _on_load_config_error(self, error_info: tuple):
         """Handles errors that occur during the config loading process."""
@@ -500,3 +543,79 @@ class MainWindowViewModel(QObject):
 
         # In Stage 3, this method will also be responsible for
         # triggering the update of the detailed filter UI.
+
+    def _on_object_created(self, new_object_data: dict):
+        """
+        Receives a signal when a new object is created and decides
+        which category sidebar to switch to.
+        """
+        object_type = new_object_data.get("object_type")
+        if object_type == ModType.CHARACTER.value:
+            self.category_switch_requested.emit("character")
+        else:
+            self.category_switch_requested.emit("other")
+
+    def on_play_button_clicked(self):
+        """
+        Handles the logic when the main 'Play' button is clicked.
+        """
+        if self.config and self.config.launcher_path:
+            launcher_path = Path(self.config.launcher_path)
+            if launcher_path.is_file():
+                logger.info(f"Play button clicked. Running: {launcher_path}")
+                try:
+                    subprocess.Popen([str(launcher_path)], cwd=str(launcher_path.parent))
+                except OSError as e:
+                    if e.winerror == 740:
+                        logger.warning("Elevation required. Trying runas fallback...")
+                        try:
+                            logger.warning("Elevation needed. Fallback via PowerShell…")
+                            ret = self.run_as_admin_with_powershell(str(launcher_path))
+                            if ret != 0:
+                                err = f"Powershell exit code {ret}"
+                                logger.error(f"Fallback elevation failed: {err}")
+                                self.toast_requested.emit(f"Failed to run as admin: {err}", ToastLevel.ERROR)
+
+                        except Exception as fallback_error:
+                            logger.error(f"Fallback elevation failed: {fallback_error}")
+                            self.toast_requested.emit(f"Failed to run launcher (admin): {fallback_error}", ToastLevel.ERROR)
+                    else:
+                        logger.error(f"Failed to run launcher: {e}")
+                        self.toast_requested.emit(f"Failed to run launcher: {e}", ToastLevel.ERROR)
+                except Exception as e:
+                    logger.error(f"Failed to run launcher: {e}")
+                    self.toast_requested.emit(f"Failed to run launcher: {e}", "error")
+            else:
+                self.toast_requested.emit("Launcher path is invalid. Please check settings.", "warning")
+                self.play_settings_required.emit()
+        else:
+            logger.info("Play button clicked, but no launcher path is set. Requesting settings.")
+            self.play_settings_required.emit()
+
+    @staticmethod
+    def run_as_admin_with_powershell(cmd_path: str):
+        ps_cmd = (
+            f'powershell -Command "Start-Process \'{cmd_path}\' -Verb RunAs"'
+        )
+        return os.system(ps_cmd)
+
+    def _on_list_refresh_requested(self):
+        """
+        Handles a request from a child ViewModel to reload the object list.
+        This ensures the reload uses the most up-to-date game object.
+        """
+        sender_vm = self.sender()
+        if sender_vm not in [self.objectlist_vm, self.foldergrid_vm]:
+            return
+
+        if self.active_game and self.active_game.path.is_dir():
+            logger.info(f"Handling refresh request for '{sender_vm.context}' of game '{self.active_game.name}'.")
+
+            # Use the most up-to-date path from the child VM, but the game object from this orchestrator
+            path_to_load = sender_vm.current_path if sender_vm.current_path else self.active_game.path
+
+            sender_vm.load_items(
+                path=path_to_load,
+                game=self.active_game, # Provide the master, up-to-date game object
+                is_new_root=(sender_vm == self.objectlist_vm) # A full refresh of objectlist is a root change
+            )

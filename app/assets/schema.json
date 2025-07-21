@@ -1,0 +1,143 @@
+{
+  "GIMI": {
+    "schema": {
+      "rarity": ["5", "4"],
+      "element": ["Anemo", "Geo", "Electro", "Dendro", "Hydro", "Pyro", "Cryo"],
+      "gender": ["Male", "Female", "Unknown"],
+      "weapon_types": ["Sword", "Claymore", "Bow", "Polearm", "Catalyst"],
+      "icons": {
+        "Anemo": "app/assets/icons/gimi/anemo.png",
+        "Geo": "app/assets/icons/gimi/geo.png",
+        "Electro": "app/assets/icons/gimi/electro.png",
+        "Dendro": "app/assets/icons/gimi/dendro.png",
+        "Hydro": "app/assets/icons/gimi/hydro.png",
+        "Pyro": "app/assets/icons/gimi/pyro.png",
+        "Cryo": "app/assets/icons/gimi/cryo.png",
+        "Sword": "app/assets/icons/gimi/sword.png",
+        "Claymore": "app/assets/icons/gimi/claymore.png",
+        "Bow": "app/assets/icons/gimi/bow.png",
+        "Polearm": "app/assets/icons/gimi/polearm.png",
+        "Catalyst": "app/assets/icons/gimi/catalyst.png",
+        "5": "app/assets/icons/gimi/rarity_5.png",
+        "4": "app/assets/icons/gimi/rarity_4.png",
+        "Male": "app/assets/icons/common/male.png",
+        "Female": "app/assets/icons/common/female.png",
+        "Unknown": "app/assets/icons/common/unknown.png"
+      }
+    },
+    "object_link": {
+      "character": "app/assets/db_gimi_char.json",
+      "other": "app/assets/db_gimi_other.json"
+    }
+  },
+  "SRMI": {
+    "schema": {
+      "rarity": ["5", "4"],
+      "element": ["Physical", "Fire", "Ice", "Lightning", "Wind", "Quantum", "Imaginary"],
+      "gender": ["Male", "Female", "Unknown"],
+      "weapon_types": ["The Destruction", "The Hunt", "The Erudition", "The Harmony", "The Nihility", "The Preservation", "The Abundance", "The Remembrance"],
+      "icons": {
+        "Physical": "app/assets/icons/srmi/physical.png",
+        "Fire": "app/assets/icons/srmi/fire.png",
+        "Ice": "app/assets/icons/srmi/ice.png",
+        "Lightning": "app/assets/icons/srmi/lightning.png",
+        "Wind": "app/assets/icons/srmi/wind.png",
+        "Quantum": "app/assets/icons/srmi/quantum.png",
+        "Imaginary": "app/assets/icons/srmi/imaginary.png",
+        "The Destruction": "app/assets/icons/srmi/destruction.png",
+        "The Hunt": "app/assets/icons/srmi/hunt.png",
+        "The Erudition": "app/assets/icons/srmi/erudition.png",
+        "The Harmony": "app/assets/icons/srmi/harmony.png",
+        "The Nihility": "app/assets/icons/srmi/nihility.png",
+        "The Preservation": "app/assets/icons/srmi/preservation.png",
+        "The Abundance": "app/assets/icons/srmi/abundance.png",
+        "The Remembrance": "app/assets/icons/srmi/remembrance.png",
+        "5": "app/assets/icons/srmi/rarity_5.png",
+        "4": "app/assets/icons/srmi/rarity_4.png",
+        "Male": "app/assets/icons/common/male.png",
+        "Female": "app/assets/icons/common/female.png",
+        "Unknown": "app/assets/icons/common/unknown.png"
+      }
+    },
+    "alias": {
+      "weapon_types": "Path",
+      "element": "Combat Type",
+      "region": "Affiliations/Region"
+    },
+    "object_link": {
+      "character": "app/assets/db_srmi_char.json",
+      "other": "app/assets/db_srmi_other.json"
+    }
+  },
+  "WWMI": {
+    "schema": {
+      "rarity": ["5", "4"],
+      "element": ["Aero", "Glacio", "Fusion", "Electro", "Havoc", "Spectro"],
+      "gender": ["Male", "Female", "Unknown"],
+      "weapon_types": ["Sword", "Broadblade", "Pistols", "Gauntlets", "Rectifier"],
+      "icons": {
+        "Aero": "app/assets/icons/wwmi/aero.png",
+        "Glacio": "app/assets/icons/wwmi/glacio.png",
+        "Fusion": "app/assets/icons/wwmi/fusion.png",
+        "Electro": "app/assets/icons/wwmi/electro.png",
+        "Havoc": "app/assets/icons/wwmi/havoc.png",
+        "Spectro": "app/assets/icons/wwmi/spectro.png",
+        "Sword": "app/assets/icons/wwmi/sword.png",
+        "Broadblade": "app/assets/icons/wwmi/broadblade.png",
+        "Pistols": "app/assets/icons/wwmi/pistols.png",
+        "Gauntlets": "app/assets/icons/wwmi/gauntlets.png",
+        "Rectifier": "app/assets/icons/wwmi/rectifier.png",
+        "5": "app/assets/icons/wwmi/rarity_5.png",
+        "4": "app/assets/icons/wwmi/rarity_4.png",
+        "Male": "app/assets/icons/common/male.png",
+        "Female": "app/assets/icons/common/female.png",
+        "Unknown": "app/assets/icons/common/unknown.png"
+      }
+    },
+    "alias": {
+      "weapon_types": "Weapon",
+      "element": "Attribute",
+      "region": "Affiliation"
+    },
+    "object_link": {
+      "character": "app/assets/db_wwmi_char.json",
+      "other": "app/assets/db_wwmi_other.json"
+    }
+  },
+  "ZZMI": {
+    "schema": {
+      "rarity": ["S", "A"],
+      "element": ["Electric", "Ether", "Ice", "Fire", "Physical", "Auric Ink"],
+      "gender": ["Male", "Female"],
+      "weapon_types": ["Support", "Stun", "Attack", "Defense", "Anomaly", "Rupture"],
+      "icons": {
+        "Electric": "app/assets/icons/zzmi/electric.png",
+        "Ether": "app/assets/icons/zzmi/ether.png",
+        "Ice": "app/assets/icons/zzmi/ice.png",
+        "Fire": "app/assets/icons/zzmi/fire.png",
+        "Physical": "app/assets/icons/zzmi/physical.png",
+        "Auric Ink": "app/assets/icons/zzmi/auric_ink.png",
+        "Support": "app/assets/icons/zzmi/support.png",
+        "Stun": "app/assets/icons/zzmi/stun.png",
+        "Attack": "app/assets/icons/zzmi/attack.png",
+        "Defense": "app/assets/icons/zzmi/defense.png",
+        "Anomaly": "app/assets/icons/zzmi/anomaly.png",
+        "Rupture": "app/assets/icons/zzmi/rupture.png",
+        "S": "app/assets/icons/zzmi/rarity_s.png",
+        "A": "app/assets/icons/zzmi/rarity_a.png",
+        "Male": "app/assets/icons/common/male.png",
+        "Female": "app/assets/icons/common/female.png"
+      }
+    },
+    "alias": {
+      "rarity": "Rank",
+      "element": "Attribute",
+      "weapon_types": "Specialty",
+      "region": "Faction"
+    },
+    "object_link": {
+      "character": "app/assets/db_zzmi_char.json",
+      "other": "app/assets/db_zzmi_other.json"
+    }
+  }
+}
